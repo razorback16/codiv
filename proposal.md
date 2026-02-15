@@ -30,6 +30,7 @@ Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model 
 - `daemon`: Persistent C++ daemon that manages orchestration, memory, task graph, scheduling, tool execution, and the command cache. Communicates with the shell plugin via Unix domain socket.
 
 - `command-fast-pass`: Daemon builds and maintains a **command index** from PATH executables, builtins, aliases, and functions:
+
   - Stores in a hash map: command → type + path/builtin + completion hints
   - Recognized input → run immediately with near-zero latency
   - Unknown/ambiguous → routes to agent mode (TeamLead can still choose to run a command)
@@ -37,11 +38,13 @@ Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model 
 - `agent-system`: Three agent types, always present:
 
   1. **Orchestrator**
+
      - Owns the session, user preferences, and **project auto-switching**
      - Delegates to executor roles via Work Items
      - Only component with long-term user context
 
   2. **Executor (role-based)**
+
      - Primary roles: **TeamLead, Engineer, Reviewer**
      - Optional roles: **Researcher, Security, Perf**
      - TeamLead decides whether to do it solo, split into multiple Work Items, or hire optional roles based on triggers:
@@ -51,10 +54,12 @@ Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model 
      - Runs Work Items under policies/budgets
 
   3. **Narrator / Memory Agent**
+
      - Compresses + curates memory
      - Produces succinct "state snapshots" for Orchestrator context
 
 - `work-item-system`: The single core abstraction—everything is a **Work Item**:
+
   - Goal + acceptance criteria
   - Inputs/constraints (repo, cwd, tool allowlist, risk level, budgets)
   - Dependencies (forming a DAG)
@@ -63,6 +68,7 @@ Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model 
   - The scheduler runs ready Work Items concurrently via a worker thread pool
 
 - `tool-system`: Claude Code style tools for agent execution:
+
   - `Bash`: Shell command execution with timeout and background support
   - `Read`: File content retrieval
   - `Write`: File creation/overwrite
@@ -73,17 +79,20 @@ Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model 
   - `Task`: Sub-agent spawning for complex subtasks
 
 - `memory-system`: Bounded memory model:
+
   - **Global memory** (user + operating habits): size-capped, curated by Narrator
   - **Project memories** (per repo/project): many, each size-capped
   - Orchestrator **auto-switches** project context using cwd/repo fingerprint/file references/task semantics
 
 - `shared-project-state`: All coordination through minimal shared state:
+
   - **Artifacts**: command transcripts, stdout/stderr, diffs, files, benchmarks
   - **Decisions**: short rationale for key choices
   - **Task state**: Work Item status + pointers to artifacts
   - No agent-to-agent "chat"; agents read/write state
 
 - `skill-system`: Extensible slash-command plugins
+
   - Built-in skills: `/commit`, `/plan`, `/tasks`, `/help`, `/history`
   - User-defined skills via `~/.config/slate-agent/skills/`
 
@@ -122,7 +131,7 @@ For every user input:
 - **Shell Integration**: Plugin files for Zsh/Bash, Unix domain socket IPC
 - **API Keys**: Requires configuration for LLM provider API credentials
 - **User Environment**: Needs access to user's filesystem, ability to execute shell commands
-- **Storage**: Shared Project State + memory at ~/.slate-agent/ or XDG-compliant location
+- **Storage**: Shared Project State + memory at \~/.slate-agent/ or XDG-compliant location
 - **Performance**: Near-zero latency for fast-pass commands, streaming responses, concurrent Work Item execution via worker pool
 
 ## Architecture Overview
@@ -206,7 +215,7 @@ Each agent role has different intelligence requirements. Rather than using a sin
 ### Fixed Role Assignments
 
 | Role | Model | Rationale |
-|------|-------|-----------|
+| --- | --- | --- |
 | **Orchestrator** | Claude Opus 4.6 | Highest reasoning capability. Owns session-level decisions, intent interpretation, project switching. Needs deep understanding of user goals and long-term context. Worth the cost since it runs infrequently. |
 | **Narrator** | Gemini 2.5 Flash | Fast, cheap, high-throughput. Memory compression and summarization is a well-defined task that doesn't require frontier reasoning. Runs frequently—cost and latency matter. |
 | **TeamLead** | GPT-5.2 Thinking High | Strong planning and decomposition. Needs to analyze tasks, design Work Item DAGs, set acceptance criteria, and decide which specialist roles to hire. Thinking mode gives it structured reasoning for upfront planning. |
