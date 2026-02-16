@@ -36,7 +36,7 @@
 
 | Tool | Type | Models | Agent Architecture | Memory | Command Fast-Pass | Pricing | Benchmark |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Claude Code** (Anthropic) | CLI | Anthropic only | Recursive subagents (up to 7 parallel; unreleased Swarms) | Hierarchical CLAUDE.md + Auto Memory + Subagent Memory; compaction at ~95% capacity | Permission allowlist (closest analog) | $20-200/mo | 80.9% SWE-bench |
+| **Claude Code** (Anthropic) | CLI | Anthropic only | Recursive subagents (up to 7 parallel; unreleased Swarms) | Hierarchical CLAUDE.md + Auto Memory + Subagent Memory; compaction at \~95% capacity | Permission allowlist (closest analog) | $20-200/mo | 80.9% SWE-bench |
 | **Codex CLI** (OpenAI) | Open-source Rust CLI | OpenAI family + Ollama local models | Flat agent (multi-agent via external Agents SDK + MCP) | AGENTS.md + session resume | No | $20-200/mo or API | N/A |
 | **Aider** | Open-source Python CLI | Most model-agnostic (any LLM) | Flat; "architect mode" pairs 2 models | Git-centric (no cross-session persistence) | No | Free (pay LLM API) | 64% (architect mode) |
 | **Cursor** | VS Code fork + CLI (Jan 2026) | 8+ models incl. proprietary Composer | Recursive subagents + background agents; Planner/Worker/Judge pattern | .cursorrules + codebase indexing (Turbopuffer vector DB, Merkle tree syncing) | N/A | $60-200/mo credits | N/A |
@@ -46,7 +46,7 @@
 | **Amp** (Sourcegraph) | CLI + IDE | Multi-model | "Deep mode" extended reasoning; built-in code review agent | Session-based | No | Free ad-supported tier | N/A |
 | **Warp AI** | Rust GPU-rendered terminal | Multi-model (OpenAI, Anthropic, Google) | "Full Terminal Control" — agent interacts with live processes | Session-based | No (terminal replacement, not agent) | Free tier + paid | N/A |
 | **Devin** (Cognition) | Cloud VM (terminal+editor+browser) | Proprietary | Full autonomous environment | Cloud-persistent | N/A | $500/mo | N/A |
-| **Slate Agent** | **C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
+| **Slate Agent** | **C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (&lt;10ms overhead)** | **Free (pay LLM API)** | **TBD** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
 
@@ -59,8 +59,8 @@
 | Priority | Goal | Success Metric | Target |
 | --- | --- | --- | --- |
 | **P0** | Shell plugin + daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
-| **P0** | Command fast-pass with near-zero latency | Recognized commands execute in <10ms overhead vs raw shell | Phase 1 complete |
-| **P0** | Single-model agent loop (Orchestrator -> Engineer -> output) | Natural language task -> file edits + test runs working | Phase 2 complete |
+| **P0** | Command fast-pass with near-zero latency | Recognized commands execute in &lt;10ms overhead vs raw shell | Phase 1 complete |
+| **P0** | Single-model agent loop (Orchestrator -&gt; Engineer -&gt; output) | Natural language task -&gt; file edits + test runs working | Phase 2 complete |
 | **P0** | Work Item DAG with concurrent scheduling | Independent Work Items execute in parallel; dependencies enforced | Phase 3 complete |
 | **P1** | Multi-model dynamic assignment | TeamLead selects model per Work Item from catalog | Phase 4 complete |
 | **P1** | Bounded memory with Narrator curation | Context persists across sessions; stays within size caps | Phase 4 complete |
@@ -72,12 +72,12 @@
 
 | KPI | Baseline (no tool) | Target |
 | --- | --- | --- |
-| Command execution overhead | 0ms (raw shell) | <10ms for fast-pass |
-| Time-to-first-token (AI response) | N/A | <500ms streaming |
+| Command execution overhead | 0ms (raw shell) | &lt;10ms for fast-pass |
+| Time-to-first-token (AI response) | N/A | &lt;500ms streaming |
 | Work Item throughput (concurrent) | 1 (sequential) | 4+ parallel workers |
-| Memory footprint (daemon) | N/A | <50MB resident |
-| Context persistence accuracy | 0% (no memory) | >90% relevant recall |
-| Multi-agent token overhead vs single agent | 1x | <8x (industry avg is ~15x) |
+| Memory footprint (daemon) | N/A | &lt;50MB resident |
+| Context persistence accuracy | 0% (no memory) | &gt;90% relevant recall |
+| Multi-agent token overhead vs single agent | 1x | &lt;8x (industry avg is \~15x) |
 
 ---
 
@@ -150,8 +150,8 @@ The following are **not** in scope for the MVP or near-term roadmap:
 ### FR-003: Command Fast-Pass
 
 - Build command index on startup from: PATH executables, shell builtins, aliases, functions
-- Store in hash map: command name -> type + path/builtin + completion hints
-- Classify input: recognized command -> execute immediately; unknown -> route to agent mode
+- Store in hash map: command name -&gt; type + path/builtin + completion hints
+- Classify input: recognized command -&gt; execute immediately; unknown -&gt; route to agent mode
 - Update index incrementally when PATH or aliases change
 - Provide completion hints to shell plugin for autocomplete
 
@@ -186,7 +186,7 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 - Each Work Item contains: goal, acceptance criteria, inputs/constraints, dependencies, outputs, assigned role, model_id, risk level, budgets (token + cost caps)
 - Work Items form a DAG (directed acyclic graph)
 - Scheduler runs Work Items concurrently via worker thread pool, respecting dependencies
-- Work Item states: pending -> running -> completed | failed | blocked
+- Work Item states: pending -&gt; running -&gt; completed | failed | blocked
 - Outputs are stored as artifacts in Shared Project State
 - Budget enforcement: Work Items that exceed token or cost budget are paused and escalated to TeamLead
 
@@ -211,9 +211,10 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 **Compression strategy (MemGPT/Letta-informed)**:
 
 The Narrator should implement MemGPT-style bounded memory management:
+
 - **Cognitive triage**: The Narrator LLM evaluates the future value of each piece of information before deciding what to keep, compress, or evict. Approximately 70% of conversational messages should be evicted to maintain continuity on long tasks.
-- **Recursive summarization**: When memory approaches capacity, older entries are recursively summarized into increasingly compressed forms. Core memory blocks default to ~2,000 characters each (MemGPT convention), though Slate Agent's 64KB/128KB caps are appropriate for a coding context.
-- **Preservation priorities**: Architectural decisions, unresolved bugs, user-stated preferences, and project conventions are high-value and should resist eviction. This mirrors Claude Code's compaction behavior (preserves architectural decisions, keeps 5 most recently accessed files, compacts at ~95% of ~33,000-token buffer).
+- **Recursive summarization**: When memory approaches capacity, older entries are recursively summarized into increasingly compressed forms. Core memory blocks default to \~2,000 characters each (MemGPT convention), though Slate Agent's 64KB/128KB caps are appropriate for a coding context.
+- **Preservation priorities**: Architectural decisions, unresolved bugs, user-stated preferences, and project conventions are high-value and should resist eviction. This mirrors Claude Code's compaction behavior (preserves architectural decisions, keeps 5 most recently accessed files, compacts at \~95% of \~33,000-token buffer).
 - **No vector DB for MVP**: Unlike Cursor (Turbopuffer vector DB + Merkle trees for re-indexing), Slate Agent's bounded text memory with Narrator curation is simpler and sufficient for the terminal-native use case. Vector-based RAG can be added later if recall accuracy falls below target.
 
 ### FR-008: Shared Project State
@@ -233,6 +234,7 @@ The Narrator should implement MemGPT-style bounded memory management:
 - Configurable privacy settings (e.g., don't send command output to LLM)
 
 **Commands requiring confirmation** (industry consensus):
+
 - Destructive file operations: `rm -rf`, `chmod 777`, recursive deletes
 - Git destructive ops: `git push --force`, `git reset --hard`, `git clean -f`, `git branch -D`
 - Database destructive ops: `DROP TABLE`, `DROP DATABASE`, `TRUNCATE`
@@ -243,6 +245,7 @@ The Narrator should implement MemGPT-style bounded memory management:
 - Irreversible operations: anything that cannot be undone
 
 **Sandboxing strategy** (informed by Claude Code 2025 approach):
+
 - Phase 6 MVP: confirmation prompts + allowlists (software controls)
 - Future: OS-level sandboxing using Linux bubblewrap or macOS seatbelt profiles, covering all spawned scripts and subprocesses. Claude Code's implementation reduced permission prompts by 84%.
 - Docker-based sandboxing as an advanced option: dedicated microVM with own Docker daemon, running the agent with full permissions inside (safe because isolated).
@@ -268,13 +271,16 @@ The Narrator should implement MemGPT-style bounded memory management:
   - Can be **auto-invoked** by the agent (LLM-based matching on description) or **manually** via `/skill-name`
   - Expand to full prompts injected into agent context
 - **Plugin-provided skills**: Plugins (FR-012) can also ship skills — these follow the same SKILL.md format and are discovered alongside user-defined skills
-- **Discovery order**: Built-in > Project-level > User-level > Plugin-installed
+- **Discovery order**: Built-in &gt; Project-level &gt; User-level &gt; Plugin-installed
 
 ### FR-012: Plugin System
 
 - **Plugin** is the top-level distribution unit that bundles one or more of: Commands, Skills, MCP Servers, Subagents, Hooks
+
 - A plugin can also expose just a single subcommand
+
 - **Directory structure** (following Claude Code pattern):
+
   ```
   my-plugin/
   ├── plugin.toml           # Required manifest (name, version, description, author, components)
@@ -286,18 +292,22 @@ The Narrator should implement MemGPT-style bounded memory management:
   ├── mcp.toml               # Optional MCP server declarations
   └── hooks.toml             # Optional lifecycle hooks
   ```
+
 - **Discovery hierarchy** (project overrides user):
+
   1. Project-level: `.slate-agent/plugins/`
   2. User-level: `~/.slate-agent/plugins/`
   3. Installed plugins: `~/.slate-agent/plugins/installed/`
+
 - **Plugin manifest** (`plugin.toml`):
+
   ```toml
   [plugin]
   name = "my-plugin"
   version = "1.0.0"
   description = "What it does"
   author = "Author Name"
-
+  
   [components]
   commands = "./commands"       # optional
   skills = "./skills"           # optional
@@ -305,33 +315,47 @@ The Narrator should implement MemGPT-style bounded memory management:
   mcp = "./mcp.toml"            # optional
   hooks = "./hooks.toml"        # optional
   ```
+
 - **Progressive disclosure**: Only plugin metadata loaded at startup; full skill/command content loaded on invocation
+
 - **MCP integration**: Plugins can declare MCP servers that the daemon starts and manages as child processes; communication via stdio transport (JSON-RPC 2.0 over stdin/stdout with newline-delimited messages)
+
 - **Commands**: Markdown files with optional YAML frontmatter (description, argument-hint); invoked via `/command-name`; support positional args ($1, $2)
+
 - **Skills**: Directory-based with SKILL.md; can bundle supporting files; auto-invoked by agent based on description match OR manually via `/skill-name`
+
 - **Hooks**: Lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact, SessionEnd); shell commands executed at each event
+
 - **Note**: Built-in skills (commit, plan, tasks, help, history) are NOT plugins — they are hardcoded in the daemon (see FR-011). Plugins extend the system with additional capabilities.
 
 ### FR-013: MCP Client
 
 - Native C++ MCP client for connecting to external MCP servers
+
 - **Transport support**: stdio (subprocess spawning) and HTTP/SSE (remote servers)
+
 - **Protocol**: JSON-RPC 2.0; supports `initialize`, `tools/list`, `tools/call`, `ping` lifecycle
+
 - **Tool discovery**: Query connected MCP servers for available tools; tools surfaced to agent system alongside built-in tools (FR-006)
+
 - **Lifecycle management**: Daemon spawns MCP server subprocesses, monitors health via `ping`, graceful shutdown (close stdin → SIGTERM → SIGKILL); process groups for cleanup
+
 - **Configuration** (`mcp.toml`):
+
   ```toml
   [servers.filesystem]
   transport = "stdio"
   command = "npx"
   args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
-
+  
   [servers.remote-api]
   transport = "http"
   url = "https://api.example.com/mcp"
   headers = { Authorization = "Bearer ${API_KEY}" }
   ```
+
 - **C++ implementation**: Use cpp-mcp library or implement minimal client using nlohmann/json + subprocess management
+
 - **Lazy loading**: Don't load all tool schemas upfront; discover on-demand to minimize context token usage
 
 ---
@@ -403,7 +427,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Work Item data structure (goal, acceptance criteria, dependencies, outputs, state, token/cost budgets)
 - DAG construction: agent produces a plan as a set of Work Items with dependency edges
 - Scheduler: Taskflow-based concurrent execution respecting dependencies
-- Work Item state machine: pending -> running -> completed | failed
+- Work Item state machine: pending -&gt; running -&gt; completed | failed
 - Artifact storage: each Work Item's output stored in Shared Project State
 - User-visible progress: streaming status of Work Items as they execute
 - Budget enforcement: token and cost caps per Work Item
@@ -523,12 +547,12 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| **ai-sdk-cpp maturity** — ClickHouse SDK exists (~134 stars) and works for OpenAI + Anthropic with streaming + tool calling, but Google/Cohere not yet supported. C++20 with patched nlohmann/json. | Medium | High | Evaluate SDK early in Phase 2. It is the most complete C++ LLM SDK available. For unsupported providers, extend with direct HTTP (libcurl + cpr + custom SSE parser). llama.cpp server also supports OpenAI-compatible + Anthropic Messages API as a local fallback. |
+| **ai-sdk-cpp maturity** — ClickHouse SDK exists (\~134 stars) and works for OpenAI + Anthropic with streaming + tool calling, but Google/Cohere not yet supported. C++20 with patched nlohmann/json. | Medium | High | Evaluate SDK early in Phase 2. It is the most complete C++ LLM SDK available. For unsupported providers, extend with direct HTTP (libcurl + cpr + custom SSE parser). llama.cpp server also supports OpenAI-compatible + Anthropic Messages API as a local fallback. |
 | **Shell plugin complexity** — hooking into Zsh/Bash input pipeline is fragile across versions | Medium | High | Start with Zsh only; use `add-zsh-hook` (never raw assignment); test ZLE widget chaining; test on macOS + common Linux distros. Bash via bash-preexec library. |
-| **Multi-agent token costs** — multi-agent systems use ~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
+| **Multi-agent token costs** — multi-agent systems use \~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
 | **Lock contention in multi-agent coordination** — Cursor's reader-writer locks failed; agents held locks too long, 20 agents degraded to throughput of 2-3 | Medium | High | Use single-writer ownership pattern instead of reader-writer locks. One agent owns writes to a resource; others read. Role-based separation (Planner/Worker/Judge) reduces contention by design. |
 | **Multi-model latency** — orchestrating multiple LLM calls adds overhead | Medium | Medium | Keep fast-pass path completely AI-free; pipeline model calls where possible; cache model selections |
-| **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; ~70% eviction rate for conversational messages |
+| **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; \~70% eviction rate for conversational messages |
 | **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Taskflow library (battle-tested, header-only C++20) instead of hand-rolling scheduler; composable sub-taskflows for recursive decomposition |
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
 | **Security of executed commands** — agent could run destructive commands | Low | Critical | Risk classification + confirmation prompts (Phase 6); allowlists; audit trail; never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt) |
@@ -544,7 +568,7 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | Build system | CMake (primary), Bazel (optional) | CMake is more widely supported; Bazel for future monorepo needs |
 | IPC | Unix domain socket (`SOCK_STREAM` + newline-delimited JSON) | Low-latency, well-supported, no network overhead; kqueue/epoll for non-blocking I/O. Consider Flow-IPC for production hardening. |
 | Config format | TOML | Human-readable, well-supported in C++, good for nested config (model catalog) |
-| LLM SDK | ai-sdk-cpp (ClickHouse) | ~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. Uses patched nlohmann/json. |
+| LLM SDK | ai-sdk-cpp (ClickHouse) | \~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. Uses patched nlohmann/json. |
 | LLM SDK fallback | Direct HTTP via libcurl + cpr + custom SSE parser | For providers not yet in ai-sdk-cpp. cpr ("C++ Requests") is a modern libcurl wrapper. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
 | DAG scheduler | Taskflow | Header-only C++20, work-stealing scheduler, conditional tasking, composable sub-taskflows, built-in profiler. `tf::Executor` + `tf::Taskflow` with `precede()`/`succeed()`. Up to 29% faster than industrial systems. |
 | Terminal rendering | cmark-gfm + tree-sitter | cmark-gfm (GitHub's CommonMark C impl) for markdown parsing; tree-sitter for syntax highlighting in code blocks. Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. |
@@ -554,7 +578,7 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | Memory architecture | Bounded text with Narrator curation (MemGPT-informed) | 64KB global + 128KB per project caps. Cognitive triage + recursive summarization. No vector DB for MVP (add later if needed). |
 | Plugin format | TOML manifest + directory convention | Follows Claude Code pattern; TOML consistent with rest of config |
 | MCP client | cpp-mcp or custom (nlohmann/json + subprocess) | JSON-RPC 2.0 over stdio; cpp-mcp is most complete C++ MCP library |
-| Plugin discovery | Hierarchical (project > user > installed) | Project-level overrides enable per-repo customization |
+| Plugin discovery | Hierarchical (project &gt; user &gt; installed) | Project-level overrides enable per-repo customization |
 
 ---
 

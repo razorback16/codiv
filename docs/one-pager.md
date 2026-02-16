@@ -1,5 +1,7 @@
 ## One-pager: C++ Terminal Coding Agent (Claude Code–style) using ai-sdk-cpp
 
+**Version**: 1.0 **Date**: 2026-02-10 **Author**: Subhagato **Status**: Draft
+
 ### Goal
 
 A **terminal-native** coding agent for **bash/zsh** that can:
