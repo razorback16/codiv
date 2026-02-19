@@ -1,6 +1,6 @@
 # Slate Agent — Product Requirements Document
 
-**Version**: 1.1 **Date**: 2026-02-15 **Author**: Subhagato **Status**: Draft
+**Version**: 1.3 **Date**: 2026-02-19 **Author**: Subhagato **Status**: Draft
 
 ---
 
@@ -46,7 +46,7 @@
 | **Amp** (Sourcegraph) | CLI + IDE | Multi-model | "Deep mode" extended reasoning; built-in code review agent | Session-based | No | Free ad-supported tier | N/A |
 | **Warp AI** | Rust GPU-rendered terminal | Multi-model (OpenAI, Anthropic, Google) | "Full Terminal Control" — agent interacts with live processes | Session-based | No (terminal replacement, not agent) | Free tier + paid | N/A |
 | **Devin** (Cognition) | Cloud VM (terminal+editor+browser) | Proprietary | Full autonomous environment | Cloud-persistent | N/A | $500/mo | N/A |
-| **Slate Agent** | **C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (&lt;10ms overhead)** | **Free (pay LLM API)** | **TBD** |
+| **Slate Agent** | **C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
 
@@ -59,25 +59,26 @@
 | Priority | Goal | Success Metric | Target |
 | --- | --- | --- | --- |
 | **P0** | Shell plugin + daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
-| **P0** | Command fast-pass with near-zero latency | Recognized commands execute in &lt;10ms overhead vs raw shell | Phase 1 complete |
-| **P0** | Single-model agent loop (Orchestrator -&gt; Engineer -&gt; output) | Natural language task -&gt; file edits + test runs working | Phase 2 complete |
+| **P0** | Command fast-pass with near-zero latency | Recognized commands execute in <10ms overhead vs raw shell | Phase 1 complete |
+| **P0** | Single-model agent loop (Orchestrator → Engineer → output) | Natural language task → file edits + test runs working | Phase 2 complete |
+| **P1** | Basic safety controls (risk classification, confirmation prompts) | Destructive commands require confirmation; no auto-execution of critical-risk commands | Phase 2 complete |
 | **P0** | Work Item DAG with concurrent scheduling | Independent Work Items execute in parallel; dependencies enforced | Phase 3 complete |
 | **P1** | Multi-model dynamic assignment | TeamLead selects model per Work Item from catalog | Phase 4 complete |
-| **P1** | Bounded memory with Narrator curation | Context persists across sessions; stays within size caps | Phase 4 complete |
+| **P1** | Bounded memory with Narrator curation | Context persists across sessions; stays within size caps | Phase 5 complete |
 | **P1** | Reviewer gating on Work Item outputs | Artifacts pass review before being applied | Phase 4 complete |
 | **P2** | Recursive TeamLead deployment | TeamLead can spawn sub-TeamLeads for complex decomposition | Phase 5+ |
-| **P2** | Skill system (slash commands) | Users can define and invoke custom skills | Phase 5+ |
+| **P2** | Unified tool system (binary + prompt tools, registry, MCP bridge) | Users can install, create, and invoke tools; MCP servers bridged as tools | Phase 6 complete |
 
 ### Key Performance Indicators
 
 | KPI | Baseline (no tool) | Target |
 | --- | --- | --- |
-| Command execution overhead | 0ms (raw shell) | &lt;10ms for fast-pass |
-| Time-to-first-token (AI response) | N/A | &lt;500ms streaming |
+| Command execution overhead | 0ms (raw shell) | <10ms for fast-pass |
+| Time-to-first-token (AI response) | N/A | <500ms streaming |
 | Work Item throughput (concurrent) | 1 (sequential) | 4+ parallel workers |
-| Memory footprint (daemon) | N/A | &lt;50MB resident |
-| Context persistence accuracy | 0% (no memory) | &gt;90% relevant recall |
-| Multi-agent token overhead vs single agent | 1x | &lt;8x (industry avg is \~15x) |
+| Memory footprint (daemon) | N/A | <50MB resident |
+| Context persistence accuracy | 0% (no memory) | >90% relevant recall |
+| Multi-agent token overhead vs single agent | 1x | <8x (industry avg is \~15x) |
 
 ---
 
@@ -88,7 +89,7 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - **GUI or IDE integration** — this is terminal-only by design
 - **Fish shell support** — Zsh and Bash only for now
 - **Voice agent integration** — text input only
-- **MCP server hosting** — Slate Agent is an MCP client, not an MCP server (may add later)
+- **MCP server hosting** — Slate Agent bridges MCP servers as tools (MCP client), but does not host/expose its own MCP server (may add later)
 - **Multi-model forked work trees** — deferred until real usage patterns emerge
 - **Backpressure system** — deferred
 - **Scoped capability tokens** — deferred
@@ -150,8 +151,8 @@ The following are **not** in scope for the MVP or near-term roadmap:
 ### FR-003: Command Fast-Pass
 
 - Build command index on startup from: PATH executables, shell builtins, aliases, functions
-- Store in hash map: command name -&gt; type + path/builtin + completion hints
-- Classify input: recognized command -&gt; execute immediately; unknown -&gt; route to agent mode
+- Store in hash map: command name → type + path/builtin + completion hints
+- Classify input: recognized command → execute immediately; unknown → route to agent mode
 - Update index incrementally when PATH or aliases change
 - Provide completion hints to shell plugin for autocomplete
 
@@ -186,11 +187,13 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 - Each Work Item contains: goal, acceptance criteria, inputs/constraints, dependencies, outputs, assigned role, model_id, risk level, budgets (token + cost caps)
 - Work Items form a DAG (directed acyclic graph)
 - Scheduler runs Work Items concurrently via worker thread pool, respecting dependencies
-- Work Item states: pending -&gt; running -&gt; completed | failed | blocked
+- Work Item states: pending → running → completed | failed | blocked
 - Outputs are stored as artifacts in Shared Project State
 - Budget enforcement: Work Items that exceed token or cost budget are paused and escalated to TeamLead
 
-### FR-006: Tool System
+### FR-006: Built-in Tools
+
+The following tools are **built-in** — compiled into the daemon binary, always available regardless of installed tool packages:
 
 - `Bash`: shell command execution with timeout, background support
 - `Read`: file content retrieval with line range support
@@ -200,6 +203,8 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 - `Grep`: content search (ripgrep-style)
 - `WebFetch`: URL content retrieval
 - `Task`: sub-agent spawning for complex subtasks
+
+External tools (binary and prompt) are discovered via `SLATE_TOOLS_PATH` and present the same interface to the agent (see FR-011, FR-012). All tools — built-in and external — expose `--help` and optionally `--agent-guide` for progressive loading (Tier 0 → Tier 2), so the agent interacts with them uniformly.
 
 ### FR-007: Memory System
 
@@ -246,8 +251,8 @@ The Narrator should implement MemGPT-style bounded memory management:
 
 **Sandboxing strategy** (informed by Claude Code 2025 approach):
 
-- Phase 6 MVP: confirmation prompts + allowlists (software controls)
-- Future: OS-level sandboxing using Linux bubblewrap or macOS seatbelt profiles, covering all spawned scripts and subprocesses. Claude Code's implementation reduced permission prompts by 84%.
+- Phase 2 MVP: basic risk classification + confirmation prompts + allowlists (software controls)
+- Phase 7: OS-level sandboxing using Linux bubblewrap or macOS seatbelt profiles, covering all spawned scripts and subprocesses. Claude Code's implementation reduced permission prompts by 84%.
 - Docker-based sandboxing as an advanced option: dedicated microVM with own Docker daemon, running the agent with full permissions inside (safe because isolated).
 
 **Autonomy-Capability tradeoff**: High-functionality agents (broad tool access) require constrained autonomy (human approval). High-autonomy agents (fewer prompts) require sandboxed functionality (OS-level isolation). Slate Agent starts with the first model and moves toward the second as sandboxing matures.
@@ -261,102 +266,86 @@ The Narrator should implement MemGPT-style bounded memory management:
 - Dynamic worker assignment: TeamLead selects model per Work Item based on complexity/capability/cost
 - User override: `[roles.default_worker]` to force a single model for all workers
 
-### FR-011: Skill System
+### FR-011: Unified Tool System (Skills absorbed into Tools)
 
-- **Built-in skills** are first-class, hardcoded capabilities — not plugins: `/commit`, `/plan`, `/tasks`, `/help`, `/history`
-  - Compiled into the daemon binary; always available regardless of plugin state
-  - Cannot be overridden or disabled by plugins
-- **User-defined skills** via `~/.slate-agent/skills/` (user-level) or `.slate-agent/skills/` (project-level)
-  - Use **SKILL.md** format with YAML frontmatter (`name`, `description`, `allowed-tools`, `model`)
-  - Can be **auto-invoked** by the agent (LLM-based matching on description) or **manually** via `/skill-name`
-  - Expand to full prompts injected into agent context
-- **Plugin-provided skills**: Plugins (FR-012) can also ship skills — these follow the same SKILL.md format and are discovered alongside user-defined skills
-- **Discovery order**: Built-in &gt; Project-level &gt; User-level &gt; Plugin-installed
+*Note: This FR has been redesigned per the [Unified Tool Model](../design-docs/unified-tool-model-design.md). Skills are no longer a separate concept — they are prompt tools (tools without a binary).*
 
-### FR-012: Plugin System
+- **Built-in skills** remain first-class, hardcoded capabilities: `/commit`, `/plan`, `/tasks`, `/help`, `/history`
+  - Compiled into the daemon binary; always available regardless of installed tools
+  - Can be overridden by project-level or user-level aliases in config (see design doc Section 8)
+- **Prompt tools** replace user-defined skills and plugin-provided skills
+  - A prompt tool is a tool package with `tool.toml` (including a `[skill]` section) + `guide.md` (expertise prompt) — no binary required
+  - The daemon synthesizes `--help` and `--agent-guide` from the manifest and guide file
+  - Can be **auto-invoked** by the agent (relevance matching on `[tool] description`) or **manually** via `/tool-name`
+  - Support bundled resources: `scripts/` (executable helpers), `references/` (on-demand docs), `assets/` (output files)
+  - Support `[skill.inject]` for dynamic context injection (shell commands run at Tier 2 loading, subject to same safety controls as Bash tool)
+  - Execution model: `inline` (inject into current context) or `fork` (sub-session via Task tool pattern)
+- **Skill import**: see FR-012 (`slate import skill`) for converting Claude Code SKILL.md format to Slate tool packages
 
-- **Plugin** is the top-level distribution unit that bundles one or more of: Commands, Skills, MCP Servers, Subagents, Hooks
+### FR-012: Tool Registry & Distribution
 
-- A plugin can also expose just a single subcommand
+*Redesigned per the [Unified Tool Model](../design-docs/unified-tool-model-design.md). The original plugin bundle with 6 component types is replaced by the tool package primitive.*
 
-- **Directory structure** (following Claude Code pattern):
-
+- **Tool package** is the single distribution unit: `tool.toml` manifest + either a `bin/` directory (binary tool) or `guide.md` + bundled resources (prompt tool)
+- **Registry CLI**:
+  ```bash
+  slate install <tool>              # install from registry
+  slate install mcp:<package>       # install MCP server as a tool (bridge)
+  slate install ./path/to/tool      # install from local path
+  slate import skill ./path         # convert Claude Code skill to Slate tool
+  slate remove <tool>               # uninstall
+  slate list                        # show installed tools
+  slate update [tool]               # update one or all
+  slate search "query"              # search registry (remote)
+  slate tools search "query"        # search installed tools (local)
   ```
-  my-plugin/
-  ├── plugin.toml           # Required manifest (name, version, description, author, components)
-  ├── commands/              # Optional slash commands (*.md files)
-  ├── skills/                # Optional skills (subdirectories with SKILL.md)
-  │   └── skill-name/
-  │       └── SKILL.md
-  ├── agents/                # Optional subagent definitions (*.md)
-  ├── mcp.toml               # Optional MCP server declarations
-  └── hooks.toml             # Optional lifecycle hooks
-  ```
-
-- **Discovery hierarchy** (project overrides user):
-
-  1. Project-level: `.slate-agent/plugins/`
-  2. User-level: `~/.slate-agent/plugins/`
-  3. Installed plugins: `~/.slate-agent/plugins/installed/`
-
-- **Plugin manifest** (`plugin.toml`):
-
+- **Discovery via `SLATE_TOOLS_PATH`** (colon-separated, first match wins):
+  1. Project-level: `.slate-agent/tools/`
+  2. User-level: `~/.slate-agent/tools/`
+  3. System-level: `/usr/local/share/slate-agent/tools/`
+- **Hooks** are tool invocations bound to lifecycle events (not a separate concept):
   ```toml
-  [plugin]
-  name = "my-plugin"
-  version = "1.0.0"
-  description = "What it does"
-  author = "Author Name"
-  
-  [components]
-  commands = "./commands"       # optional
-  skills = "./skills"           # optional
-  agents = "./agents"           # optional
-  mcp = "./mcp.toml"            # optional
-  hooks = "./hooks.toml"        # optional
+  [[hooks]]
+  event = "pre-commit"
+  tool = "lint-staged"
+  args = ["--config", ".lintstagedrc"]
   ```
+  Available events: `session-start`, `session-end`, `pre-tool-use`, `post-tool-use`, `pre-commit`, `post-task`, `pre-compact`
+- **Slash commands** are aliases to tool invocations (not a separate concept):
+  ```toml
+  [[aliases]]
+  name = "commit"
+  tool = "git-commit"
+  args = ["run"]
+  ```
+  Prompt tools with `user-invocable = true` auto-register as slash commands without explicit alias configuration
 
-- **Progressive disclosure**: Only plugin metadata loaded at startup; full skill/command content loaded on invocation
+### FR-013: MCP Bridge
 
-- **MCP integration**: Plugins can declare MCP servers that the daemon starts and manages as child processes; communication via stdio transport (JSON-RPC 2.0 over stdin/stdout with newline-delimited messages)
+*Redesigned per the [Unified Tool Model](../design-docs/unified-tool-model-design.md). MCP is an implementation detail — MCP servers appear as regular tools.*
 
-- **Commands**: Markdown files with optional YAML frontmatter (description, argument-hint); invoked via `/command-name`; support positional args ($1, $2)
-
-- **Skills**: Directory-based with SKILL.md; can bundle supporting files; auto-invoked by agent based on description match OR manually via `/skill-name`
-
-- **Hooks**: Lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact, SessionEnd); shell commands executed at each event
-
-- **Note**: Built-in skills (commit, plan, tasks, help, history) are NOT plugins — they are hardcoded in the daemon (see FR-011). Plugins extend the system with additional capabilities.
-
-### FR-013: MCP Client
-
-- Native C++ MCP client for connecting to external MCP servers
-
+- **Install**: `slate install mcp:<package>` creates a thin wrapper executable in `SLATE_TOOLS_PATH` that translates the standard tool interface (`--help`, `--agent-guide`, commands) to MCP protocol calls
+- **Transparent to agent**: The agent sees MCP-bridged tools identically to native tools — no special handling
 - **Transport support**: stdio (subprocess spawning) and HTTP/SSE (remote servers)
-
-- **Protocol**: JSON-RPC 2.0; supports `initialize`, `tools/list`, `tools/call`, `ping` lifecycle
-
-- **Tool discovery**: Query connected MCP servers for available tools; tools surfaced to agent system alongside built-in tools (FR-006)
-
-- **Lifecycle management**: Daemon spawns MCP server subprocesses, monitors health via `ping`, graceful shutdown (close stdin → SIGTERM → SIGKILL); process groups for cleanup
-
-- **Configuration** (`mcp.toml`):
-
+- **Protocol**: JSON-RPC 2.0; `--help` → MCP `tools/list`, commands → MCP `tools/call`, `--json-out` → passthrough
+- **State management**: Daemon manages MCP server subprocesses — spawned lazily on first tool call, stay alive for session, health-checked via MCP `ping`, shut down with daemon
+- **Configuration**:
   ```toml
-  [servers.filesystem]
+  # ~/.slate-agent/config.toml
+  [[tools.mcp]]
+  name = "filesystem"
+  package = "@modelcontextprotocol/server-filesystem"
+  args = ["/Users/subhagato/Development"]
   transport = "stdio"
-  command = "npx"
-  args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
-  
-  [servers.remote-api]
+
+  [[tools.mcp]]
+  name = "github"
+  package = "@modelcontextprotocol/server-github"
   transport = "http"
-  url = "https://api.example.com/mcp"
-  headers = { Authorization = "Bearer ${API_KEY}" }
+  url = "https://api.github.com/mcp"
+  env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
   ```
-
-- **C++ implementation**: Use cpp-mcp library or implement minimal client using nlohmann/json + subprocess management
-
-- **Lazy loading**: Don't load all tool schemas upfront; discover on-demand to minimize context token usage
+- **C++ implementation**: cpp-mcp library or minimal custom client (nlohmann/json + subprocess management)
 
 ---
 
@@ -405,8 +394,13 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Streaming token output back to terminal via shell plugin
 - Basic TOML config for API keys and model selection
 - Terminal markdown rendering: cmark-gfm for parsing + tree-sitter for syntax highlighting in code blocks; walk AST to emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
+- **Basic safety controls**:
+  - Basic risk classification for commands (low/medium/high/critical)
+  - Confirmation prompts for destructive commands (`rm -rf`, `git push --force`, `DROP TABLE`, etc. — see FR-009 for full list)
+  - Command allowlist/denylist (configurable via TOML config)
+  - No agent auto-execution of critical-risk commands
 
-**Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes.
+**Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
 **Dependencies**: Phase 1
 
@@ -427,7 +421,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Work Item data structure (goal, acceptance criteria, dependencies, outputs, state, token/cost budgets)
 - DAG construction: agent produces a plan as a set of Work Items with dependency edges
 - Scheduler: Taskflow-based concurrent execution respecting dependencies
-- Work Item state machine: pending -&gt; running -&gt; completed | failed
+- Work Item state machine: pending → running → completed | failed
 - Artifact storage: each Work Item's output stored in Shared Project State
 - User-visible progress: streaming status of Work Items as they execute
 - Budget enforcement: token and cost caps per Work Item
@@ -493,28 +487,42 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 ---
 
-### Phase 6: Plugins, Safety & Audit
+### Phase 6: Tool System
 
-**Goal**: Plugin architecture, MCP client integration, production-grade safety controls, audit trail, and UX polish.
+**Goal**: Unified tool system — registry, MCP bridge, prompt tool runtime, progressive loading, hooks, aliases.
 
 **Deliverables**:
 
-- Plugin architecture with manifest (`plugin.toml`), hierarchical discovery, and lazy loading
-- MCP client with stdio transport for local MCP servers
-- Built-in skills (commit, plan, tasks, help, history) hardcoded in daemon; not dependent on plugin system
-- Plugin CLI commands: `slate plugin install/remove/list/enable/disable`
-- Risk classification for commands and tool calls (low/medium/high/critical)
-- Confirmation prompts for high/critical risk actions (see FR-009 for comprehensive list)
-- Command/tool allowlist and denylist (configurable)
-- Full audit trail: all commands, outputs, diffs, decisions logged to disk
-- Privacy settings: configurable what gets sent to LLM
-- Error handling and graceful degradation (API failures, model timeouts)
-- Config validation and helpful error messages
-- Alignment with OWASP LLM Top 10 (LLM06: Excessive Agency) and NIST AI RMF
+- Tool registry with `slate install/remove/update/search` and `SLATE_TOOLS_PATH` discovery
+- MCP bridge: `slate install mcp:<pkg>` wraps MCP servers as tools, daemon manages lifecycle
+- Prompt tool runtime: daemon synthesizes `--help`/`--agent-guide` for tools without binaries; `guide.md` + bundled resources (`scripts/`, `references/`, `assets/`)
+- `slate import skill` for converting Claude Code skills to Slate tool packages
+- Built-in tools (commit, plan, tasks, help, history) hardcoded in daemon; always available
+- Hooks as event-bound tool invocations; aliases as slash command mappings
+- Progressive loading: Tier 0 (names) → Tier 1 (help) → Tier 2 (agent-guide) → Tier 3 (deep docs)
 
-**Testable outcome**: User types "rm -rf /" — agent flags as critical risk and requires confirmation. User types `/commit` — skill produces a commit message and stages changes. User installs a plugin via `slate plugin install ./my-plugin` and its commands become available. Audit log shows full history of session.
+**Testable outcome**: User types `/commit` — built-in tool produces a commit message and stages changes. User runs `slate install ./my-tool` and the tool becomes available. User runs `slate install mcp:@modelcontextprotocol/server-filesystem` and the MCP server appears as a regular tool.
 
 **Dependencies**: Phase 5
+
+---
+
+### Phase 7: Advanced Safety & Audit
+
+**Goal**: Production-grade safety controls, full audit trail, compliance alignment, and graceful degradation.
+
+**Deliverables**:
+
+- Full audit trail: all commands, outputs, diffs, decisions logged to disk
+- Privacy settings: configurable what gets sent to LLM
+- OS-level sandboxing roadmap (bubblewrap on Linux, seatbelt on macOS) covering all spawned scripts and subprocesses
+- Alignment with OWASP LLM Top 10 (LLM06: Excessive Agency) and NIST AI RMF
+- Error handling and graceful degradation (API failures, model timeouts)
+- Config validation and helpful error messages
+
+**Testable outcome**: Full session audit log on disk with every command, output, and decision. Privacy config excludes sensitive output from LLM context. Config with invalid model ID produces a clear error message pointing to the problem.
+
+**Dependencies**: Phase 6
 
 ---
 
@@ -524,7 +532,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 Phase 1 (Shell Foundation)
     |
     v
-Phase 2 (Single-Agent AI Loop)
+Phase 2 (Single-Agent AI Loop + Basic Safety)
     |
     v
 Phase 3 (Work Item DAG + Scheduler)
@@ -536,7 +544,10 @@ Phase 4 (Multi-Agent Roles + Multi-Model)
 Phase 5 (Memory + Project Context)
     |
     v
-Phase 6 (Plugins, Safety & Audit)
+Phase 6 (Tool System)
+    |
+    v
+Phase 7 (Advanced Safety & Audit)
 ```
 
 Each phase is a **vertical slice** — fully functional and testable on its own.
@@ -555,8 +566,8 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; \~70% eviction rate for conversational messages |
 | **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Taskflow library (battle-tested, header-only C++20) instead of hand-rolling scheduler; composable sub-taskflows for recursive decomposition |
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
-| **Security of executed commands** — agent could run destructive commands | Low | Critical | Risk classification + confirmation prompts (Phase 6); allowlists; audit trail; never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt) |
-| **1-week MVP timeline** — ambitious scope for AI-assisted development | High | Medium | Phases are incremental — even Phase 1+2 alone is a useful product; deprioritize Phases 5-6 if needed |
+| **Security of executed commands** — agent could run destructive commands | Low | Critical | Basic risk classification + confirmation prompts (Phase 2); allowlists; audit trail (Phase 7); never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt, Phase 7) |
+| **1-week MVP timeline** — ambitious scope for AI-assisted development | High | Medium | Phases are incremental — even Phase 1+2 alone is a useful product; deprioritize Phases 5-7 if needed |
 
 ---
 
@@ -576,62 +587,13 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | Storage location | `~/.slate-agent/` | Simple, user-local, follows common CLI tool conventions |
 | Agent coordination | Single-writer ownership (no reader-writer locks) | Cursor's lock-based approach failed at scale. One writer per resource, concurrent readers. Role separation reduces contention. |
 | Memory architecture | Bounded text with Narrator curation (MemGPT-informed) | 64KB global + 128KB per project caps. Cognitive triage + recursive summarization. No vector DB for MVP (add later if needed). |
-| Plugin format | TOML manifest + directory convention | Follows Claude Code pattern; TOML consistent with rest of config |
-| MCP client | cpp-mcp or custom (nlohmann/json + subprocess) | JSON-RPC 2.0 over stdio; cpp-mcp is most complete C++ MCP library |
-| Plugin discovery | Hierarchical (project &gt; user &gt; installed) | Project-level overrides enable per-repo customization |
+| Tool package format | `tool.toml` manifest + binary or `guide.md` + bundled resources | Single primitive for both binary and prompt tools; TOML consistent with rest of config |
+| MCP bridge | cpp-mcp or custom (nlohmann/json + subprocess) | JSON-RPC 2.0 over stdio; thin wrapper makes MCP servers appear as regular tools |
+| Tool discovery | `SLATE_TOOLS_PATH` (project > user > system) | First-match-wins, mirrors Unix `PATH` semantics; built-in tools always available regardless |
 
 ---
 
-## 10. Self-Score (100-Point Framework)
-
-### AI-Specific Optimization (25 pts)
-
-| Criterion | Score | Notes |
-| --- | --- | --- |
-| Multi-model strategy defined | 5/5 | Fixed roles + dynamic catalog + TeamLead selection; competitive landscape fully mapped |
-| Token/cost management | 5/5 | Budget fields on Work Items, cost_tier in catalog, demand-driven decomposition, 15x overhead acknowledged and mitigated |
-| Streaming/latency optimization | 5/5 | Fast-pass for commands, streaming for AI, concurrent execution |
-| Tool calling architecture | 5/5 | Claude Code-style tools, well-defined interfaces |
-| Context window management | 5/5 | Bounded memory + MemGPT-informed Narrator curation with cognitive triage + recursive summarization |
-| **Subtotal** | **25/25** |  |
-
-### Traditional PRD Core (25 pts)
-
-| Criterion | Score | Notes |
-| --- | --- | --- |
-| Problem statement (quantified) | 4/5 | Pain points identified with segments; could add more market data |
-| User personas (specific) | 5/5 | 3 distinct personas with clear pain/goal/success |
-| Functional requirements (complete) | 5/5 | 13 FRs covering all major capabilities including plugin system and MCP client, with research-backed design rationale |
-| Non-goals (explicit) | 5/5 | Clear boundaries, deferred features listed |
-| Competitive analysis | 5/5 | Comprehensive 11-tool comparison with architecture, pricing, benchmarks, and lessons learned |
-| **Subtotal** | **24/25** |  |
-
-### Implementation Clarity (30 pts)
-
-| Criterion | Score | Notes |
-| --- | --- | --- |
-| Phased delivery (dependency-ordered) | 6/6 | 6 phases, each a testable vertical slice, clear dependency chain |
-| Acceptance criteria per phase | 5/6 | "Testable outcome" for each phase; could be more granular |
-| Tech stack decisions justified | 6/6 | Expanded decision table with specific libraries, fallbacks, and research backing |
-| Risk mitigations actionable | 6/6 | Specific mitigations with research evidence (Cursor lock failure, ADAPT decomposition, MemGPT compression) |
-| Architecture clarity | 6/6 | Daemon + plugin + agent tree + DAG scheduler + coordination model well-defined with competitive validation |
-| **Subtotal** | **29/30** |  |
-
-### Completeness (20 pts)
-
-| Criterion | Score | Notes |
-| --- | --- | --- |
-| Config/infrastructure defined | 5/5 | TOML config, storage location, model catalog, IPC protocol |
-| Safety & security covered | 5/5 | Risk classification, comprehensive confirmation list, sandboxing roadmap, OWASP/NIST alignment |
-| Edge cases considered | 5/5 | Shell hook pitfalls, lock contention, token cost explosion, SDK provider gaps, streaming render diffing |
-| MVP vs future clearly separated | 5/5 | Deferred features list, phase boundaries, sandboxing progression |
-| **Subtotal** | **20/20** |  |
-
-### **Total: 98/100**
-
----
-
-## 11. Research Sources
+## 10. Research Sources
 
 - Anthropic (2025). Multi-agent research system with orchestrator-subagent architecture. 90.2% improvement over single-agent Opus.
 - Cursor engineering blog (2025-2026). Multi-agent coordination: reader-writer lock failure, Planner/Worker/Judge pattern.
@@ -646,11 +608,11 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 - OWASP LLM Top 10 (2025). LLM06: Excessive Agency.
 - NIST AI Risk Management Framework (AI RMF 1.0).
 - Claude Code documentation (Anthropic, 2025). Sandboxing, compaction, subagent architecture.
-- Claude Code plugin architecture (Anthropic, 2025-2026). Plugin manifests, skill system, command hierarchy, hook lifecycle.
+- Claude Code skill architecture (Anthropic, 2025-2026). Skill format, command hierarchy, hook lifecycle — informed unified tool model design.
 - Model Context Protocol specification (Anthropic, 2024-2025). JSON-RPC 2.0 based tool integration protocol.
 - cpp-mcp library. github.com/hkr04/cpp-mcp. C++ MCP client/server implementation.
 - cpr library. github.com/libcpr/cpr. C++ HTTP requests library.
 
 ---
 
-*PRD v1.1 for Slate Agent — a C++ terminal-native multi-model coding agent. Updated with competitive research, architecture validation, and technical implementation guidance.*
+*PRD v1.3 for Slate Agent — a C++ terminal-native multi-model coding agent. Updated with unified tool model (binary + prompt tools, registry, MCP bridge, hooks, aliases), phase restructuring (basic safety in Phase 2, 7 phases total), competitive research, architecture validation, and technical implementation guidance.*

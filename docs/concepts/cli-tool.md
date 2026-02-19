@@ -26,6 +26,23 @@ This collapses the entire 7-concept taxonomy into one:
 | Plugin | Package of CLI tools (npm-style) |
 | Agent/subagent | CLI tool that happens to call an LLM |
 
+## Binary tools vs prompt tools
+
+A tool can be implemented in two ways — both present the same interface to the agent:
+
+- **Binary tool**: Provides its own executable in `bin/`. The binary handles `--help` and `--agent-guide` directly. Bundled docs live in `docs/`.
+- **Prompt tool**: Has no binary — the daemon acts as the runtime. The tool is defined by `tool.toml` (with a `[skill]` section) + `guide.md` (the expertise prompt). The daemon synthesizes `--help` and `--agent-guide` from these files.
+
+Prompt tools can bundle three types of resources:
+
+| Directory | Purpose | Loading |
+| --- | --- | --- |
+| `scripts/` | Executable helpers (Python, Bash, etc.) | Executed at runtime via Bash, not loaded into context |
+| `references/` | Documentation for agent context | Loaded on-demand (Tier 3), maps to `--agent-guide <topic>` |
+| `assets/` | Output resources (templates, images) | Never loaded into context, used directly by path |
+
+This means Claude Code skills (SKILL.md + bundled resources) can be repackaged as Slate tools with minimal transformation: frontmatter → `tool.toml`, body → `guide.md`, bundled `scripts/`/`references/`/`assets/` stay unchanged.
+
 ## Hooks as event-triggered tools
 
 This fits cleanly. A hook is just a tool binding:
