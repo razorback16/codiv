@@ -1,13 +1,13 @@
 ## Why
 
-Developers need an intelligent terminal assistant that seamlessly integrates with their existing shell workflow. Rather than switching between a terminal and a separate AI interface, this agent acts as an extension to zsh/bash—interpreting both traditional commands and natural language instructions.
+Developers need an intelligent terminal assistant that seamlessly integrates with their existing shell workflow. Rather than switching between a terminal and a separate AI interface, this agent acts as a standalone terminal client—interpreting both traditional commands and natural language instructions.
 
 Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model access (streaming + tool calling), Slate Agent provides a Claude Code-like experience directly in the terminal with a clean separation between thinking (agents) and execution (worker pool).
 
 ## What We Build
 
-- **Shell plugin + daemon architecture**: Shell plugin for UX/context, C++ daemon for orchestration, memory, scheduling, and tool execution
-- **Command fast-pass**: Daemon-maintained command index for near-zero latency on recognized commands; agent mode only when needed
+- **`slate` binary + `slated` daemon architecture**: `slate` binary (per-terminal) with FTXUI terminal UI framework for three-zone display layout (status bar, scrollable main canvas with agent output blocks and task DAG tree, input bar), persistent bash co-process for user command execution, command index classifier; `slated` daemon (singleton) for orchestration, memory, scheduling, worker bash sessions (fresh bash per Work Item for parallel agent command execution), and env snapshot protocol. FlatBuffers IPC over Unix domain socket.
+- **Command fast-pass**: `slate`-maintained command index for near-zero latency on recognized commands; agent mode only when needed
 - **Work Item abstraction**: Single core unit for all tasks—goal, acceptance criteria, dependencies, outputs, risk level, budgets
 - **Tree of agents, graph of tasks**: 3 agent types (Orchestrator, Executor roles, Narrator) with a DAG scheduler for Work Items
 - **Role-based execution**: TeamLead decomposes tasks, Engineers execute, Reviewers gate—with optional Security/Perf/Researcher roles hired on demand
@@ -16,20 +16,25 @@ Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model 
 
 ## UX
 
-- Looks and behaves like a normal terminal
+- `slate` owns the terminal experience — looks and behaves like a normal shell
+- **FTXUI** owns the entire terminal: input, output rendering, layout, and colors
+- **Three-zone display layout** (no outer window border):
+  1. **Status Bar** (top): project path, git branch, active agent count, daemon status
+  2. **Main Canvas** (middle, scrollable): user command output inline (no border), task DAG tree with live status indicators, color-bordered agent output blocks per Work Item
+  3. **Input Bar** (bottom, sticky): history, tab completion, Ctrl+R search, multi-line, inline completion ghosts
 - Input auto-detection:
-  1. **Command mode**: recognized command → execute immediately
+  1. **Command mode**: recognized command → execute immediately via persistent bash co-process
   2. **Agent mode**: otherwise → plan + execute Work Items, stream progress, show diffs/results
 
 ## Capabilities
 
 ### Core Capabilities
 
-- `shell-plugin`: Zsh/Bash plugin that hooks into shell (intercept input, provide context—cwd, env allowlist, tty, history, last exit code) and streams output from the daemon. Hooks autocomplete using the daemon's command index.
+- `slate-binary`: Standalone C++ terminal client with **FTXUI** terminal UI framework. Three-zone display layout: status bar (top), scrollable main canvas with inline task DAG tree and color-bordered agent output blocks (middle), input bar with `Input()` + `CatchEvent()` for history, tab completion, and keybindings (bottom). Spawns persistent bash co-process (`bash --noediting -i`) via pty pair for user command execution. Maintains shell state (env vars, aliases, cwd) across commands. Provides context to daemon (cwd, env allowlist, tty, history, last exit code). Captures **env snapshot** on connect to `slated` (env vars, PATH, aliases, functions, cwd); refreshed on `cd`/`source`/manual `slate sync-env`. Interactive command passthrough (vim, htop, ssh → raw pty mode). Signal forwarding (Ctrl+C to bash child). Agent output rendered in color-coded blocks per Work Item.
 
-- `daemon`: Persistent C++ daemon that manages orchestration, memory, task graph, scheduling, tool execution, and the command cache. Communicates with the shell plugin via Unix domain socket.
+- `slated-daemon`: Persistent C++ daemon (singleton) that manages agent system, orchestration, memory, task graph, scheduling, and tool execution. Spawns **worker bash sessions** on demand — fresh bash process (`bash --noediting`) per Work Item, initialized from the client's env snapshot (env vars injected, aliases/functions sourced, cwd set), killed on Work Item completion. No reuse, no stale state. Multiple Work Items run their own bash processes concurrently (true parallelism). Communicates with slate clients via FlatBuffers over Unix domain socket. **Command execution routing**: user commands → `slate`'s persistent bash co-process; agent Bash tool calls → `slated`'s worker bash sessions. Bidirectional IPC carries env snapshots (slate→slated) and streaming worker output + confirmations (slated→slate).
 
-- `command-fast-pass`: Daemon builds and maintains a **command index** from PATH executables, builtins, aliases, and functions:
+- `command-fast-pass`: `slate` binary builds and maintains a **command index** from PATH executables, builtins, aliases, and functions:
 
   - Stores in a hash map: command → type + path/builtin + completion hints
   - Recognized input → run immediately with near-zero latency
@@ -119,7 +124,7 @@ For every user input:
 
 5. **Dynamic role hiring without complexity**: TeamLead decides scope—solo, multi-step, or with optional specialist roles—based on simple triggers rather than complex strategy selection.
 
-6. **Shell Plugin + Daemon separation**: Plugin handles UX/shell hooks; daemon handles AI/tools. Clean separation, no PTY complexity.
+6. **`slate` binary + `slated` daemon separation**: `slate` owns the terminal experience (FTXUI display, bash co-process, command routing, rendering); `slated` handles AI orchestration, memory, and task scheduling. Clean separation of concerns.
 
 7. **Command fast-pass**: Recognized commands execute immediately without AI round-trip. Command index provides both routing and autocomplete.
 
@@ -127,8 +132,8 @@ For every user input:
 
 ## Impact
 
-- **Dependencies**: ClickHouse ai-sdk-cpp (streaming + tool calling), C++20 compiler, Bazel or CMake
-- **Shell Integration**: Plugin files for Zsh/Bash, Unix domain socket IPC
+- **Dependencies**: ClickHouse ai-sdk-cpp, FTXUI, FlatBuffers, C++20 compiler, Bazel or CMake
+- **IPC**: FlatBuffers (4-byte length prefix + payload) over Unix domain socket between `slate` and `slated`
 - **API Keys**: Requires configuration for LLM provider API credentials
 - **User Environment**: Needs access to user's filesystem, ability to execute shell commands
 - **Storage**: Shared Project State + memory at \~/.slate-agent/ or XDG-compliant location
@@ -141,64 +146,82 @@ For every user input:
 │                           Slate Agent                                   │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐         │
-│  │ Shell Plugin │────▶│    Daemon    │────▶│  Command Index   │         │
-│  │ (zsh/bash)   │◀────│ (Unix Socket)│◀────│  (Fast-Pass)     │         │
-│  └──────────────┘     └──────────────┘     └──────────────────┘         │
-│                              │                      │                   │
-│                              ▼                      ▼                   │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │                       Agent System                           │       │
-│  │                                                              │       │
-│  │  ┌────────────────────────────────────────────────────────┐  │       │
-│  │  │ Orchestrator                                           │  │       │
-│  │  │ - Owns session + user preferences                      │  │       │
-│  │  │ - Project auto-switching (cwd/repo fingerprint)        │  │       │
-│  │  │ - Delegates to executor roles via Work Items           │  │       │
-│  │  └─────────────────────────┬──────────────────────────────┘  │       │
-│  │                            │ delegates                        │       │
-│  │  ┌─────────────────────────▼──────────────────────────────┐  │       │
-│  │  │ Executor Roles                                         │  │       │
-│  │  │ - Primary: TeamLead, Engineer, Reviewer                │  │       │
-│  │  │ - Optional: Researcher, Security, Perf                 │  │       │
-│  │  │ - TeamLead decomposes → Work Item DAG                  │  │       │
-│  │  │ - Engineer executes → produces artifacts               │  │       │
-│  │  │ - Reviewer gates → approve or create fix items         │  │       │
-│  │  └────────────────────────────────────────────────────────┘  │       │
-│  │                                                              │       │
-│  │  ┌────────────────────────────────────────────────────────┐  │       │
-│  │  │ Narrator / Memory Agent                                │  │       │
-│  │  │ - Compresses + curates memory                          │  │       │
-│  │  │ - Global memory (user habits) + Project memories       │  │       │
-│  │  │ - Produces state snapshots for Orchestrator            │  │       │
-│  │  └────────────────────────────────────────────────────────┘  │       │
-│  └──────────────────────────────────────────────────────────────┘       │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │ Scheduler + Worker Pool                                     │       │
-│  │ - Runs Work Item DAG concurrently                           │       │
-│  │ - Respects dependencies, budgets, risk policies             │       │
-│  └──────────────────────────────────────────────────────────────┘       │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │ Tools (Claude Code Style)                                    │       │
-│  │ Bash | Read | Write | Edit | Glob | Grep | WebFetch | Task   │       │
-│  └──────────────────────────────────────────────────────────────┘       │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │ Shared Project State                                         │       │
-│  │ ┌────────────┐  ┌────────────┐  ┌──────────────────────────┐ │       │
-│  │ │ Artifacts  │  │ Decisions  │  │ Task State (Work Items)  │ │       │
-│  │ │ (diffs,    │  │ (rationale │  │ (status + artifact ptrs) │ │       │
-│  │ │  logs,     │  │  for key   │  │                          │ │       │
-│  │ │  outputs)  │  │  choices)  │  │                          │ │       │
-│  │ └────────────┘  └────────────┘  └──────────────────────────┘ │       │
-│  └──────────────────────────────────────────────────────────────┘       │
-│                                                                         │
-│  ┌──────────────────────────────────────────────────────────────┐       │
-│  │ ai-sdk-cpp (ClickHouse)                                      │       │
-│  │ - Streaming LLM access + tool calling                        │       │
-│  └──────────────────────────────────────────────────────────────┘       │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │ slate binary (per-terminal)                                        │ │
+│  │                                                                    │ │
+│  │  ┌──────────────┐    ┌──────────────────┐    ┌─────────────────┐   │ │
+│  │  │    FTXUI     │    │ Persistent Bash  │    │ Command Index   │   │ │
+│  │  │ (terminal UI,│    │  Co-Process      │    │ (Fast-Pass)     │   │ │
+│  │  │  3-zone      │───▶│ (bash --noediting│◀──▶│ PATH + builtins │   │ │
+│  │  │  layout,     │    │  -i via pty)     │    │ + aliases       │   │ │
+│  │  │  rendering)  │    │                  │    │                 │   │ │
+│  │  └──────────────┘    └──────────────────┘    └─────────────────┘   │ │
+│  │         │                     ▲                                    │ │
+│  │         │                     │ tool execution requests            │ │
+│  │         ▼                     │ (bidirectional)                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │ FlatBuffers IPC (Unix domain socket)                         │  │ │
+│  │  │ 4-byte length prefix + FlatBuffer payload                    │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                              │                                          │
+│                              ▼                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │ slated daemon (singleton)                                          │ │
+│  │                                                                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │                       Agent System                           │  │ │
+│  │  │                                                              │  │ │
+│  │  │  ┌────────────────────────────────────────────────────────┐  │  │ │
+│  │  │  │ Orchestrator                                           │  │  │ │
+│  │  │  │ - Owns session + user preferences                      │  │  │ │
+│  │  │  │ - Project auto-switching (cwd/repo fingerprint)        │  │  │ │
+│  │  │  │ - Delegates to executor roles via Work Items           │  │  │ │
+│  │  │  └─────────────────────────┬──────────────────────────────┘  │  │ │
+│  │  │                            │ delegates                       │  │ │
+│  │  │  ┌─────────────────────────▼──────────────────────────────┐  │  │ │
+│  │  │  │ Executor Roles                                         │  │  │ │
+│  │  │  │ - Primary: TeamLead, Engineer, Reviewer                │  │  │ │
+│  │  │  │ - Optional: Researcher, Security, Perf                 │  │  │ │
+│  │  │  │ - TeamLead decomposes → Work Item DAG                  │  │  │ │
+│  │  │  │ - Engineer executes → produces artifacts               │  │  │ │
+│  │  │  │ - Reviewer gates → approve or create fix items         │  │  │ │
+│  │  │  └────────────────────────────────────────────────────────┘  │  │ │
+│  │  │                                                              │  │ │
+│  │  │  ┌────────────────────────────────────────────────────────┐  │  │ │
+│  │  │  │ Narrator / Memory Agent                                │  │  │ │
+│  │  │  │ - Compresses + curates memory                          │  │  │ │
+│  │  │  │ - Global memory (user habits) + Project memories       │  │  │ │
+│  │  │  │ - Produces state snapshots for Orchestrator            │  │  │ │
+│  │  │  └────────────────────────────────────────────────────────┘  │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │ Scheduler + Worker Pool                                      │  │ │
+│  │  │ - Runs Work Item DAG concurrently                            │  │ │
+│  │  │ - Respects dependencies, budgets, risk policies              │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │ Tools (Claude Code Style)                                    │  │ │
+│  │  │ Bash | Read | Write | Edit | Glob | Grep | WebFetch | Task   │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │ Shared Project State                                         │  │ │
+│  │  │ ┌────────────┐  ┌────────────┐  ┌──────────────────────────┐ │  │ │
+│  │  │ │ Artifacts  │  │ Decisions  │  │ Task State (Work Items)  │ │  │ │
+│  │  │ │ (diffs,    │  │ (rationale │  │ (status + artifact ptrs) │ │  │ │
+│  │  │ │  logs,     │  │  for key   │  │                          │ │  │ │
+│  │  │ │  outputs)  │  │  choices)  │  │                          │ │  │ │
+│  │  │ └────────────┘  └────────────┘  └──────────────────────────┘ │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                    │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │ ai-sdk-cpp (ClickHouse)                                      │  │ │
+│  │  │ - Streaming LLM access + tool calling                        │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -346,7 +369,7 @@ The Work Item's `model_id` is respected by the scheduler when spawning the worke
 
 ## MVP Definition
 
-- Shell plugin + daemon IPC working with streaming
+- `slate` binary + `slated` daemon IPC with FlatBuffers + streaming
 - Work Item DAG + scheduler + 3-agent loop (Orchestrator, Executors, Narrator)
 - Fast-pass command cache + autocomplete
 - Global + project memory with strict size limits and Narrator summarization
@@ -356,7 +379,7 @@ The Work Item's `model_id` is respected by the scheduler when spawning the worke
 
 The following are explicitly NOT in MVP:
 
-- Fish shell support
+- Fish/Zsh native mode — slate uses its own persistent bash; native shell integration not planned
 - Backpressure system (tool output, Work Item spawning)
 - Scoped capability tokens (session/cwd/repo permissions)
 - Circuit breaker with automatic tier fallback

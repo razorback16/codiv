@@ -1,6 +1,6 @@
 # Slate Agent — Product Requirements Document
 
-**Version**: 1.3 **Date**: 2026-02-19 **Author**: Subhagato **Status**: Draft
+**Version**: 1.5 **Date**: 2026-02-22 **Author**: Subhagato **Status**: Draft
 
 ---
 
@@ -58,7 +58,7 @@
 
 | Priority | Goal | Success Metric | Target |
 | --- | --- | --- | --- |
-| **P0** | Shell plugin + daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
+| **P0** | Slate binary + slated daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
 | **P0** | Command fast-pass with near-zero latency | Recognized commands execute in <10ms overhead vs raw shell | Phase 1 complete |
 | **P0** | Single-model agent loop (Orchestrator → Engineer → output) | Natural language task → file edits + test runs working | Phase 2 complete |
 | **P1** | Basic safety controls (risk classification, confirmation prompts) | Destructive commands require confirmation; no auto-execution of critical-risk commands | Phase 2 complete |
@@ -87,7 +87,7 @@
 The following are **not** in scope for the MVP or near-term roadmap:
 
 - **GUI or IDE integration** — this is terminal-only by design
-- **Fish shell support** — Zsh and Bash only for now
+- **Fish/Zsh native mode** — slate uses its own persistent bash co-process; native Fish/Zsh integration is not planned
 - **Voice agent integration** — text input only
 - **MCP server hosting** — Slate Agent bridges MCP servers as tools (MCP client), but does not host/expose its own MCP server (may add later)
 - **Multi-model forked work trees** — deferred until real usage patterns emerge
@@ -126,35 +126,62 @@ The following are **not** in scope for the MVP or near-term roadmap:
 
 ## 6. Functional Requirements
 
-### FR-001: Shell Plugin (Zsh/Bash)
+### FR-001: Slate Binary (Terminal Client)
 
-- Intercept user input at the shell level
-- Provide context to daemon: cwd, env allowlist, tty info, shell history, last exit code
-- Stream output from daemon back to terminal
-- Hook into shell autocomplete using daemon's command index
-- Support both inline and multi-line input
-- **Zsh implementation**: use `add-zsh-hook preexec` to capture commands, `precmd` for results; ZLE widget wrapping `accept-line` to intercept before execution
-- **Bash implementation**: use bash-preexec library for equivalent hooks
+- Standalone C++ binary (`slate`) as the user-facing terminal client
+- Uses **FTXUI** as the terminal UI framework — owns the entire terminal: input, output rendering, layout, and colors
+- **Three-zone display layout** (no outer window border — terminal edge is the border):
+  - **Zone 1 — Status Bar** (top, 1 line): project path, git branch, active agent count, daemon connection status
+  - **Zone 2 — Main Canvas** (middle, scrollable, flex): user command output (inline, no border), inline task DAG tree (live-updating, collapses to summary when done), color-bordered agent output blocks (per active Work Item, auto-collapse on completion, expandable with Enter)
+  - **Zone 3 — Input Bar** (bottom, sticky, grows upward for multi-line): FTXUI `Input()` component with `CatchEvent()` for history, tab completion, Ctrl+R search, multi-line (Ctrl+X), keybindings, inline completion ghosts, shortcut hints
+- **Agent output blocks**: color-bordered per agent role (see color scheme below), showing Work Item ID and streaming tool output. Auto-collapse to single-line summary on completion; Enter to expand. Focus mode: `Ctrl+F` expands single agent block to full canvas.
+- **Task DAG tree**: appears inline when a task starts, updates live with status indicators (● running, ◐ in review, ○ pending, ✓ done), collapses to summary when all items complete
+- **Scroll lock**: scrolling history doesn't jump on new output; "↓ N new lines" indicator when scrolled up
+- **Color scheme** for agent output blocks:
+  | Role | Color | Usage |
+  |------|-------|-------|
+  | Engineer | Cyan | Block border + header; dimmed cyan for stdout |
+  | Reviewer | Yellow | Block border + header; dimmed yellow for output |
+  | Security | Red | Block border + header |
+  | Researcher | Magenta | Block border + header |
+  | Perf | Blue | Block border + header |
+  | TeamLead | White/bold | Task tree entries |
+  | User commands | Default terminal color | No border, no prefix |
+  Multiple Engineers: cycle through cyan variants (cyan, bright cyan, teal) per Work Item ID.
+- Spawns a **persistent bash co-process** (`bash --noediting -i`) at startup via pty pair
+- Commands piped to bash co-process stdin; output read from pty with **sentinel-based boundary detection** (unique marker echoed after each command to detect output boundaries)
+- Maintains shell state continuity: env vars, aliases, cwd, `.bashrc` state persist across commands
+- User command output renders inline in the main canvas with no border, no prefix (feels like normal terminal)
+- **Interactive command passthrough**: commands like vim, htop, ssh detected and run in **raw pty mode** (slate suspends FTXUI rendering, passes terminal control to child)
+- **Signal forwarding**: Ctrl+C forwarded to bash co-process child process
+- Provides context to daemon: cwd, env allowlist, tty info, shell history, last exit code
+- Streams output from daemon back to terminal and renders in agent output blocks
+- Hooks into autocomplete via FTXUI `Input()` using command index
+- **Rendering**: declarative composition via FTXUI `vbox`, `hbox`, `flex`, `color()`, `border` — unified rendering loop for all display elements
 - **Communication**: Unix domain socket at well-known path (see FR-002)
-- **Pitfalls to avoid**: hook ordering conflicts (always use `add-zsh-hook`, never raw assignment); ZLE widget chaining (must call original widget after interception); no subprocesses in keystroke hooks (performance)
 
-### FR-002: Daemon (Persistent C++ Process)
+### FR-002: Daemon (Persistent C++ Process — `slated`)
 
-- Listen on Unix domain socket for shell plugin connections
-- Manage lifecycle: start on first shell plugin connection, stay resident, graceful shutdown
-- Handle multiple concurrent shell plugin sessions
+- Listen on Unix domain socket for slate client connections
+- Manage lifecycle: start on first slate client connection, stay resident, graceful shutdown
+- Handle multiple concurrent slate client sessions
 - Provide streaming responses (token-by-token for AI, chunked for command output)
-- **IPC protocol**: `SOCK_STREAM` with newline-delimited JSON; each chunk: `{type: "text_delta"|"tool_call"|"error"|"done", content, metadata}`
+- **Env snapshot protocol**: `slate` captures an env snapshot on connect to `slated` — env vars, PATH, aliases, shell functions, cwd. Refreshed on demand: auto-refresh on `cd`/`source`, manual via `slate sync-env`. Stored per-session in `slated` (each slate client has its own snapshot).
+- **Worker bash sessions**: `slated` spawns a **fresh bash process** (`bash --noediting`) per Work Item that needs shell execution. Each worker initialized from the latest env snapshot: env vars injected, aliases/functions sourced, cwd set. Worker killed when Work Item completes — no reuse, no stale state. Workers are non-interactive (pipe stdin/stdout/stderr, no pty needed). Bash startup is ~5-10ms — negligible vs LLM latency, no need for a warm pool. Multiple Work Items run their own bash processes concurrently (true parallelism).
+- **Command execution routing**:
+  - **User commands** → `slate`'s persistent bash co-process (interactive, stateful)
+  - **Agent Bash tool calls** → `slated`'s worker bash sessions (parallel, env-snapshot-initialized)
+  - **Bidirectional IPC** carries: env snapshots (slate→slated), streaming output from worker sessions + confirmation requests (slated→slate)
+- **IPC protocol**: `SOCK_STREAM` with **FlatBuffers** — 4-byte length prefix + FlatBuffer payload. Zero-copy field access, schema evolution, type-safe.
 - **I/O multiplexing**: kqueue (macOS) / epoll (Linux) for non-blocking I/O
-- Consider Flow-IPC library for production-grade IPC if custom implementation proves fragile
 
 ### FR-003: Command Fast-Pass
 
-- Build command index on startup from: PATH executables, shell builtins, aliases, functions
+- Build command index on startup in `slate` binary from: PATH executables, shell builtins, aliases, functions (sourced from the persistent bash co-process's environment)
 - Store in hash map: command name → type + path/builtin + completion hints
-- Classify input: recognized command → execute immediately; unknown → route to agent mode
+- Classify input: recognized command → execute immediately via bash co-process; unknown → route to agent mode; `?` prefix → force AI
 - Update index incrementally when PATH or aliases change
-- Provide completion hints to shell plugin for autocomplete
+- Provide completion hints via FTXUI Input autocomplete in `slate` binary
 
 ### FR-004: Agent System
 
@@ -188,6 +215,9 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 - Work Items form a DAG (directed acyclic graph)
 - Scheduler runs Work Items concurrently via worker thread pool, respecting dependencies
 - Work Item states: pending → running → completed | failed | blocked
+- Each running Work Item gets a **dedicated worker bash session** in `slated` (spawned on demand, killed on completion)
+- Workers initialized from the latest env snapshot with independent cwd — no cross-contamination between concurrent Work Items
+- Worker output streamed to `slate` and rendered in color-coded agent output blocks
 - Outputs are stored as artifacts in Shared Project State
 - Budget enforcement: Work Items that exceed token or cost budget are paused and escalated to TeamLead
 
@@ -195,7 +225,7 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 
 The following tools are **built-in** — compiled into the daemon binary, always available regardless of installed tool packages:
 
-- `Bash`: shell command execution with timeout, background support
+- `Bash`: shell command execution via `slated`'s worker bash sessions (parallel per Work Item, env-snapshot-initialized), with timeout, background support, output streamed to `slate` for display
 - `Read`: file content retrieval with line range support
 - `Write`: file creation/overwrite (requires prior read)
 - `Edit`: exact string replacement in files
@@ -355,29 +385,36 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 ---
 
-### Phase 1: Shell Foundation
+### Phase 1: Terminal Foundation
 
-**Goal**: A working shell replacement that can execute commands via daemon IPC.
+**Goal**: A working terminal client that can execute commands via daemon IPC.
 
 **Deliverables**:
 
-- Zsh plugin that intercepts input and forwards to daemon via Unix domain socket
-- C++ daemon that listens on Unix socket, receives commands, executes them, streams output back
-- Command index built from PATH + builtins (hash map lookup)
-- Fast-pass: recognized commands execute immediately through daemon
-- Basic autocomplete from command index
+- `slate` binary with **FTXUI** terminal UI framework for three-zone display layout (status bar, scrollable main canvas, input bar), input handling, history, and autocomplete
+- Persistent bash co-process (`bash --noediting -i`) spawned via pty pair at startup
+- Sentinel-based output boundary detection for command completion
+- Interactive command passthrough (raw pty mode for vim, htop, ssh, etc.)
+- Signal forwarding (Ctrl+C → bash child)
+- `slated` daemon that listens on Unix socket, receives commands, streams output back
+- Command index built in `slate` from PATH + builtins + bash co-process environment (hash map lookup)
+- Fast-pass: recognized commands execute immediately through bash co-process
+- Basic autocomplete from command index via FTXUI Input component
 - Graceful daemon lifecycle (start, stay resident, shutdown)
+- FlatBuffers IPC protocol between slate and slated
 
-**Testable outcome**: User sources the shell plugin, types `ls`, `git status`, `make` — commands execute with near-zero overhead. Unknown commands print "not found" or similar.
+**Testable outcome**: User launches `slate`, types `ls`, `git status`, `make` — commands execute via persistent bash co-process with near-zero overhead. Interactive commands like `vim` work correctly. Unknown commands print "not found" or similar.
 
 **Dependencies**: None (greenfield)
 
 **Tech**:
 
 - C++20, CMake
-- Unix domain sockets (`sys/socket.h`) with `SOCK_STREAM` + newline-delimited JSON protocol
+- **FTXUI** for terminal UI — three-zone layout (status bar, main canvas, input bar), input handling (`Input()` + `CatchEvent()`), history, autocomplete, agent output block rendering
+- **FlatBuffers** for IPC serialization (4-byte length prefix + FlatBuffer payload)
+- Unix domain sockets (`sys/socket.h`) with `SOCK_STREAM`
 - kqueue (macOS) / epoll (Linux) for non-blocking I/O
-- Zsh: `add-zsh-hook preexec/precmd` + ZLE widget wrapping `accept-line`
+- pty pair (`forkpty()` or `posix_openpt()`) for bash co-process
 - No AI/LLM needed yet
 
 ---
@@ -391,7 +428,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Integration with ai-sdk-cpp (ClickHouse) for streaming LLM access + tool calling
 - Single agent (combined Orchestrator+Engineer role) that receives user input, reasons, calls tools
 - Tool implementations: Bash, Read, Write, Edit, Glob, Grep
-- Streaming token output back to terminal via shell plugin
+- Streaming token output back to terminal via slate binary
 - Basic TOML config for API keys and model selection
 - Terminal markdown rendering: cmark-gfm for parsing + tree-sitter for syntax highlighting in code blocks; walk AST to emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
 - **Basic safety controls**:
@@ -399,6 +436,9 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
   - Confirmation prompts for destructive commands (`rm -rf`, `git push --force`, `DROP TABLE`, etc. — see FR-009 for full list)
   - Command allowlist/denylist (configurable via TOML config)
   - No agent auto-execution of critical-risk commands
+- **Worker bash sessions in `slated`**: spawn fresh bash per Work Item, initialize from env snapshot, kill on completion
+- **Env snapshot protocol**: capture on `slate` connect, refresh on `cd`/`source`/manual `slate sync-env`
+- **Color-coded output streaming**: worker bash output streamed to `slate`, rendered in color-bordered agent output blocks per Work Item
 
 **Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
@@ -421,6 +461,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Work Item data structure (goal, acceptance criteria, dependencies, outputs, state, token/cost budgets)
 - DAG construction: agent produces a plan as a set of Work Items with dependency edges
 - Scheduler: Taskflow-based concurrent execution respecting dependencies
+- Worker bash sessions serve as the execution substrate — each scheduled Work Item gets its own bash process via `slated`
 - Work Item state machine: pending → running → completed | failed
 - Artifact storage: each Work Item's output stored in Shared Project State
 - User-visible progress: streaming status of Work Items as they execute
@@ -529,7 +570,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 ### Phase Dependency Graph
 
 ```
-Phase 1 (Shell Foundation)
+Phase 1 (Terminal Foundation)
     |
     v
 Phase 2 (Single-Agent AI Loop + Basic Safety)
@@ -559,7 +600,7 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
 | **ai-sdk-cpp maturity** — ClickHouse SDK exists (\~134 stars) and works for OpenAI + Anthropic with streaming + tool calling, but Google/Cohere not yet supported. C++20 with patched nlohmann/json. | Medium | High | Evaluate SDK early in Phase 2. It is the most complete C++ LLM SDK available. For unsupported providers, extend with direct HTTP (libcurl + cpr + custom SSE parser). llama.cpp server also supports OpenAI-compatible + Anthropic Messages API as a local fallback. |
-| **Shell plugin complexity** — hooking into Zsh/Bash input pipeline is fragile across versions | Medium | High | Start with Zsh only; use `add-zsh-hook` (never raw assignment); test ZLE widget chaining; test on macOS + common Linux distros. Bash via bash-preexec library. |
+| **Persistent bash co-process complexity** — pty management, interactive command passthrough (raw mode switching), signal forwarding, sentinel-based output boundary detection | Medium | High | Start with basic command execution via pty; add interactive passthrough incrementally. Use `forkpty()` for clean pty management. Test sentinel markers across edge cases (binary output, multi-line commands). Signal forwarding via `kill()` to process group. |
 | **Multi-agent token costs** — multi-agent systems use \~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
 | **Lock contention in multi-agent coordination** — Cursor's reader-writer locks failed; agents held locks too long, 20 agents degraded to throughput of 2-3 | Medium | High | Use single-writer ownership pattern instead of reader-writer locks. One agent owns writes to a resource; others read. Role-based separation (Planner/Worker/Judge) reduces contention by design. |
 | **Multi-model latency** — orchestrating multiple LLM calls adds overhead | Medium | Medium | Keep fast-pass path completely AI-free; pipeline model calls where possible; cache model selections |
@@ -568,6 +609,8 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
 | **Security of executed commands** — agent could run destructive commands | Low | Critical | Basic risk classification + confirmation prompts (Phase 2); allowlists; audit trail (Phase 7); never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt, Phase 7) |
 | **1-week MVP timeline** — ambitious scope for AI-assisted development | High | Medium | Phases are incremental — even Phase 1+2 alone is a useful product; deprioritize Phases 5-7 if needed |
+| **Env snapshot drift** — snapshot captured at connect may diverge from slate's actual environment if user modifies env outside of tracked operations (e.g., manual `export` in a subshell) | Low | Medium | Auto-refresh on `cd`/`source`; manual `slate sync-env` command; snapshot includes timestamp for staleness detection |
+| **FTXUI input maturity** — building shell-grade line editing on FTXUI Input requires custom keybinding, history, tab completion, and multi-line logic that replxx provides out of the box | Medium | Medium | Implement incrementally: basic input first, then history/completion. FTXUI's `CatchEvent()` provides the hook points. Fall back to simpler input if needed during Phase 1. |
 
 ---
 
@@ -577,13 +620,15 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | --- | --- | --- |
 | Language | C++20 | Performance-critical daemon; direct system call access; ai-sdk-cpp compatibility |
 | Build system | CMake (primary), Bazel (optional) | CMake is more widely supported; Bazel for future monorepo needs |
-| IPC | Unix domain socket (`SOCK_STREAM` + newline-delimited JSON) | Low-latency, well-supported, no network overhead; kqueue/epoll for non-blocking I/O. Consider Flow-IPC for production hardening. |
+| IPC | Unix domain socket (`SOCK_STREAM` + FlatBuffers with 4-byte length prefix) | Low-latency, zero-copy field access, schema evolution, type-safe. kqueue/epoll for non-blocking I/O. |
 | Config format | TOML | Human-readable, well-supported in C++, good for nested config (model catalog) |
 | LLM SDK | ai-sdk-cpp (ClickHouse) | \~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. Uses patched nlohmann/json. |
 | LLM SDK fallback | Direct HTTP via libcurl + cpr + custom SSE parser | For providers not yet in ai-sdk-cpp. cpr ("C++ Requests") is a modern libcurl wrapper. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
 | DAG scheduler | Taskflow | Header-only C++20, work-stealing scheduler, conditional tasking, composable sub-taskflows, built-in profiler. `tf::Executor` + `tf::Taskflow` with `precede()`/`succeed()`. Up to 29% faster than industrial systems. |
 | Terminal rendering | cmark-gfm + tree-sitter | cmark-gfm (GitHub's CommonMark C impl) for markdown parsing; tree-sitter for syntax highlighting in code blocks. Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. |
-| Shell hooks | `add-zsh-hook` + ZLE widgets (Zsh); bash-preexec (Bash) | Well-documented, avoids hook ordering conflicts. ZLE widget wrapping `accept-line` for input interception. |
+| Terminal UI framework | FTXUI | React-like declarative C++ TUI (7.4k stars, zero deps, CMake-native). Owns entire terminal: three-zone layout (status bar, main canvas, input bar), input handling (`Input()` + `CatchEvent()` for history, completion, keybindings), rendering (`vbox`/`hbox`/`flex`/`color()`/`border`), agent output blocks, task DAG tree. Replaces replxx. |
+| Command execution | Persistent bash co-process via pty | Maintains shell state (env, aliases, cwd) across commands. Sentinel-based output boundary detection. Interactive passthrough via raw pty mode. |
+| Agent command execution | Spawn-on-demand bash in `slated` | Fresh bash process per Work Item, initialized from env snapshot (env vars, aliases, functions, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
 | Storage location | `~/.slate-agent/` | Simple, user-local, follows common CLI tool conventions |
 | Agent coordination | Single-writer ownership (no reader-writer locks) | Cursor's lock-based approach failed at scale. One writer per resource, concurrent readers. Role separation reduces contention. |
 | Memory architecture | Bounded text with Narrator curation (MemGPT-informed) | 64KB global + 128KB per project caps. Cognitive triage + recursive summarization. No vector DB for MVP (add later if needed). |
@@ -615,4 +660,4 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 ---
 
-*PRD v1.3 for Slate Agent — a C++ terminal-native multi-model coding agent. Updated with unified tool model (binary + prompt tools, registry, MCP bridge, hooks, aliases), phase restructuring (basic safety in Phase 2, 7 phases total), competitive research, architecture validation, and technical implementation guidance.*
+*PRD v1.5 for Slate Agent — a C++ terminal-native multi-model coding agent. Architecture updated to FTXUI terminal UI framework (replacing replxx) with three-zone display layout, color-coded agent output blocks, and inline task DAG tree. Worker bash sessions in slated for parallel agent command execution with env snapshot protocol. Includes unified tool model, phase restructuring, competitive research, architecture validation, and technical implementation guidance.*
