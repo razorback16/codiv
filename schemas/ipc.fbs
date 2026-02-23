@@ -1,0 +1,71 @@
+namespace slate.ipc;
+
+enum MessageType : byte {
+  ExecuteCommand = 0,
+  CommandOutput = 1,
+  CommandComplete = 2,
+  EnvSnapshot = 3,
+  Shutdown = 4,
+  Heartbeat = 5,
+  Error = 6
+}
+
+table KeyValue {
+  key: string;
+  value: string;
+}
+
+table ExecuteCommandMsg {
+  command: string;
+  cwd: string;
+  request_id: string;
+}
+
+table CommandOutputMsg {
+  request_id: string;
+  data: [byte];
+  is_stderr: bool;
+}
+
+table CommandCompleteMsg {
+  request_id: string;
+  exit_code: int;
+}
+
+table EnvSnapshotMsg {
+  env_vars: [KeyValue];
+  path: string;
+  aliases: string;
+  functions: string;
+  cwd: string;
+}
+
+table ShutdownMsg {
+  reason: string;
+}
+
+table HeartbeatMsg {
+  timestamp: long;
+}
+
+table ErrorMsg {
+  request_id: string;
+  message: string;
+}
+
+union MessageBody {
+  ExecuteCommandMsg,
+  CommandOutputMsg,
+  CommandCompleteMsg,
+  EnvSnapshotMsg,
+  ShutdownMsg,
+  HeartbeatMsg,
+  ErrorMsg
+}
+
+table Message {
+  type: MessageType;
+  body: MessageBody;
+}
+
+root_type Message;
