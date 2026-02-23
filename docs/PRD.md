@@ -1,12 +1,12 @@
 # Slate Agent — Product Requirements Document
 
-**Version**: 1.5 **Date**: 2026-02-22 **Author**: Subhagato **Status**: Draft
+**Version**: 1.6 **Date**: 2026-02-23 **Author**: Subhagato **Status**: Draft
 
 ---
 
 ## 1. Executive Summary
 
-**Slate Agent** is a C++ terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
+**Slate Agent** is a C++/Rust terminal-native coding agent (Rust client, C++ daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
 **Key differentiators:**
 
@@ -46,7 +46,7 @@
 | **Amp** (Sourcegraph) | CLI + IDE | Multi-model | "Deep mode" extended reasoning; built-in code review agent | Session-based | No | Free ad-supported tier | N/A |
 | **Warp AI** | Rust GPU-rendered terminal | Multi-model (OpenAI, Anthropic, Google) | "Full Terminal Control" — agent interacts with live processes | Session-based | No (terminal replacement, not agent) | Free tier + paid | N/A |
 | **Devin** (Cognition) | Cloud VM (terminal+editor+browser) | Proprietary | Full autonomous environment | Cloud-persistent | N/A | $500/mo | N/A |
-| **Slate Agent** | **C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
+| **Slate Agent** | **Rust+C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
 
@@ -128,15 +128,16 @@ The following are **not** in scope for the MVP or near-term roadmap:
 
 ### FR-001: Slate Binary (Terminal Client)
 
-- Standalone C++ binary (`slate`) as the user-facing terminal client
-- Uses **FTXUI** as the terminal UI framework — owns the entire terminal: input, output rendering, layout, and colors
-- **Three-zone display layout** (no outer window border — terminal edge is the border):
-  - **Zone 1 — Status Bar** (top, 1 line): project path, git branch, active agent count, daemon connection status
-  - **Zone 2 — Main Canvas** (middle, scrollable, flex): user command output (inline, no border), inline task DAG tree (live-updating, collapses to summary when done), color-bordered agent output blocks (per active Work Item, auto-collapse on completion, expandable with Enter)
-  - **Zone 3 — Input Bar** (bottom, sticky, grows upward for multi-line): FTXUI `Input()` component with `CatchEvent()` for history, tab completion, Ctrl+R search, multi-line (Ctrl+X), keybindings, inline completion ghosts, shortcut hints
-- **Agent output blocks**: color-bordered per agent role (see color scheme below), showing Work Item ID and streaming tool output. Auto-collapse to single-line summary on completion; Enter to expand. Focus mode: `Ctrl+F` expands single agent block to full canvas.
-- **Task DAG tree**: appears inline when a task starts, updates live with status indicators (● running, ◐ in review, ○ pending, ✓ done), collapses to summary when all items complete
-- **Scroll lock**: scrolling history doesn't jump on new output; "↓ N new lines" indicator when scrolled up
+- Standalone Rust binary (`slate`) as the user-facing terminal client
+- Uses **ratatui + crossterm** as the terminal UI framework — owns the entire terminal: input, output rendering, layout, and colors
+- **Linear scroll-down flow** — everything scrolls down like a normal terminal (no fixed zones or panels):
+  - Shell commands render inline with no border (normal terminal feel)
+  - Agent tasks expand inline below the prompt as structured blocks:
+    - **Task header** with goal
+    - **DAG tree** (live-updating in-place with status indicators: ● running, ◐ in review, ○ pending, ✓ done)
+    - **Color-bordered agent output blocks** (per active agent, auto-collapse on completion, expandable with Enter)
+  - **Auto-scroll** — viewport always follows new content; scrolling up shows "↓ N new lines" indicator
+- **Agent output blocks**: color-bordered per agent role (see color scheme below), showing Work Item ID and streaming tool output. Auto-collapse to single-line summary on completion; Enter to expand. Focus mode: `Ctrl+F` expands single agent block to full viewport.
 - **Color scheme** for agent output blocks:
   | Role | Color | Usage |
   |------|-------|-------|
@@ -151,13 +152,12 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - Spawns a **persistent bash co-process** (`bash --noediting -i`) at startup via pty pair
 - Commands piped to bash co-process stdin; output read from pty with **sentinel-based boundary detection** (unique marker echoed after each command to detect output boundaries)
 - Maintains shell state continuity: env vars, aliases, cwd, `.bashrc` state persist across commands
-- User command output renders inline in the main canvas with no border, no prefix (feels like normal terminal)
-- **Interactive command passthrough**: commands like vim, htop, ssh detected and run in **raw pty mode** (slate suspends FTXUI rendering, passes terminal control to child)
+- User command output renders inline with no border, no prefix (feels like normal terminal)
+- **Interactive command passthrough**: commands like vim, htop, ssh detected — ratatui suspends, raw PTY takeover for direct terminal control, ratatui resumes on exit
 - **Signal forwarding**: Ctrl+C forwarded to bash co-process child process
 - Provides context to daemon: cwd, env allowlist, tty info, shell history, last exit code
 - Streams output from daemon back to terminal and renders in agent output blocks
-- Hooks into autocomplete via FTXUI `Input()` using command index
-- **Rendering**: declarative composition via FTXUI `vbox`, `hbox`, `flex`, `color()`, `border` — unified rendering loop for all display elements
+- **Markdown rendering**: comrak for CommonMark+GFM parsing + syntect for syntax highlighting in code blocks; emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
 - **Communication**: Unix domain socket at well-known path (see FR-002)
 
 ### FR-002: Daemon (Persistent C++ Process — `slated`)
@@ -181,7 +181,7 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - Store in hash map: command name → type + path/builtin + completion hints
 - Classify input: recognized command → execute immediately via bash co-process; unknown → route to agent mode; `?` prefix → force AI
 - Update index incrementally when PATH or aliases change
-- Provide completion hints via FTXUI Input autocomplete in `slate` binary
+- Provide completion hints via autocomplete in `slate` binary
 
 ### FR-004: Agent System
 
@@ -391,15 +391,15 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Deliverables**:
 
-- `slate` binary with **FTXUI** terminal UI framework for three-zone display layout (status bar, scrollable main canvas, input bar), input handling, history, and autocomplete
+- `slate` binary rewritten in **Rust** with **ratatui + crossterm** for linear scroll-down terminal flow, input handling, history, and autocomplete
 - Persistent bash co-process (`bash --noediting -i`) spawned via pty pair at startup
 - Sentinel-based output boundary detection for command completion
-- Interactive command passthrough (raw pty mode for vim, htop, ssh, etc.)
+- Interactive command passthrough (ratatui suspends, raw PTY takeover for vim, htop, ssh, etc.)
 - Signal forwarding (Ctrl+C → bash child)
-- `slated` daemon that listens on Unix socket, receives commands, streams output back
+- `slated` daemon (C++) that listens on Unix socket, receives commands, streams output back
 - Command index built in `slate` from PATH + builtins + bash co-process environment (hash map lookup)
 - Fast-pass: recognized commands execute immediately through bash co-process
-- Basic autocomplete from command index via FTXUI Input component
+- Basic autocomplete from command index
 - Graceful daemon lifecycle (start, stay resident, shutdown)
 - FlatBuffers IPC protocol between slate and slated
 
@@ -409,12 +409,14 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Tech**:
 
-- C++20, CMake
-- **FTXUI** for terminal UI — three-zone layout (status bar, main canvas, input bar), input handling (`Input()` + `CatchEvent()`), history, autocomplete, agent output block rendering
-- **FlatBuffers** for IPC serialization (4-byte length prefix + FlatBuffer payload)
-- Unix domain sockets (`sys/socket.h`) with `SOCK_STREAM`
-- kqueue (macOS) / epoll (Linux) for non-blocking I/O
-- pty pair (`forkpty()` or `posix_openpt()`) for bash co-process
+- **Rust**, Cargo for `slate`; **C++20**, CMake for `slated`
+- **ratatui + crossterm** for terminal UI — linear scroll-down flow, input handling, inline agent output block rendering
+- **comrak + syntect** for markdown rendering (CommonMark+GFM parsing + syntax highlighting)
+- **flatbuffers** crate for IPC serialization (4-byte length prefix + FlatBuffer payload)
+- **tokio** for async I/O
+- **nix** / **portable-pty** for PTY management (bash co-process)
+- Unix domain sockets with `SOCK_STREAM`
+- kqueue (macOS) / epoll (Linux) for non-blocking I/O in `slated`
 - No AI/LLM needed yet
 
 ---
@@ -430,7 +432,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Tool implementations: Bash, Read, Write, Edit, Glob, Grep
 - Streaming token output back to terminal via slate binary
 - Basic TOML config for API keys and model selection
-- Terminal markdown rendering: cmark-gfm for parsing + tree-sitter for syntax highlighting in code blocks; walk AST to emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
+- Terminal markdown rendering: comrak for CommonMark+GFM parsing + syntect for syntax highlighting in code blocks; walk AST to emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
 - **Basic safety controls**:
   - Basic risk classification for commands (low/medium/high/critical)
   - Confirmation prompts for destructive commands (`rm -rf`, `git push --force`, `DROP TABLE`, etc. — see FR-009 for full list)
@@ -448,7 +450,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 - ai-sdk-cpp (streaming + tool calling for OpenAI + Anthropic endpoints)
 - Single model (e.g., Claude Sonnet 4.5 for cost-effective development)
-- cmark-gfm + tree-sitter for terminal rendering
+- comrak + syntect for terminal rendering
 
 ---
 
@@ -610,7 +612,7 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | **Security of executed commands** — agent could run destructive commands | Low | Critical | Basic risk classification + confirmation prompts (Phase 2); allowlists; audit trail (Phase 7); never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt, Phase 7) |
 | **1-week MVP timeline** — ambitious scope for AI-assisted development | High | Medium | Phases are incremental — even Phase 1+2 alone is a useful product; deprioritize Phases 5-7 if needed |
 | **Env snapshot drift** — snapshot captured at connect may diverge from slate's actual environment if user modifies env outside of tracked operations (e.g., manual `export` in a subshell) | Low | Medium | Auto-refresh on `cd`/`source`; manual `slate sync-env` command; snapshot includes timestamp for staleness detection |
-| **FTXUI input maturity** — building shell-grade line editing on FTXUI Input requires custom keybinding, history, tab completion, and multi-line logic that replxx provides out of the box | Medium | Medium | Implement incrementally: basic input first, then history/completion. FTXUI's `CatchEvent()` provides the hook points. Fall back to simpler input if needed during Phase 1. |
+| **Rust/C++ build complexity** — two languages, two build systems (Cargo + CMake), increases CI/CD and contributor onboarding overhead | Medium | Medium | Clean boundary at Unix socket IPC — Cargo and CMake are fully independent builds with no cross-compilation. CI builds both in parallel. FlatBuffers schema shared, code generated separately for each language. |
 
 ---
 
@@ -618,15 +620,16 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Decision | Choice | Rationale |
 | --- | --- | --- |
-| Language | C++20 | Performance-critical daemon; direct system call access; ai-sdk-cpp compatibility |
-| Build system | CMake (primary), Bazel (optional) | CMake is more widely supported; Bazel for future monorepo needs |
+| Language | Rust (`slate` client) + C++20 (`slated` daemon) | Rust for client: ratatui ecosystem, memory safety for UI handling untrusted input. C++20 for daemon: ai-sdk-cpp compatibility, direct system call access, Taskflow scheduler. |
+| Build system | Cargo (`slate`) + CMake (`slated`), Bazel (optional) | Independent builds connected at Unix socket IPC. Cargo for Rust ecosystem; CMake for C++ ecosystem. Bazel for future monorepo needs. |
 | IPC | Unix domain socket (`SOCK_STREAM` + FlatBuffers with 4-byte length prefix) | Low-latency, zero-copy field access, schema evolution, type-safe. kqueue/epoll for non-blocking I/O. |
 | Config format | TOML | Human-readable, well-supported in C++, good for nested config (model catalog) |
 | LLM SDK | ai-sdk-cpp (ClickHouse) | \~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. Uses patched nlohmann/json. |
 | LLM SDK fallback | Direct HTTP via libcurl + cpr + custom SSE parser | For providers not yet in ai-sdk-cpp. cpr ("C++ Requests") is a modern libcurl wrapper. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
 | DAG scheduler | Taskflow | Header-only C++20, work-stealing scheduler, conditional tasking, composable sub-taskflows, built-in profiler. `tf::Executor` + `tf::Taskflow` with `precede()`/`succeed()`. Up to 29% faster than industrial systems. |
-| Terminal rendering | cmark-gfm + tree-sitter | cmark-gfm (GitHub's CommonMark C impl) for markdown parsing; tree-sitter for syntax highlighting in code blocks. Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. |
-| Terminal UI framework | FTXUI | React-like declarative C++ TUI (7.4k stars, zero deps, CMake-native). Owns entire terminal: three-zone layout (status bar, main canvas, input bar), input handling (`Input()` + `CatchEvent()` for history, completion, keybindings), rendering (`vbox`/`hbox`/`flex`/`color()`/`border`), agent output blocks, task DAG tree. Replaces replxx. |
+| Terminal rendering | comrak + syntect | comrak for CommonMark+GFM parsing, syntect for syntax highlighting (same engine as Sublime Text). Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. Replaces cmark-gfm + tree-sitter. |
+| Terminal UI framework | ratatui + crossterm (Rust) | Most mature terminal UI ecosystem in Rust, proven by Zellij. Linear scroll-down flow with inline agent blocks — everything scrolls down like a normal terminal. Replaces FTXUI. |
+| Client language | Rust for `slate`, C++20 for `slated` | ratatui ecosystem, memory safety for UI layer handling untrusted input, clean language boundary at Unix socket. |
 | Command execution | Persistent bash co-process via pty | Maintains shell state (env, aliases, cwd) across commands. Sentinel-based output boundary detection. Interactive passthrough via raw pty mode. |
 | Agent command execution | Spawn-on-demand bash in `slated` | Fresh bash process per Work Item, initialized from env snapshot (env vars, aliases, functions, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
 | Storage location | `~/.slate-agent/` | Simple, user-local, follows common CLI tool conventions |
@@ -660,4 +663,4 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 ---
 
-*PRD v1.5 for Slate Agent — a C++ terminal-native multi-model coding agent. Architecture updated to FTXUI terminal UI framework (replacing replxx) with three-zone display layout, color-coded agent output blocks, and inline task DAG tree. Worker bash sessions in slated for parallel agent command execution with env snapshot protocol. Includes unified tool model, phase restructuring, competitive research, architecture validation, and technical implementation guidance.*
+*PRD v1.5 for Slate Agent — a Rust+C++ terminal-native multi-model coding agent. Rust client (`slate`) using ratatui + crossterm with linear scroll-down terminal flow, inline agent output blocks, and inline task DAG tree. C++ daemon (`slated`) with worker bash sessions for parallel agent command execution with env snapshot protocol. Includes unified tool model, phase restructuring, competitive research, architecture validation, and technical implementation guidance.*
