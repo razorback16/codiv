@@ -10,6 +10,8 @@
 #include <thread>
 #include <fcntl.h>
 #include <iostream>
+#include <mach-o/dyld.h>
+#include <libgen.h>
 
 namespace slate {
 
@@ -72,6 +74,15 @@ bool DaemonClient::ensure_daemon_running() {
             // Keep stderr for logging
             ::close(devnull);
         }
+        // Find slated relative to the slate binary (sibling directory ../slated/slated)
+        char exe_path[1024];
+        uint32_t size = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &size) == 0) {
+            char* dir = ::dirname(exe_path);  // .../src/slate
+            std::string slated_path = std::string(dir) + "/../slated/slated";
+            ::execl(slated_path.c_str(), "slated", nullptr);
+        }
+        // Fallback: try PATH
         ::execlp("slated", "slated", nullptr);
         // If exec fails, exit child
         ::_exit(127);
