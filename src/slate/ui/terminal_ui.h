@@ -8,9 +8,7 @@
 
 namespace slate {
 
-class StatusBar;
-class MainCanvas;
-class InputBar;
+class StreamView;
 
 /// Interface for receiving UI events. Nullable for standalone testing.
 class UIDelegate {
@@ -22,11 +20,9 @@ public:
 
 /// Full-screen terminal UI built on FTXUI.
 /// Layout (top to bottom):
-///   StatusBar  (1 line)
+///   StatusBar   (1 line)
 ///   separator
-///   MainCanvas (flex, remaining space)
-///   separator
-///   InputBar   (1-2 lines at bottom)
+///   StreamView  (flex, remaining space — scrollback + inline input)
 class TerminalUI {
 public:
     /// @param delegate  Optional callback receiver (may be nullptr).
@@ -36,8 +32,14 @@ public:
     /// Enter the FTXUI main loop (blocks until stop/suspend).
     void run();
 
-    /// Thread-safe: append output text to the main canvas.
+    /// Thread-safe: append output text to the stream.
     void append_output(const std::string& text);
+
+    /// Thread-safe: echo a command into the scrollback.
+    void echo_command(const std::string& cmd);
+
+    /// Thread-safe: append a system/status message.
+    void append_system(const std::string& text);
 
     /// Thread-safe: update the status bar fields.
     void set_status(const std::string& cwd,
@@ -58,9 +60,8 @@ private:
 
     ftxui::ScreenInteractive screen_;
 
-    std::unique_ptr<StatusBar> status_bar_;
-    std::unique_ptr<MainCanvas> main_canvas_;
-    std::unique_ptr<InputBar> input_bar_;
+    std::unique_ptr<class StatusBar> status_bar_;
+    std::unique_ptr<StreamView> stream_view_;
 
     ftxui::Component layout_;
 

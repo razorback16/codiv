@@ -1,7 +1,6 @@
 #include "terminal_ui.h"
 #include "status_bar.h"
-#include "main_canvas.h"
-#include "input_bar.h"
+#include "stream_view.h"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -14,28 +13,27 @@ TerminalUI::TerminalUI(UIDelegate* delegate)
     : delegate_(delegate),
       screen_(ScreenInteractive::Fullscreen()),
       status_bar_(std::make_unique<StatusBar>()),
-      main_canvas_(std::make_unique<MainCanvas>()),
-      input_bar_(std::make_unique<InputBar>(delegate)) {
+      stream_view_(std::make_unique<StreamView>(delegate)) {
     build_layout();
 }
 
 TerminalUI::~TerminalUI() = default;
 
 void TerminalUI::build_layout() {
-    // Compose layout: StatusBar | sep | MainCanvas | sep | InputBar
+    // Two-zone layout: StatusBar | separator | StreamView
     auto container = Container::Vertical({
         status_bar_->component(),
-        main_canvas_->component(),
-        input_bar_->component(),
+        stream_view_->component(),
     });
+
+    // Default focus to StreamView (index 1)
+    container->SetActiveChild(stream_view_->component());
 
     layout_ = Renderer(container, [this, container] {
         return vbox({
             status_bar_->component()->Render(),
             separator(),
-            main_canvas_->component()->Render() | flex,
-            separator(),
-            input_bar_->component()->Render(),
+            stream_view_->component()->Render() | flex,
         });
     });
 
@@ -55,9 +53,22 @@ void TerminalUI::run() {
 }
 
 void TerminalUI::append_output(const std::string& text) {
-    // Thread-safe: post the update to the UI thread
     screen_.Post([this, text] {
-        main_canvas_->append(text);
+        stream_view_->append_output(text);
+    });
+    screen_.PostEvent(Event::Custom);
+}
+
+void TerminalUI::echo_command(const std::string& cmd) {
+    screen_.Post([this, cmd] {
+        stream_view_->echo_command(cmd);
+    });
+    screen_.PostEvent(Event::Custom);
+}
+
+void TerminalUI::append_system(const std::string& text) {
+    screen_.Post([this, text] {
+        stream_view_->append_system(text);
     });
     screen_.PostEvent(Event::Custom);
 }

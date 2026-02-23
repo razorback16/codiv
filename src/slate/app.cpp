@@ -1,8 +1,5 @@
 #include "app.h"
 #include <cstdio>
-#include <iostream>
-#include <sstream>
-#include <algorithm>
 #include <unistd.h>
 
 namespace slate {
@@ -98,7 +95,7 @@ void SlateApp::on_command_submitted(const std::string& input) {
             ui_->append_output(result.output);
         }
         if (result.exit_code != 0) {
-            ui_->append_output("[exit code: " + std::to_string(result.exit_code) + "]\n");
+            ui_->append_system("[exit code: " + std::to_string(result.exit_code) + "]\n");
         }
         update_status();
         return;
@@ -106,12 +103,12 @@ void SlateApp::on_command_submitted(const std::string& input) {
 
     // AI mode placeholder
     if (first_word[0] == '?') {
-        ui_->append_output("AI mode not yet available (Phase 2)\n");
+        ui_->append_system("AI mode not yet available (Phase 2)\n");
         return;
     }
 
     // Unknown command
-    ui_->append_output("command not found: " + first_word + "\n");
+    ui_->append_system("command not found: " + first_word + "\n");
 }
 
 std::vector<std::string> SlateApp::on_autocomplete(const std::string& prefix) {

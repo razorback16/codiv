@@ -3,8 +3,7 @@ add_executable(slate
     app.cpp
     ui/terminal_ui.cpp
     ui/status_bar.cpp
-    ui/main_canvas.cpp
-    ui/input_bar.cpp
+    ui/stream_view.cpp
     shell/bash_coprocess.cpp
     shell/command_index.cpp
     shell/interactive.cpp
