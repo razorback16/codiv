@@ -440,7 +440,15 @@ impl Drop for BashCoprocess {
         match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
             Ok(nix::sys::wait::WaitStatus::StillAlive) => {
                 let _ = kill(self.child_pid, Signal::SIGKILL);
-                let _ = waitpid(self.child_pid, None); // Reap zombie
+                // Give it up to 500ms to die instead of blocking forever
+                for _ in 0..5 {
+                    match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+                        Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        _ => break,
+                    }
+                }
             }
             _ => {
                 // Already exited or error — try to reap just in case
@@ -454,9 +462,16 @@ impl Drop for BashCoprocess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// PTY tests must run sequentially — concurrent forkpty() calls under the
+    /// parallel test harness cause resource contention that makes bash slow to
+    /// start, breaking the sentinel-based protocol.
+    static PTY_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_execute_echo_hello() {
+        let _lock = PTY_LOCK.lock().unwrap();
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo hello");
         assert_eq!(result.exit_code, 0, "exit code should be 0");
@@ -469,6 +484,7 @@ mod tests {
 
     #[test]
     fn test_execute_false_exit_code() {
+        let _lock = PTY_LOCK.lock().unwrap();
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("false");
         assert_eq!(result.exit_code, 1, "exit code of 'false' should be 1");
@@ -476,6 +492,7 @@ mod tests {
 
     #[test]
     fn test_execute_multiline() {
+        let _lock = PTY_LOCK.lock().unwrap();
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo line1; echo line2");
         assert_eq!(result.exit_code, 0);
@@ -497,6 +514,7 @@ mod tests {
 
     #[test]
     fn test_capture_cwd() {
+        let _lock = PTY_LOCK.lock().unwrap();
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let cwd = coproc.capture_cwd();
         assert!(!cwd.is_empty(), "cwd should not be empty");
@@ -509,6 +527,7 @@ mod tests {
 
     #[test]
     fn test_capture_env() {
+        let _lock = PTY_LOCK.lock().unwrap();
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let env = coproc.capture_env();
         assert!(!env.is_empty(), "env should not be empty");
@@ -547,6 +566,7 @@ mod tests {
 
     #[test]
     fn test_large_output_not_truncated() {
+        let _lock = PTY_LOCK.lock().unwrap();
         // Verify that output larger than the PTY row count is fully captured.
         let coproc = BashCoprocess::spawn(500, 10).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("seq 1 100");
