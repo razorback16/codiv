@@ -69,6 +69,13 @@ impl CommandIndex {
         self.index.contains(name)
     }
 
+    /// Insert bash builtin names into the index so they appear in tab completion.
+    pub fn add_builtins(&mut self) {
+        for name in bash_builtins() {
+            self.index.insert(name.to_string());
+        }
+    }
+
     /// Return all command names that start with `prefix`, sorted alphabetically.
     pub fn complete(&self, prefix: &str) -> Vec<String> {
         let mut results: Vec<String> = self
@@ -108,6 +115,38 @@ pub enum InputAction {
     Empty,
 }
 
+/// Complete set of bash builtins from bash-builtins(7).
+/// `exit`/`logout` excluded (handled as `InputAction::Exit`).
+fn bash_builtins() -> HashSet<&'static str> {
+    [
+        ":", ".", "[", "alias", "bg", "bind", "break", "builtin", "cd", "command", "compgen",
+        "complete", "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval",
+        "exec", "export", "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let",
+        "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray",
+        "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test", "times",
+        "trap", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait", "caller",
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Detect variable assignments (`NAME=VALUE` where NAME is `[A-Za-z_][A-Za-z0-9_]*`).
+fn is_variable_assignment(first_word: &str) -> bool {
+    if let Some(eq_pos) = first_word.find('=') {
+        let name = &first_word[..eq_pos];
+        if !name.is_empty() {
+            let mut chars = name.chars();
+            let first = chars.next().unwrap();
+            if (first.is_ascii_alphabetic() || first == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Set of commands that require interactive / PTY passthrough handling.
 fn interactive_commands() -> HashSet<&'static str> {
     [
@@ -139,6 +178,14 @@ pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
 
     if interactive_commands().contains(first_word) {
         return InputAction::Interactive;
+    }
+
+    if bash_builtins().contains(first_word) {
+        return InputAction::Execute;
+    }
+
+    if is_variable_assignment(first_word) {
+        return InputAction::Execute;
     }
 
     if index.is_known(first_word) {
@@ -242,6 +289,55 @@ mod tests {
         assert_eq!(
             classify_input("xyzzy_fake", &idx),
             InputAction::NotFound("xyzzy_fake".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_builtin_cd() {
+        let idx = CommandIndex::new();
+        assert_eq!(classify_input("cd /tmp", &idx), InputAction::Execute);
+    }
+
+    #[test]
+    fn classify_builtin_export() {
+        let idx = CommandIndex::new();
+        assert_eq!(classify_input("export FOO=bar", &idx), InputAction::Execute);
+    }
+
+    #[test]
+    fn classify_builtin_source() {
+        let idx = CommandIndex::new();
+        assert_eq!(
+            classify_input("source ~/.bashrc", &idx),
+            InputAction::Execute
+        );
+        assert_eq!(classify_input(". ~/.bashrc", &idx), InputAction::Execute);
+    }
+
+    #[test]
+    fn classify_variable_assignment() {
+        let idx = CommandIndex::new();
+        assert_eq!(classify_input("FOO=bar", &idx), InputAction::Execute);
+    }
+
+    #[test]
+    fn classify_truly_unknown_still_not_found() {
+        let idx = CommandIndex::new();
+        assert_eq!(
+            classify_input("frobnicate --all", &idx),
+            InputAction::NotFound("frobnicate".to_string())
+        );
+    }
+
+    #[test]
+    fn complete_includes_builtins() {
+        let mut idx = CommandIndex::new();
+        idx.add_builtins();
+        let results = idx.complete("cd");
+        assert!(
+            results.contains(&"cd".to_string()),
+            "complete(\"cd\") should contain \"cd\" after add_builtins(), got: {:?}",
+            results
         );
     }
 }

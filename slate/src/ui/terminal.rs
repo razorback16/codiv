@@ -28,6 +28,14 @@ use crate::shell::interactive::InteractiveSession;
 use super::input::InputLine;
 use crate::VERSION;
 
+/// Tracks a command that has been submitted to bash but hasn't completed yet.
+struct PendingCommand {
+    sentinel: String,
+    accumulated: String,
+    command: String,
+    started_at: Instant,
+}
+
 /// Default scrollback limit (number of lines retained).
 const MAX_SCROLLBACK: usize = 10_000;
 
@@ -112,6 +120,7 @@ fn event_loop(
     let mut last_heartbeat_sent = Instant::now();
     let mut last_daemon_timestamp: i64 = 0;
     let session_id = format!("slate-{}", std::process::id());
+    let mut pending_command: Option<PendingCommand> = None;
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -125,10 +134,54 @@ fn event_loop(
             *client = None;
         }
 
-        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live)?;
+        // --- Poll pending command for output ---
+        if let Some(ref mut pending) = pending_command {
+            let bytes = bash.try_read();
+            if !bytes.is_empty() {
+                pending.accumulated.push_str(&String::from_utf8_lossy(&bytes));
+            }
 
-        // Poll for events with 50ms timeout.
-        if event::poll(Duration::from_millis(50))? {
+            if let Some(result) = BashCoprocess::check_complete(
+                &pending.accumulated,
+                &pending.command,
+                &pending.sentinel,
+            ) {
+                if !result.output.is_empty() {
+                    parser.process(result.output.as_bytes());
+                    if !result.output.ends_with('\n') {
+                        parser.process(b"\r\n");
+                    }
+                }
+                if result.exit_code != 0 {
+                    parser_push_styled(
+                        parser,
+                        &format!("exit code: {}", result.exit_code),
+                        "\x1b[31m",
+                    );
+                }
+                *cwd = bash.capture_cwd();
+                pending_command = None;
+                *scroll_offset = 0;
+                parser.screen_mut().set_scrollback(0);
+            } else if pending.started_at.elapsed() > Duration::from_secs(30) {
+                // Timeout — interrupt via PTY Ctrl-C and recover.
+                bash.send_interrupt();
+                bash.drain_for(100);
+                parser_push_styled(parser, "command timed out", "\x1b[31m");
+                pending_command = None;
+                *scroll_offset = 0;
+                parser.screen_mut().set_scrollback(0);
+            }
+        }
+
+        let is_executing = pending_command.is_some();
+
+        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing)?;
+
+        // Poll for events with a short timeout (10ms when executing for
+        // responsive output polling, 50ms otherwise).
+        let poll_ms = if is_executing { 10 } else { 50 };
+        if event::poll(Duration::from_millis(poll_ms))? {
             let evt = event::read()?;
 
             // Handle mouse events (scroll wheel).
@@ -166,8 +219,16 @@ fn event_loop(
             match (key.code, key.modifiers) {
                 // --- Ctrl combos ---
                 (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                    // Send SIGINT to the bash child process group.
-                    let _ = bash.send_signal(nix::sys::signal::Signal::SIGINT);
+                    if pending_command.is_some() {
+                        // Interrupt the running command via PTY Ctrl-C
+                        // (delivers SIGINT to entire foreground process group).
+                        bash.send_interrupt();
+                        bash.drain_for(100);
+                        pending_command = None;
+                    } else {
+                        // No command running — signal bash directly.
+                        let _ = bash.send_signal(nix::sys::signal::Signal::SIGINT);
+                    }
                     parser.process(b"^C\r\n");
                     *prompt_is_live = false;
                     input.clear();
@@ -184,7 +245,7 @@ fn event_loop(
                 }
 
                 // --- Enter: submit input ---
-                (KeyCode::Enter, _) => {
+                (KeyCode::Enter, _) if pending_command.is_none() => {
                     let raw_input = input.submit();
 
                     // Commit the current prompt line (already visible in parser).
@@ -256,30 +317,23 @@ fn event_loop(
                         }
 
                         InputAction::Execute => {
-                            let result = bash.execute(&raw_input, 30_000);
-
-                            if !result.output.is_empty() {
-                                // Feed raw output (with ANSI codes) directly
-                                // to the vt100 parser. It handles all escape
-                                // sequences correctly.
-                                parser.process(result.output.as_bytes());
-                                // Ensure output ends with a newline so the
-                                // next line starts at column 0.
-                                if !result.output.ends_with('\n') {
-                                    parser.process(b"\r\n");
+                            match bash.start_command(&raw_input) {
+                                Some(sentinel) => {
+                                    pending_command = Some(PendingCommand {
+                                        sentinel,
+                                        accumulated: String::new(),
+                                        command: raw_input.clone(),
+                                        started_at: Instant::now(),
+                                    });
+                                }
+                                None => {
+                                    parser_push_styled(
+                                        parser,
+                                        "failed to send command to shell",
+                                        "\x1b[31m",
+                                    );
                                 }
                             }
-
-                            if result.exit_code != 0 {
-                                parser_push_styled(
-                                    parser,
-                                    &format!("exit code: {}", result.exit_code),
-                                    "\x1b[31m",
-                                );
-                            }
-
-                            // Update cwd — the command may have been `cd`.
-                            *cwd = bash.capture_cwd();
                         }
 
                         InputAction::NotFound(word) => {
@@ -441,9 +495,11 @@ fn render_frame(
     daemon_timestamp: i64,
     scroll_offset: usize,
     prompt_is_live: &mut bool,
+    is_executing: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Write live prompt into the vt100 parser (only when scrolled to bottom).
-    if scroll_offset == 0 {
+    // Write live prompt into the vt100 parser (only when scrolled to bottom
+    // and no command is currently executing).
+    if scroll_offset == 0 && !is_executing {
         let prompt_text = format!("{}$ ", cwd);
         let input_text = input.content();
 
@@ -484,7 +540,7 @@ fn render_frame(
         frame.render_widget(pseudo_term, term_area);
 
         // --- Render status bar ---
-        render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, status_area);
+        render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area);
     })?;
 
     Ok(())
@@ -496,6 +552,7 @@ fn render_status_bar(
     cwd: &str,
     daemon_connected: bool,
     daemon_timestamp: i64,
+    is_executing: bool,
     area: Rect,
 ) {
     let width = area.width as usize;
@@ -517,8 +574,9 @@ fn render_status_bar(
         "daemon: offline"
     };
 
+    let running_indicator = if is_executing { " [running]" } else { "" };
     let right = format!(" {} | slate v{} ", daemon_status, VERSION);
-    let left = format!(" {} ", cwd);
+    let left = format!(" {}{} ", cwd, running_indicator);
 
     // Pad the middle so right-side text is right-aligned.
     let pad = width.saturating_sub(left.len() + right.len());

@@ -125,6 +125,13 @@ impl BashCoprocess {
         kill(self.child_pid, sig)
     }
 
+    /// Send Ctrl-C to the PTY. This causes the terminal driver to deliver
+    /// SIGINT to the entire foreground process group, interrupting both
+    /// bash and any child process (e.g. `sleep`, `cat`).
+    pub fn send_interrupt(&self) -> bool {
+        self.write_all(b"\x03")
+    }
+
     /// Execute a command in the bash co-process and return its output and exit code.
     pub fn execute(&self, command: &str, timeout_ms: i32) -> CommandResult {
         if self.master_fd.as_raw_fd() < 0 {
@@ -192,6 +199,103 @@ impl BashCoprocess {
             }
         }
         env_vars
+    }
+
+    // --- Non-blocking execution API ---
+
+    /// Write command + sentinel to bash without waiting for completion.
+    /// Returns the sentinel string needed to detect completion, or `None`
+    /// if the write failed.
+    pub fn start_command(&self, command: &str) -> Option<String> {
+        if self.master_fd.as_raw_fd() < 0 {
+            return None;
+        }
+        let sentinel = Self::generate_sentinel();
+        let full_cmd = format!(
+            "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
+            command, sentinel
+        );
+        if self.write_all(full_cmd.as_bytes()) {
+            Some(sentinel)
+        } else {
+            None
+        }
+    }
+
+    /// Non-blocking read from the PTY. Returns bytes if data is available,
+    /// or an empty vec if there is nothing to read right now.
+    pub fn try_read(&self) -> Vec<u8> {
+        let borrowed_fd = self.master_fd.as_fd();
+        let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
+        let poll_timeout = PollTimeout::ZERO;
+
+        match poll(&mut poll_fds, poll_timeout) {
+            Ok(n) if n > 0 => {
+                if let Some(revents) = poll_fds[0].revents() {
+                    if revents.contains(PollFlags::POLLIN) {
+                        let mut buf = [0u8; 4096];
+                        match nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf) {
+                            Ok(n) if n > 0 => return buf[..n].to_vec(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Drain residual PTY output for up to `ms` milliseconds.
+    /// Used after SIGINT to clear bash's `^C` echo and prompt.
+    pub fn drain_for(&self, ms: i32) {
+        let deadline = Instant::now() + std::time::Duration::from_millis(ms as u64);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let iter_ms = remaining.as_millis().min(50) as i32;
+            let poll_timeout =
+                PollTimeout::try_from(iter_ms).unwrap_or(PollTimeout::try_from(50i32).unwrap());
+
+            let borrowed_fd = self.master_fd.as_fd();
+            let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
+
+            match poll(&mut poll_fds, poll_timeout) {
+                Ok(n) if n > 0 => {
+                    let mut buf = [0u8; 4096];
+                    let _ = nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf);
+                }
+                Ok(0) => break, // silence — done draining
+                _ => break,
+            }
+        }
+    }
+
+    /// Check if the sentinel has appeared in accumulated output.
+    /// Returns `Some(CommandResult)` with cleaned output if complete,
+    /// `None` if still waiting.
+    pub fn check_complete(
+        accumulated: &str,
+        command: &str,
+        sentinel: &str,
+    ) -> Option<CommandResult> {
+        let pos = Self::find_expanded_sentinel(accumulated, sentinel)?;
+
+        let mut exit_code: i32 = -1;
+        let code_start = pos + sentinel.len();
+        if let Some(rest) = accumulated.get(code_start..) {
+            if let Some(code_end) = rest.find("__") {
+                let code_str = &rest[..code_end];
+                if let Ok(code) = code_str.parse::<i32>() {
+                    exit_code = code;
+                }
+            }
+        }
+
+        let output = Self::clean_output(accumulated, command, sentinel);
+        Some(CommandResult { output, exit_code })
     }
 
     // --- Private helpers ---
@@ -591,4 +695,108 @@ mod tests {
         assert_eq!(stripped, "hello world");
     }
 
+    #[test]
+    fn test_start_command_and_check_complete() {
+        let _lock = PTY_LOCK.lock().unwrap();
+        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+
+        let sentinel = coproc.start_command("echo hello").expect("start_command failed");
+        let mut accumulated = String::new();
+
+        // Poll until sentinel appears (up to 5s).
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let result = loop {
+            if Instant::now() > deadline {
+                panic!("timed out waiting for sentinel, accumulated: {:?}", accumulated);
+            }
+            let bytes = coproc.try_read();
+            if !bytes.is_empty() {
+                accumulated.push_str(&String::from_utf8_lossy(&bytes));
+            }
+            if let Some(r) = BashCoprocess::check_complete(&accumulated, "echo hello", &sentinel) {
+                break r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+
+        assert_eq!(result.exit_code, 0, "exit code should be 0");
+        assert!(
+            result.output.contains("hello"),
+            "output should contain 'hello', got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn test_try_read_no_data() {
+        let _lock = PTY_LOCK.lock().unwrap();
+        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+
+        // Drain initial output first.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        while !coproc.try_read().is_empty() {}
+
+        // Now there should be no data.
+        let bytes = coproc.try_read();
+        assert!(
+            bytes.is_empty(),
+            "try_read should return empty when no data, got {} bytes",
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn test_interrupt_hanging_command() {
+        let _lock = PTY_LOCK.lock().unwrap();
+        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+
+        // Start `sleep 60` which blocks but is cleanly interruptible.
+        let sentinel = coproc.start_command("sleep 60").expect("start_command failed");
+
+        // Give it a moment to start.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Send Ctrl-C via PTY (delivers SIGINT to entire foreground
+        // process group, including the sleep child process).
+        assert!(coproc.send_interrupt(), "send_interrupt should succeed");
+
+        // Poll until sentinel appears (SIGINT causes sleep to exit,
+        // then the sentinel echo runs with exit code 130).
+        let mut accumulated = String::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let result = loop {
+            if Instant::now() > deadline {
+                break None;
+            }
+            let bytes = coproc.try_read();
+            if !bytes.is_empty() {
+                accumulated.push_str(&String::from_utf8_lossy(&bytes));
+            }
+            if let Some(r) = BashCoprocess::check_complete(&accumulated, "sleep 60", &sentinel) {
+                break Some(r);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+
+        // Whether sentinel was found or not, drain residual output.
+        coproc.drain_for(500);
+
+        if let Some(r) = result {
+            // SIGINT on sleep gives exit code 130.
+            assert!(
+                r.exit_code == 130 || r.exit_code == 0,
+                "exit code after SIGINT should be 130 (or 0), got: {}",
+                r.exit_code
+            );
+        }
+
+        // Verify the shell is still usable by running another command.
+        let result = coproc.execute("echo recovered", 10_000);
+        assert_eq!(result.exit_code, 0, "exit code should be 0 after recovery, output: {:?}", result.output);
+        assert!(
+            result.output.contains("recovered"),
+            "output should contain 'recovered', got: {:?}",
+            result.output
+        );
+    }
 }

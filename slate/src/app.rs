@@ -19,6 +19,7 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
     // 2. Build command index
     let mut command_index = CommandIndex::new();
     command_index.scan_path_directories();
+    command_index.add_builtins();
 
     // 3. Get initial cwd
     let cwd = bash.capture_cwd();
