@@ -1,3 +1,6 @@
 build/
+slate/target/
+slated/build/
+*.rlib
 .worktrees/
 .DS_Store
