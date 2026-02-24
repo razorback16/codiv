@@ -6,7 +6,6 @@
 //! and a status bar.
 
 use std::io;
-use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -272,20 +271,24 @@ fn event_loop(
                         }
 
                         InputAction::Interactive => {
+                            // Snapshot the coprocess environment before suspending
+                            // the TUI, so the interactive command inherits env/cwd.
+                            let env = bash.capture_env();
+                            let interactive_cwd = cwd.clone();
+
                             // Suspend the TUI for interactive passthrough.
                             terminal::disable_raw_mode()?;
                             execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
-                            // Write the command to bash and enter interactive
-                            // session on its PTY.
-                            let cmd_with_newline = format!("{}\n", raw_input);
-                            let master_raw_fd = bash.master_fd().as_raw_fd();
-
-                            // Write the command to the PTY so bash executes it.
-                            let _ =
-                                nix::unistd::write(bash.master_fd(), cmd_with_newline.as_bytes());
-
-                            interactive_session.enter(master_raw_fd);
+                            // Spawn a dedicated PTY for the interactive command.
+                            // This forks a new child process sized to the real
+                            // terminal dimensions. When the command exits, the
+                            // PTY HUPs and spawn_and_enter returns cleanly.
+                            interactive_session.spawn_and_enter(
+                                &raw_input,
+                                &env,
+                                &interactive_cwd,
+                            );
 
                             // Reset terminal state before re-entering TUI.
                             // RIS (Reset to Initial State) clears any residual
@@ -301,12 +304,18 @@ fn event_loop(
                             terminal::enable_raw_mode()?;
                             term.clear()?;
 
+                            // Push current visible content into scrollback before clearing.
+                            let visible_rows = parser.screen().size().0;
+                            parser.process(format!("\x1b[{};1H", visible_rows).as_bytes());
+                            for _ in 0..visible_rows {
+                                parser.process(b"\r\n");
+                            }
                             // Reset the vt100 parser screen — it is stale because
                             // interactive output bypassed the parser entirely.
                             parser.process(b"\x1b[2J\x1b[H");
 
                             // Update cwd — the interactive command may have
-                            // changed the directory.
+                            // changed the directory (e.g. via shell escape in vim).
                             *cwd = bash.capture_cwd();
 
                             parser_push_styled(

@@ -4,11 +4,14 @@
 //! and proxies stdin/stdout bidirectionally to a PTY master fd while the
 //! terminal is in raw mode.
 
-use std::os::fd::{BorrowedFd, RawFd};
+use std::ffi::CString;
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+use nix::pty::{forkpty, ForkptyResult, Winsize};
 use nix::sys::termios::{self, SetArg, Termios};
+use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd;
 
 /// An interactive passthrough session that proxies raw I/O between the
@@ -24,6 +27,85 @@ impl InteractiveSession {
         Self {
             saved_termios: None,
             in_session: false,
+        }
+    }
+
+    /// Spawn a dedicated PTY for an interactive command and enter the session.
+    ///
+    /// Unlike `enter()` which reuses an existing PTY, this forks a new child
+    /// process with its own PTY sized to the real terminal dimensions. The
+    /// child execs the command via bash, and when it exits the PTY HUPs,
+    /// cleanly ending the session.
+    pub fn spawn_and_enter(
+        &mut self,
+        command: &str,
+        env: &[(String, String)],
+        cwd: &str,
+    ) {
+        // Get the real terminal size.
+        let ws = get_terminal_winsize().unwrap_or(Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        });
+
+        // Pre-compute all CStrings before fork (no allocation after fork).
+        let bash_cstr = CString::new("bash").unwrap();
+        let args: Vec<CString> = vec![
+            CString::new("bash").unwrap(),
+            CString::new("-c").unwrap(),
+            CString::new(command).unwrap(),
+        ];
+        let cwd_cstr = CString::new(cwd).unwrap();
+        let env_cstrs: Vec<(CString, CString)> = env
+            .iter()
+            .filter_map(|(k, v)| {
+                Some((CString::new(k.as_str()).ok()?, CString::new(v.as_str()).ok()?))
+            })
+            .collect();
+
+        // Safety: child immediately execs; only async-signal-safe calls between
+        // fork and exec.
+        let fork_result = match unsafe { forkpty(&ws, None) } {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        match fork_result {
+            ForkptyResult::Parent { child, master } => {
+                let master_fd = master.as_raw_fd();
+
+                // Enter the poll loop (this blocks until HUP).
+                self.enter(master_fd);
+
+                // Reap the child process.
+                let _ = waitpid(child, Some(WaitPidFlag::WNOHANG));
+
+                // master (OwnedFd) is dropped here, closing the PTY.
+                drop(master);
+            }
+            ForkptyResult::Child => {
+                // In child: only async-signal-safe operations.
+                unsafe {
+                    // Clear the environment, then set the snapshot.
+                    libc::clearenv();
+                    for (k, v) in &env_cstrs {
+                        libc::setenv(k.as_ptr(), v.as_ptr(), 1);
+                    }
+                    // Ensure TERM is set for interactive programs.
+                    libc::setenv(
+                        b"TERM\0".as_ptr() as *const libc::c_char,
+                        b"xterm-256color\0".as_ptr() as *const libc::c_char,
+                        1,
+                    );
+                    // Change to the shell's cwd.
+                    libc::chdir(cwd_cstr.as_ptr());
+                }
+
+                let _ = nix::unistd::execvp(&bash_cstr, &args);
+                unsafe { libc::_exit(127) };
+            }
         }
     }
 
@@ -144,6 +226,22 @@ impl InteractiveSession {
 impl Drop for InteractiveSession {
     fn drop(&mut self) {
         self.exit();
+    }
+}
+
+/// Query the real terminal size via ioctl(TIOCGWINSZ).
+fn get_terminal_winsize() -> Option<Winsize> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    if ret == 0 && ws.ws_row > 0 && ws.ws_col > 0 {
+        Some(Winsize {
+            ws_row: ws.ws_row,
+            ws_col: ws.ws_col,
+            ws_xpixel: ws.ws_xpixel,
+            ws_ypixel: ws.ws_ypixel,
+        })
+    } else {
+        None
     }
 }
 

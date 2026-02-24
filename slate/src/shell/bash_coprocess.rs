@@ -115,11 +115,6 @@ impl BashCoprocess {
         }
     }
 
-    /// Get the master file descriptor.
-    pub fn master_fd(&self) -> &OwnedFd {
-        &self.master_fd
-    }
-
     /// Send a signal to the child process.
     pub fn send_signal(&self, sig: Signal) -> nix::Result<()> {
         kill(self.child_pid, sig)
