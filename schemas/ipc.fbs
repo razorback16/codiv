@@ -8,10 +8,6 @@ enum MessageType : byte {
   Shutdown = 4,
   Heartbeat = 5,
   Error = 6,
-  // Phase 2 reserved
-  // AgentRequest = 7,
-  // AgentResponse = 8,
-  // WorkItemUpdate = 9,
 }
 
 table KeyValue {

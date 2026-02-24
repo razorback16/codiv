@@ -26,6 +26,7 @@ use crate::shell::command_index::{classify_input, CommandIndex, InputAction};
 use crate::shell::interactive::InteractiveSession;
 
 use super::input::InputLine;
+use crate::VERSION;
 
 /// Default scrollback limit (number of lines retained).
 const MAX_SCROLLBACK: usize = 10_000;
@@ -56,8 +57,8 @@ pub fn run(
 
     // --- State ---
     let term_size = term.size()?;
-    // Parser rows = total height - 1 (prompt) - 1 (status bar)
-    let parser_rows = term_size.height.saturating_sub(2).max(1);
+    // Parser rows = total height - 1 (status bar)
+    let parser_rows = term_size.height.saturating_sub(1).max(1);
     let parser_cols = term_size.width.max(1);
     let mut parser = vt100::Parser::new(parser_rows, parser_cols, MAX_SCROLLBACK);
     let mut scroll_offset: usize = 0;
@@ -66,9 +67,10 @@ pub fn run(
     let mut interactive_session = InteractiveSession::new();
     let mut cwd = initial_cwd;
     let mut client = client;
+    let mut prompt_is_live = false;
 
     // Welcome message.
-    parser_push_styled(&mut parser, "slate v0.1.0 — type 'exit' to quit", "\x1b[90m");
+    parser_push_styled(&mut parser, &format!("slate v{} — type 'exit' to quit", VERSION), "\x1b[90m");
 
     // --- Event loop ---
     let result = event_loop(
@@ -82,6 +84,7 @@ pub fn run(
         &shutdown,
         &mut cwd,
         &mut client,
+        &mut prompt_is_live,
     );
 
     // --- Cleanup (always runs) ---
@@ -104,6 +107,7 @@ fn event_loop(
     shutdown: &Arc<AtomicBool>,
     cwd: &mut String,
     client: &mut Option<SlatedClient>,
+    prompt_is_live: &mut bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_heartbeat_sent = Instant::now();
     let mut last_daemon_timestamp: i64 = 0;
@@ -121,7 +125,7 @@ fn event_loop(
             *client = None;
         }
 
-        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp)?;
+        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live)?;
 
         // Poll for events with 50ms timeout.
         if event::poll(Duration::from_millis(50))? {
@@ -144,7 +148,7 @@ fn event_loop(
                     continue;
                 }
                 Event::Resize(cols, rows) => {
-                    let parser_rows = rows.saturating_sub(2).max(1);
+                    let parser_rows = rows.saturating_sub(1).max(1);
                     let parser_cols = (*cols).max(1);
                     parser.screen_mut().set_size(parser_rows, parser_cols);
                     continue;
@@ -164,7 +168,8 @@ fn event_loop(
                 (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                     // Send SIGINT to the bash child process group.
                     let _ = bash.send_signal(nix::sys::signal::Signal::SIGINT);
-                    parser_push_styled(parser, "^C", "\x1b[90m");
+                    parser.process(b"^C\r\n");
+                    *prompt_is_live = false;
                     input.clear();
                     // Auto-scroll to bottom.
                     *scroll_offset = 0;
@@ -181,16 +186,16 @@ fn event_loop(
                 // --- Enter: submit input ---
                 (KeyCode::Enter, _) => {
                     let raw_input = input.submit();
+
+                    // Commit the current prompt line (already visible in parser).
+                    parser.process(b"\r\n");
+                    *prompt_is_live = false;
+
                     let action = classify_input(&raw_input, command_index);
 
                     match action {
                         InputAction::Empty => {
-                            // Just push another prompt line.
-                            parser_push_styled(
-                                parser,
-                                &format!("{}$ ", cwd),
-                                "\x1b[1;32m",
-                            );
+                            // Nothing to do — next render cycle writes the prompt.
                         }
 
                         InputAction::Exit => {
@@ -200,23 +205,12 @@ fn event_loop(
                         InputAction::AiQuery => {
                             parser_push_styled(
                                 parser,
-                                &format!("{}$ {}", cwd, raw_input),
-                                "\x1b[1;36m",
-                            );
-                            parser_push_styled(
-                                parser,
                                 "AI mode not yet available (Phase 2)",
                                 "\x1b[90m",
                             );
                         }
 
                         InputAction::Interactive => {
-                            parser_push_styled(
-                                parser,
-                                &format!("{}$ {}", cwd, raw_input),
-                                "\x1b[1;36m",
-                            );
-
                             // Suspend the TUI for interactive passthrough.
                             terminal::disable_raw_mode()?;
                             execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
@@ -232,10 +226,23 @@ fn event_loop(
 
                             interactive_session.enter(master_raw_fd);
 
+                            // Reset terminal state before re-entering TUI.
+                            // RIS (Reset to Initial State) clears any residual
+                            // state left by the interactive program (e.g. vim).
+                            let _ = std::io::Write::write_all(
+                                &mut std::io::stdout(),
+                                b"\x1bc",
+                            );
+                            let _ = std::io::Write::flush(&mut std::io::stdout());
+
                             // Resume the TUI.
                             execute!(term.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
                             terminal::enable_raw_mode()?;
                             term.clear()?;
+
+                            // Reset the vt100 parser screen — it is stale because
+                            // interactive output bypassed the parser entirely.
+                            parser.process(b"\x1b[2J\x1b[H");
 
                             // Update cwd — the interactive command may have
                             // changed the directory.
@@ -249,12 +256,6 @@ fn event_loop(
                         }
 
                         InputAction::Execute => {
-                            parser_push_styled(
-                                parser,
-                                &format!("{}$ {}", cwd, raw_input),
-                                "\x1b[1;36m",
-                            );
-
                             let result = bash.execute(&raw_input, 30_000);
 
                             if !result.output.is_empty() {
@@ -282,11 +283,6 @@ fn event_loop(
                         }
 
                         InputAction::NotFound(word) => {
-                            parser_push_styled(
-                                parser,
-                                &format!("{}$ {}", cwd, raw_input),
-                                "\x1b[1;36m",
-                            );
                             parser_push_styled(
                                 parser,
                                 &format!("command not found: {}", word),
@@ -376,7 +372,6 @@ fn event_loop(
             while let Some(msg) = c.try_recv() {
                 match msg {
                     ipc_messages::DaemonMessage::CommandOutput {
-                        request_id: _,
                         data,
                         is_stderr,
                     } => {
@@ -439,61 +434,60 @@ fn event_loop(
 /// Render one frame of the terminal UI.
 fn render_frame(
     term: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    parser: &vt100::Parser,
+    parser: &mut vt100::Parser,
     input: &InputLine,
     cwd: &str,
     daemon_connected: bool,
     daemon_timestamp: i64,
+    scroll_offset: usize,
+    prompt_is_live: &mut bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Write live prompt into the vt100 parser (only when scrolled to bottom).
+    if scroll_offset == 0 {
+        let prompt_text = format!("{}$ ", cwd);
+        let input_text = input.content();
+
+        // Clear current line, write prompt + input with styling.
+        parser.process(
+            format!("\r\x1b[K\x1b[1;32m{}\x1b[0m{}", prompt_text, input_text).as_bytes(),
+        );
+
+        // Position cursor: move back from end if cursor isn't at end of input.
+        let target_col = prompt_text.len() + input.cursor_position();
+        let current_col = prompt_text.len() + input_text.len();
+        if current_col > target_col {
+            parser.process(format!("\x1b[{}D", current_col - target_col).as_bytes());
+        }
+
+        *prompt_is_live = true;
+    }
+
     term.draw(|frame| {
         let area = frame.area();
 
-        // Layout: terminal area (flexible) | prompt (1) | status bar (1)
+        // Layout: terminal area (flexible) | status bar (1)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(1),    // PseudoTerminal
-                Constraint::Length(1), // Active prompt + input
+                Constraint::Min(1),    // PseudoTerminal (now includes prompt)
                 Constraint::Length(1), // Status bar
             ])
             .split(area);
 
         let term_area = chunks[0];
-        let prompt_area = chunks[1];
-        let status_area = chunks[2];
+        let status_area = chunks[1];
 
         // --- Render pseudoterminal ---
+        let cursor_visible = scroll_offset == 0;
         let pseudo_term = PseudoTerminal::new(parser.screen())
-            .cursor(PtCursor::default().visibility(false));
+            .cursor(PtCursor::default().visibility(cursor_visible));
         frame.render_widget(pseudo_term, term_area);
-
-        // --- Render active prompt + input ---
-        render_prompt(frame, input, cwd, prompt_area);
 
         // --- Render status bar ---
         render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, status_area);
     })?;
 
     Ok(())
-}
-
-/// Render the active prompt line with cursor.
-fn render_prompt(frame: &mut Frame, input: &InputLine, cwd: &str, area: Rect) {
-    let prompt = format!("{}$ ", cwd);
-    let prompt_span = Span::styled(
-        prompt.clone(),
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-    );
-    let content_span = Span::raw(input.content().to_string());
-    let line = Line::from(vec![prompt_span, content_span]);
-    frame.render_widget(Paragraph::new(line), area);
-
-    // Position the cursor.
-    let cursor_x = area.x + prompt.len() as u16 + input.cursor_position() as u16;
-    let cursor_x = cursor_x.min(area.x + area.width.saturating_sub(1));
-    frame.set_cursor_position((cursor_x, area.y));
 }
 
 /// Render the status bar at the bottom of the screen.
@@ -523,7 +517,7 @@ fn render_status_bar(
         "daemon: offline"
     };
 
-    let right = format!(" {} | slate v0.1.0 ", daemon_status);
+    let right = format!(" {} | slate v{} ", daemon_status, VERSION);
     let left = format!(" {} ", cwd);
 
     // Pad the middle so right-side text is right-aligned.

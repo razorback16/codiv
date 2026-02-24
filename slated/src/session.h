@@ -18,13 +18,9 @@ public:
     int fd() const { return fd_; }
 
     void update_env(const std::vector<std::pair<std::string, std::string>>& env_vars,
-                    const std::string& path,
-                    const std::string& aliases,
-                    const std::string& functions) {
+                    const std::string& path) {
         env_vars_ = env_vars;
         path_ = path;
-        aliases_ = aliases;
-        functions_ = functions;
     }
 
     void update_cwd(const std::string& cwd) { cwd_ = cwd; }
@@ -44,8 +40,6 @@ private:
     std::string cwd_;
     std::vector<std::pair<std::string, std::string>> env_vars_;
     std::string path_;
-    std::string aliases_;
-    std::string functions_;
     std::chrono::steady_clock::time_point last_heartbeat_;
 };
 

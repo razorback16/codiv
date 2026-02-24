@@ -1,6 +1,5 @@
 #include "daemon.h"
 #include "types.h"
-#include "ipc_protocol.h"
 
 #include <iostream>
 #include <fstream>
@@ -160,9 +159,7 @@ void SlatedDaemon::dispatch_message(int fd, const slate::ipc::Message* msg) {
                 }
                 it->second.update_env(
                     vars,
-                    env->path()      ? env->path()->str()      : "",
-                    env->aliases()   ? env->aliases()->str()   : "",
-                    env->functions() ? env->functions()->str() : "");
+                    env->path() ? env->path()->str() : "");
 
                 if (env->cwd()) {
                     it->second.update_cwd(env->cwd()->str());

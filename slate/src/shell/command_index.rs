@@ -1,57 +1,22 @@
-//! Command index: scans PATH directories, bash builtins, aliases, and functions.
+//! Command index: scans PATH directories for executable commands.
 //! Also provides input classification for the shell dispatcher.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
-
-use super::bash_coprocess::BashCoprocess;
-
-// ---------------------------------------------------------------------------
-// CommandType / CommandInfo
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommandType {
-    Executable,
-    Builtin,
-    Alias,
-    Function,
-    Unknown,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct CommandInfo {
-    pub cmd_type: CommandType,
-    pub path: String,
-    pub description: String,
-}
 
 // ---------------------------------------------------------------------------
 // CommandIndex
 // ---------------------------------------------------------------------------
 
 pub struct CommandIndex {
-    index: HashMap<String, CommandInfo>,
+    index: HashSet<String>,
 }
 
-#[allow(dead_code)]
 impl CommandIndex {
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: HashSet::new(),
         }
-    }
-
-    /// Build the full index: scan PATH, then query bash for builtins, aliases,
-    /// and functions.
-    pub fn build(&mut self, bash: &BashCoprocess) {
-        self.index.clear();
-        self.scan_path_directories();
-        self.query_builtins(bash);
-        self.query_aliases(bash);
-        self.query_functions(bash);
     }
 
     /// Scan all directories listed in `$PATH` for executable files.
@@ -94,126 +59,26 @@ impl CommandIndex {
                 }
 
                 let name = entry.file_name().to_string_lossy().into_owned();
-                // First entry wins — do not overwrite
-                if !self.index.contains_key(&name) {
-                    self.index.insert(
-                        name,
-                        CommandInfo {
-                            cmd_type: CommandType::Executable,
-                            path: entry.path().to_string_lossy().into_owned(),
-                            description: String::new(),
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    fn query_builtins(&mut self, bash: &BashCoprocess) {
-        let result = bash.execute("compgen -b", 30000);
-        let output = result.output;
-
-        for line in output.lines() {
-            let name = line.trim_end_matches(['\r', '\n']);
-            if name.is_empty() {
-                continue;
-            }
-            // Builtins override executables (same as C++ version)
-            self.index.insert(
-                name.to_string(),
-                CommandInfo {
-                    cmd_type: CommandType::Builtin,
-                    path: String::new(),
-                    description: "shell builtin".to_string(),
-                },
-            );
-        }
-    }
-
-    fn query_aliases(&mut self, bash: &BashCoprocess) {
-        let result = bash.execute("alias 2>/dev/null", 30000);
-        let output = result.output;
-
-        for line in output.lines() {
-            let line = line.trim_end_matches(['\r', '\n']);
-            // Lines look like: alias name='value'
-            let rest = match line.find("alias ") {
-                Some(pos) => &line[pos + 6..],
-                None => continue,
-            };
-
-            let eq = match rest.find('=') {
-                Some(pos) => pos,
-                None => continue,
-            };
-
-            let name = &rest[..eq];
-            let mut value = rest[eq + 1..].to_string();
-
-            // Strip surrounding single quotes
-            if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
-                value = value[1..value.len() - 1].to_string();
-            }
-
-            self.index.insert(
-                name.to_string(),
-                CommandInfo {
-                    cmd_type: CommandType::Alias,
-                    path: String::new(),
-                    description: value,
-                },
-            );
-        }
-    }
-
-    fn query_functions(&mut self, bash: &BashCoprocess) {
-        let result = bash.execute("compgen -A function", 30000);
-        let output = result.output;
-
-        for line in output.lines() {
-            let name = line.trim_end_matches(['\r', '\n']);
-            if name.is_empty() {
-                continue;
-            }
-            // Functions only added if not already present
-            if !self.index.contains_key(name) {
-                self.index.insert(
-                    name.to_string(),
-                    CommandInfo {
-                        cmd_type: CommandType::Function,
-                        path: String::new(),
-                        description: "shell function".to_string(),
-                    },
-                );
+                self.index.insert(name);
             }
         }
     }
 
     /// Check whether `name` is a known command.
     pub fn is_known(&self, name: &str) -> bool {
-        self.index.contains_key(name)
-    }
-
-    /// Look up detailed information for a command.
-    pub fn lookup(&self, name: &str) -> Option<&CommandInfo> {
-        self.index.get(name)
+        self.index.contains(name)
     }
 
     /// Return all command names that start with `prefix`, sorted alphabetically.
     pub fn complete(&self, prefix: &str) -> Vec<String> {
         let mut results: Vec<String> = self
             .index
-            .keys()
+            .iter()
             .filter(|name| prefix.is_empty() || name.starts_with(prefix))
             .cloned()
             .collect();
         results.sort();
         results
-    }
-
-    /// Number of indexed commands.
-    pub fn size(&self) -> usize {
-        self.index.len()
     }
 }
 
@@ -248,6 +113,7 @@ fn interactive_commands() -> HashSet<&'static str> {
     [
         "vim", "vi", "nvim", "nano", "emacs", "htop", "top", "less", "more", "man", "ssh",
         "tmux", "screen", "python", "python3", "node", "irb", "ghci",
+        "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3", "fzf", "docker",
     ]
     .into_iter()
     .collect()
@@ -302,13 +168,11 @@ mod tests {
         let idx = path_only_index();
         assert!(
             idx.is_known("ls"),
-            "ls should be found in PATH (index size: {})",
-            idx.size()
+            "ls should be found in PATH"
         );
         assert!(
             idx.is_known("echo"),
-            "echo should be found in PATH (index size: {})",
-            idx.size()
+            "echo should be found in PATH"
         );
     }
 
@@ -327,11 +191,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_returns_none() {
+    fn unknown_is_not_known() {
         let idx = path_only_index();
         assert!(
-            idx.lookup("xyzzy_definitely_not_a_command").is_none(),
-            "lookup of a nonsense name must return None"
+            !idx.is_known("xyzzy_definitely_not_a_command"),
+            "nonsense name must not be known"
         );
     }
 

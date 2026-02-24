@@ -4,26 +4,12 @@
 //! and proxies stdin/stdout bidirectionally to a PTY master fd while the
 //! terminal is in raw mode.
 
-use std::collections::HashSet;
 use std::os::fd::{BorrowedFd, RawFd};
-use std::sync::LazyLock;
 
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::termios::{self, SetArg, Termios};
 use nix::unistd;
-
-/// Commands that require interactive passthrough.
-#[allow(dead_code)]
-static INTERACTIVE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    HashSet::from([
-        "vim", "vi", "nvim", "nano", "emacs",
-        "htop", "top",
-        "less", "more", "man",
-        "ssh", "tmux", "screen",
-        "python", "python3", "node", "irb", "ghci",
-    ])
-});
 
 /// An interactive passthrough session that proxies raw I/O between the
 /// user's terminal and a PTY master file descriptor.
@@ -32,7 +18,6 @@ pub struct InteractiveSession {
     in_session: bool,
 }
 
-#[allow(dead_code)]
 impl InteractiveSession {
     /// Create a new `InteractiveSession`.
     pub fn new() -> Self {
@@ -40,27 +25,6 @@ impl InteractiveSession {
             saved_termios: None,
             in_session: false,
         }
-    }
-
-    /// Returns `true` if `command` begins with a program name that requires
-    /// interactive passthrough (e.g. vim, python3, ssh).
-    ///
-    /// The first whitespace-delimited token is extracted and any leading path
-    /// components are stripped before checking against the known set.
-    pub fn needs_passthrough(command: &str) -> bool {
-        let first_word = match command.split_whitespace().next() {
-            Some(w) => w,
-            None => return false,
-        };
-        // Strip leading path: "/usr/bin/vim" -> "vim"
-        let basename = match first_word.rfind('/') {
-            Some(pos) => &first_word[pos + 1..],
-            None => first_word,
-        };
-        if basename.is_empty() {
-            return false;
-        }
-        INTERACTIVE_COMMANDS.contains(basename)
     }
 
     /// Enter the interactive session.
@@ -161,6 +125,14 @@ impl InteractiveSession {
 
     /// Restore the saved terminal attributes and mark the session as inactive.
     pub fn exit(&mut self) {
+        // Write terminal cleanup sequences before restoring termios.
+        // These handle cases where the interactive program left the
+        // terminal in an unexpected state.
+        let stdout_fd = unsafe { BorrowedFd::borrow_raw(libc::STDOUT_FILENO) };
+        let _ = nix::unistd::write(stdout_fd, b"\x1b[?1049l"); // exit alt screen
+        let _ = nix::unistd::write(stdout_fd, b"\x1b[?25h");   // show cursor
+        let _ = nix::unistd::write(stdout_fd, b"\x1b[0m");     // reset SGR
+
         if let Some(ref saved) = self.saved_termios.take() {
             let stdin_fd = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
             let _ = termios::tcsetattr(stdin_fd, SetArg::TCSANOW, saved);
@@ -188,46 +160,4 @@ fn write_all(fd: RawFd, data: &[u8]) -> bool {
         }
     }
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_needs_passthrough_vim() {
-        assert!(InteractiveSession::needs_passthrough("vim file.txt"));
-    }
-
-    #[test]
-    fn test_needs_passthrough_with_path() {
-        assert!(InteractiveSession::needs_passthrough("/usr/bin/vim file.txt"));
-    }
-
-    #[test]
-    fn test_needs_passthrough_ls() {
-        assert!(!InteractiveSession::needs_passthrough("ls -la"));
-    }
-
-    #[test]
-    fn test_needs_passthrough_empty() {
-        assert!(!InteractiveSession::needs_passthrough(""));
-    }
-
-    #[test]
-    fn test_needs_passthrough_all_interactive() {
-        let commands = [
-            "vim", "vi", "nvim", "nano", "emacs",
-            "htop", "top",
-            "less", "more", "man",
-            "ssh", "tmux", "screen",
-            "python", "python3", "node", "irb", "ghci",
-        ];
-        for cmd in &commands {
-            assert!(
-                InteractiveSession::needs_passthrough(cmd),
-                "{cmd} should need passthrough"
-            );
-        }
-    }
 }

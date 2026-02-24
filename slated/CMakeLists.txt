@@ -43,7 +43,6 @@ add_custom_target(fbs_headers DEPENDS ${FBS_GENERATED_DIR}/ipc_generated.h)
 add_executable(slated
   src/main.cpp
   src/daemon.cpp
-  src/session.cpp
   src/worker_process.cpp
   src/ipc_protocol.cpp
   src/ipc/socket_server.cpp

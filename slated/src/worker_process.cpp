@@ -56,7 +56,9 @@ WorkerProcess spawn_worker(
         }
 
         // Set up environment from session snapshot.
-        clearenv();
+        // clearenv() is not available on macOS; clear environ portably.
+        static char *empty_env[] = { nullptr };
+        ::environ = empty_env;
         for (const auto& [key, value] : env_vars) {
             setenv(key.c_str(), value.c_str(), 1);
         }

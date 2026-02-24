@@ -104,7 +104,6 @@ pub fn build_heartbeat(session_id: &str) -> Vec<u8> {
 #[derive(Debug)]
 pub enum DaemonMessage {
     CommandOutput {
-        request_id: String,
         data: Vec<u8>,
         is_stderr: bool,
     },
@@ -128,7 +127,6 @@ pub fn parse_message(data: &[u8]) -> Option<DaemonMessage> {
         MessageType::CommandOutput => {
             let out = msg.body_as_command_output_msg()?;
             Some(DaemonMessage::CommandOutput {
-                request_id: out.request_id().unwrap_or_default().to_string(),
                 data: out.data().map(|d| d.iter().map(|b| b as u8).collect()).unwrap_or_default(),
                 is_stderr: out.is_stderr(),
             })

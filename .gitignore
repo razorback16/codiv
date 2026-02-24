@@ -4,3 +4,5 @@ slated/build/
 *.rlib
 .worktrees/
 .DS_Store
+.claude-octopus/
+slated/.cache/

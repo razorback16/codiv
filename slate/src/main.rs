@@ -6,7 +6,7 @@ mod ipc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

@@ -27,7 +27,6 @@ pub struct BashCoprocess {
     child_pid: Pid,
 }
 
-#[allow(dead_code)]
 impl BashCoprocess {
     /// Spawn a new bash co-process.
     ///
@@ -41,7 +40,24 @@ impl BashCoprocess {
             ws_ypixel: 0,
         };
 
-        // Safety: we handle the fork child by immediately exec-ing bash.
+        // Pre-compute all heap allocations that the child needs BEFORE forking.
+        //
+        // After `fork`, the child inherits the parent's mutexes in their current
+        // state. If the allocator's internal lock was held at the moment of fork,
+        // any `malloc`/`CString::new` call in the child will deadlock. Building
+        // all required CStrings here, before the fork, avoids any allocation in
+        // the child.
+        let bash_cstr = CString::new("bash").unwrap();
+        let args: Vec<CString> = vec![
+            CString::new("bash").unwrap(),
+            CString::new("--noediting").unwrap(),
+            CString::new("--norc").unwrap(),
+            CString::new("--noprofile").unwrap(),
+            CString::new("-i").unwrap(),
+        ];
+
+        // Safety: we handle the fork child by immediately exec-ing bash using
+        // only async-signal-safe functions and the pre-built CStrings above.
         let fork_result = unsafe { forkpty(&ws, None) }
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
@@ -56,7 +72,8 @@ impl BashCoprocess {
                 Ok(coprocess)
             }
             ForkptyResult::Child => {
-                // In the child process: set up environment and exec bash
+                // In the child process: only async-signal-safe syscalls from here
+                // to execvp. No heap allocation. No unwinding. Use _exit, not exit.
                 unsafe {
                     libc::setenv(
                         b"PS1\0".as_ptr() as *const libc::c_char,
@@ -89,16 +106,10 @@ impl BashCoprocess {
                     );
                 }
 
-                let bash = CString::new("bash").unwrap();
-                let args: Vec<CString> = vec![
-                    CString::new("bash").unwrap(),
-                    CString::new("--noediting").unwrap(),
-                    CString::new("--norc").unwrap(),
-                    CString::new("--noprofile").unwrap(),
-                    CString::new("-i").unwrap(),
-                ];
-                let _ = nix::unistd::execvp(&bash, &args);
-                // If execvp returns, it failed
+                // Use the pre-built CStrings; no allocation here.
+                let _ = nix::unistd::execvp(&bash_cstr, &args);
+                // If execvp returns, it failed — use _exit, not exit, to avoid
+                // running atexit handlers or flushing stdio buffers from the parent.
                 unsafe { libc::_exit(127) };
             }
         }
@@ -107,19 +118,6 @@ impl BashCoprocess {
     /// Get the master file descriptor.
     pub fn master_fd(&self) -> &OwnedFd {
         &self.master_fd
-    }
-
-    /// Get the child PID.
-    pub fn child_pid(&self) -> Pid {
-        self.child_pid
-    }
-
-    /// Check if the child process is still alive.
-    pub fn is_alive(&self) -> bool {
-        matches!(
-            waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)),
-            Ok(nix::sys::wait::WaitStatus::StillAlive)
-        )
     }
 
     /// Send a signal to the child process.
@@ -253,8 +251,13 @@ impl BashCoprocess {
                 break;
             }
 
+            // Cap the per-iteration poll timeout to 1000ms so the deadline check
+            // fires at least once per second. This guards against poll blocking
+            // for the full remaining time when data never arrives (e.g., because
+            // bash exited without triggering POLLHUP on some platforms).
+            let iter_ms = remaining.as_millis().min(1000) as i32;
             let poll_timeout =
-                PollTimeout::try_from(remaining.as_millis() as i32).unwrap_or(PollTimeout::NONE);
+                PollTimeout::try_from(iter_ms).unwrap_or(PollTimeout::try_from(1000i32).unwrap());
 
             let borrowed_fd = self.master_fd.as_fd();
             let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
@@ -275,16 +278,23 @@ impl BashCoprocess {
                                         break;
                                     }
                                 }
-                                _ => break,
+                                Ok(_) => break, // read returned 0: PTY EOF
+                                Err(nix::errno::Errno::EINTR) => continue, // signal interrupted read; retry
+                                Err(_) => break,
                             }
                         } else if revents.contains(PollFlags::POLLHUP)
                             || revents.contains(PollFlags::POLLERR)
                         {
                             break;
                         }
+                        // POLLPRI (terminal state change on macOS) or other flags:
+                        // no data to read, just loop and poll again.
                     }
                 }
-                _ => break,
+                Ok(0) => {}      // poll timed out — loop back so deadline check can fire
+                Ok(_) => break,  // unexpected return value
+                Err(nix::errno::Errno::EINTR) => continue, // signal interrupted poll; retry
+                Err(_) => break,
             }
         }
 
@@ -292,26 +302,34 @@ impl BashCoprocess {
     }
 
     /// Drain initial prompt output after spawning.
+    ///
+    /// Reads and discards all output from the shell until 200 ms of silence.
+    /// This ensures the initial prompt (and any shell startup messages) are
+    /// consumed before the first `execute` call sees the PTY output.
     fn drain_initial_output(&self) {
+        let timeout = PollTimeout::try_from(200i32).unwrap();
         for _ in 0..20 {
             let borrowed_fd = self.master_fd.as_fd();
             let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
-            match poll(
-                &mut poll_fds,
-                PollTimeout::try_from(200i32).unwrap_or(PollTimeout::NONE),
-            ) {
+            match poll(&mut poll_fds, timeout) {
                 Ok(n) if n > 0 => {
                     if let Some(revents) = poll_fds[0].revents() {
                         if revents.contains(PollFlags::POLLIN) {
                             let mut buf = [0u8; 4096];
+                            // Ignore errors: a read failure (including EIO on
+                            // macOS PTY close) simply means no more data to drain.
                             let _ = nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf);
-                        } else {
-                            break;
+                        } else if revents.contains(PollFlags::POLLHUP)
+                            || revents.contains(PollFlags::POLLERR)
+                        {
+                            break; // shell exited during startup
                         }
-                    } else {
-                        break;
+                        // POLLPRI (terminal state change, common on macOS):
+                        // no data, just loop and poll again — do NOT break early.
                     }
                 }
+                Ok(0) => break, // 200 ms of silence: done draining
+                Err(nix::errno::Errno::EINTR) => continue, // signal interrupted; retry
                 _ => break,
             }
         }
@@ -438,15 +456,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_spawn_and_is_alive() {
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
-        assert!(
-            coproc.is_alive(),
-            "Bash coprocess should be alive after spawn"
-        );
-    }
-
-    #[test]
     fn test_execute_echo_hello() {
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo hello");
@@ -561,4 +570,5 @@ mod tests {
         let stripped = BashCoprocess::strip_ansi(input);
         assert_eq!(stripped, "hello world");
     }
+
 }
