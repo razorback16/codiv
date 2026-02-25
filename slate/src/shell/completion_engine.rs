@@ -145,7 +145,7 @@ impl CompletionEngine {
 
     /// Kick off background initialization (non-blocking).
     /// Sends the first command (sourcing bash-completion) to the coprocess.
-    pub fn start_init(&mut self, bash: &BashCoprocess) {
+    pub fn start_init(&mut self, bash: &mut BashCoprocess) {
         if !matches!(self.state, InitState::NotStarted) {
             return;
         }
@@ -159,7 +159,7 @@ impl CompletionEngine {
 
     /// Poll initialization progress (non-blocking). Call each event loop tick
     /// when no user command is pending (they share the coprocess).
-    pub fn poll_init(&mut self, bash: &BashCoprocess) {
+    pub fn poll_init(&mut self, bash: &mut BashCoprocess) {
         loop {
             match &mut self.state {
                 InitState::Sourcing {
@@ -212,7 +212,7 @@ impl CompletionEngine {
 
     /// Block until initialization completes. Only called if the user presses
     /// Tab before background init finishes.
-    fn finish_init_blocking(&mut self, bash: &BashCoprocess) {
+    fn finish_init_blocking(&mut self, bash: &mut BashCoprocess) {
         match &self.state {
             InitState::Ready => return,
             InitState::NotStarted => {
@@ -244,7 +244,7 @@ impl CompletionEngine {
     /// Generate completions for the input line at the given cursor position.
     pub fn complete(
         &mut self,
-        bash: &BashCoprocess,
+        bash: &mut BashCoprocess,
         line: &str,
         cursor: usize,
     ) -> Option<CompletionResult> {
@@ -316,9 +316,9 @@ mod tests {
     #[test]
     fn test_command_completion() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut bash = BashCoprocess::spawn(500, 24).expect("spawn");
         let mut engine = CompletionEngine::new();
-        let result = engine.complete(&bash, "ech", 3).unwrap();
+        let result = engine.complete(&mut bash, "ech", 3).unwrap();
         assert!(
             result.candidates.iter().any(|c| c == "echo"),
             "should complete 'ech' to 'echo', got: {:?}",
@@ -331,10 +331,10 @@ mod tests {
     #[test]
     fn test_file_completion() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut bash = BashCoprocess::spawn(500, 24).expect("spawn");
         let mut engine = CompletionEngine::new();
         // /tmp should exist and have files
-        let result = engine.complete(&bash, "ls /tmp/", 8).unwrap();
+        let result = engine.complete(&mut bash, "ls /tmp/", 8).unwrap();
         // We just check it returns something (the exact files vary)
         assert_eq!(result.replace_start, 3);
         assert_eq!(result.replace_end, 8);
@@ -343,9 +343,9 @@ mod tests {
     #[test]
     fn test_no_matches() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut bash = BashCoprocess::spawn(500, 24).expect("spawn");
         let mut engine = CompletionEngine::new();
-        let result = engine.complete(&bash, "xyzzy_no_such_cmd_999", 21).unwrap();
+        let result = engine.complete(&mut bash, "xyzzy_no_such_cmd_999", 21).unwrap();
         assert!(
             result.candidates.is_empty(),
             "should have no matches, got: {:?}",
@@ -356,10 +356,10 @@ mod tests {
     #[test]
     fn test_git_subcommand_completion() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut bash = BashCoprocess::spawn(500, 24).expect("spawn");
         let mut engine = CompletionEngine::new();
         // Complete "git sta" — should include status/stash via lazy-loaded completion
-        let result = engine.complete(&bash, "git sta", 7).unwrap();
+        let result = engine.complete(&mut bash, "git sta", 7).unwrap();
         assert!(
             result
                 .candidates
@@ -375,10 +375,10 @@ mod tests {
     #[test]
     fn test_completion_with_argument_context() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut bash = BashCoprocess::spawn(500, 24).expect("spawn");
         let mut engine = CompletionEngine::new();
         // Complete "ls /e" — should include /etc
-        let result = engine.complete(&bash, "ls /e", 5).unwrap();
+        let result = engine.complete(&mut bash, "ls /e", 5).unwrap();
         assert!(
             result.candidates.iter().any(|c| c.contains("etc")),
             "should complete '/e' to include 'etc', got: {:?}",

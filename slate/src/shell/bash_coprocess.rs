@@ -1,18 +1,15 @@
 //! Bash co-process management via PTY.
 //!
-//! Faithful Rust port of the C++ `BashCoprocess` class. Spawns a bash shell
-//! via `forkpty`, executes commands using a sentinel protocol, and provides
-//! helpers for capturing cwd and environment variables.
+//! Spawns a bash shell via `portable-pty`, executes commands using a sentinel
+//! protocol, and provides helpers for capturing cwd and environment variables.
 
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::pty::{forkpty, ForkptyResult, Winsize};
-use nix::sys::signal::{kill, Signal};
-use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{write as nix_write, Pid};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use rand::Rng;
-use std::ffi::CString;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
-use std::time::Instant;
+use std::io::{Read, Write};
+use std::os::fd::RawFd;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Result of executing a command in the bash co-process.
 #[derive(Debug, Clone)]
@@ -23,94 +20,93 @@ pub struct CommandResult {
 
 /// A bash co-process that communicates over a PTY using a sentinel protocol.
 pub struct BashCoprocess {
-    master_fd: OwnedFd,
-    child_pid: Pid,
+    writer: Box<dyn Write + Send>,
+    reader_rx: Receiver<Vec<u8>>,
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    _reader_handle: JoinHandle<()>,
+}
+
+fn reader_thread(mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<Vec<u8>>) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 impl BashCoprocess {
     /// Spawn a new bash co-process.
     ///
-    /// Creates a PTY, forks, and execs `bash --noediting --norc --noprofile -i`
-    /// in the child. Drains the initial prompt output in the parent.
+    /// Creates a PTY via portable-pty, spawns `bash --noediting --norc --noprofile -i`,
+    /// and starts a background reader thread. Drains initial prompt output adaptively.
     pub fn spawn(cols: u16, rows: u16) -> std::io::Result<Self> {
-        let ws = Winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
+        let pty_system = native_pty_system();
 
-        // Pre-compute all heap allocations that the child needs BEFORE forking.
-        //
-        // After `fork`, the child inherits the parent's mutexes in their current
-        // state. If the allocator's internal lock was held at the moment of fork,
-        // any `malloc`/`CString::new` call in the child will deadlock. Building
-        // all required CStrings here, before the fork, avoids any allocation in
-        // the child.
-        let bash_cstr = CString::new("bash").unwrap();
-        let args: Vec<CString> = vec![
-            CString::new("bash").unwrap(),
-            CString::new("--noediting").unwrap(),
-            CString::new("--norc").unwrap(),
-            CString::new("--noprofile").unwrap(),
-            CString::new("-i").unwrap(),
-        ];
-
-        // Safety: we handle the fork child by immediately exec-ing bash using
-        // only async-signal-safe functions and the pre-built CStrings above.
-        let fork_result = unsafe { forkpty(&ws, None) }
+        let pair = pty_system
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-        match fork_result {
-            ForkptyResult::Parent { child, master } => {
-                let coprocess = BashCoprocess {
-                    master_fd: master,
-                    child_pid: child,
-                };
-                // Drain the initial prompt output
-                coprocess.drain_initial_output();
-                Ok(coprocess)
-            }
-            ForkptyResult::Child => {
-                // In the child process: only async-signal-safe syscalls from here
-                // to execvp. No heap allocation. No unwinding. Use _exit, not exit.
-                unsafe {
-                    libc::setenv(
-                        b"PS1\0".as_ptr() as *const libc::c_char,
-                        b"$ \0".as_ptr() as *const libc::c_char,
-                        1,
-                    );
-                    libc::unsetenv(b"PROMPT_COMMAND\0".as_ptr() as *const libc::c_char);
-                    libc::setenv(
-                        b"HISTFILE\0".as_ptr() as *const libc::c_char,
-                        b"/dev/null\0".as_ptr() as *const libc::c_char,
-                        1,
-                    );
-                    libc::setenv(
-                        b"TERM\0".as_ptr() as *const libc::c_char,
-                        b"xterm-256color\0".as_ptr() as *const libc::c_char,
-                        1,
-                    );
-                }
+        let mut cmd = CommandBuilder::new("bash");
+        cmd.args(["--noediting", "--norc", "--noprofile", "-i"]);
+        cmd.env("PS1", "$ ");
+        cmd.env("HISTFILE", "/dev/null");
+        cmd.env("TERM", "xterm-256color");
+        // Unset PROMPT_COMMAND to avoid spurious output.
+        cmd.env_remove("PROMPT_COMMAND");
 
-                // Use the pre-built CStrings; no allocation here.
-                let _ = nix::unistd::execvp(&bash_cstr, &args);
-                // If execvp returns, it failed — use _exit, not exit, to avoid
-                // running atexit handlers or flushing stdio buffers from the parent.
-                unsafe { libc::_exit(127) };
-            }
-        }
-    }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-    /// Send a signal to the child process.
-    pub fn send_signal(&self, sig: Signal) -> nix::Result<()> {
-        kill(self.child_pid, sig)
+        // Drop slave — we only need master side.
+        drop(pair.slave);
+
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::Builder::new()
+            .name("pty-reader".into())
+            .spawn(move || reader_thread(reader, tx))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let mut coprocess = BashCoprocess {
+            writer,
+            reader_rx: rx,
+            master: pair.master,
+            child,
+            _reader_handle: handle,
+        };
+
+        // Drain the initial prompt output adaptively.
+        coprocess.drain_initial_output();
+        Ok(coprocess)
     }
 
     /// Send Ctrl-C to the PTY. This causes the terminal driver to deliver
     /// SIGINT to the entire foreground process group, interrupting both
     /// bash and any child process (e.g. `sleep`, `cat`).
-    pub fn send_interrupt(&self) -> bool {
+    pub fn send_interrupt(&mut self) -> bool {
         self.write_all(b"\x03")
     }
 
@@ -119,14 +115,15 @@ impl BashCoprocess {
     /// Used to forward user keystrokes to the bash coprocess while a
     /// command is executing (e.g. password prompts for `sudo`, Y/n
     /// prompts for `apt install`).
-    pub fn send_bytes(&self, data: &[u8]) -> bool {
+    pub fn send_bytes(&mut self, data: &[u8]) -> bool {
         self.write_all(data)
     }
 
     /// Expose the PTY master fd for direct proxying (e.g. interactive
-    /// alternate-screen passthrough).
-    pub fn master_raw_fd(&self) -> std::os::fd::RawFd {
-        self.master_fd.as_raw_fd()
+    /// alternate-screen passthrough). Returns `None` if the fd is not
+    /// available (e.g. on non-Unix platforms).
+    pub fn master_raw_fd(&self) -> Option<RawFd> {
+        self.master.as_raw_fd()
     }
 
     /// Update the PTY window size. Called on terminal resize so that
@@ -141,26 +138,16 @@ impl BashCoprocess {
     /// terminal size when proxying interactive programs, and to restore
     /// the wide sentinel-protocol dimensions afterwards.
     pub fn resize_full(&self, rows: u16, cols: u16) {
-        let ws = libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        unsafe {
-            libc::ioctl(self.master_fd.as_raw_fd(), libc::TIOCSWINSZ, &ws);
-        }
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
     }
 
     /// Execute a command in the bash co-process and return its output and exit code.
-    pub fn execute(&self, command: &str, timeout_ms: i32) -> CommandResult {
-        if self.master_fd.as_raw_fd() < 0 {
-            return CommandResult {
-                output: String::new(),
-                exit_code: -1,
-            };
-        }
-
+    pub fn execute(&mut self, command: &str, timeout_ms: i32) -> CommandResult {
         let sentinel = Self::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
         // Single-line format: command and sentinel on one line so bash parses
@@ -198,18 +185,18 @@ impl BashCoprocess {
     }
 
     /// Convenience: execute with default 30s timeout.
-    pub fn execute_default(&self, command: &str) -> CommandResult {
+    pub fn execute_default(&mut self, command: &str) -> CommandResult {
         self.execute(command, 30000)
     }
 
     /// Capture the current working directory of the shell.
-    pub fn capture_cwd(&self) -> String {
+    pub fn capture_cwd(&mut self) -> String {
         let result = self.execute_default("pwd");
         result.output.trim().to_string()
     }
 
     /// Capture the current environment variables of the shell.
-    pub fn capture_env(&self) -> Vec<(String, String)> {
+    pub fn capture_env(&mut self) -> Vec<(String, String)> {
         let result = self.execute_default("env");
         let mut env_vars = Vec::new();
         for line in result.output.lines() {
@@ -230,10 +217,7 @@ impl BashCoprocess {
     /// Write command + sentinel to bash without waiting for completion.
     /// Returns the sentinel string needed to detect completion, or `None`
     /// if the write failed.
-    pub fn start_command(&self, command: &str) -> Option<String> {
-        if self.master_fd.as_raw_fd() < 0 {
-            return None;
-        }
+    pub fn start_command(&mut self, command: &str) -> Option<String> {
         let sentinel = Self::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
         // Single-line format: see execute() for rationale.
@@ -251,50 +235,28 @@ impl BashCoprocess {
     /// Non-blocking read from the PTY. Returns bytes if data is available,
     /// or an empty vec if there is nothing to read right now.
     pub fn try_read(&self) -> Vec<u8> {
-        let borrowed_fd = self.master_fd.as_fd();
-        let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
-        let poll_timeout = PollTimeout::ZERO;
-
-        match poll(&mut poll_fds, poll_timeout) {
-            Ok(n) if n > 0 => {
-                if let Some(revents) = poll_fds[0].revents() {
-                    if revents.contains(PollFlags::POLLIN) {
-                        let mut buf = [0u8; 4096];
-                        match nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf) {
-                            Ok(n) if n > 0 => return buf[..n].to_vec(),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            _ => {}
+        match self.reader_rx.try_recv() {
+            Ok(data) => data,
+            Err(TryRecvError::Empty) => Vec::new(),
+            Err(TryRecvError::Disconnected) => Vec::new(),
         }
-        Vec::new()
     }
 
     /// Drain residual PTY output for up to `ms` milliseconds.
     /// Used after SIGINT to clear bash's `^C` echo and prompt.
     pub fn drain_for(&self, ms: i32) {
-        let deadline = Instant::now() + std::time::Duration::from_millis(ms as u64);
+        let deadline = Instant::now() + Duration::from_millis(ms as u64);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
-            let iter_ms = remaining.as_millis().min(50) as i32;
-            let poll_timeout =
-                PollTimeout::try_from(iter_ms).unwrap_or(PollTimeout::try_from(50i32).unwrap());
-
-            let borrowed_fd = self.master_fd.as_fd();
-            let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
-
-            match poll(&mut poll_fds, poll_timeout) {
-                Ok(n) if n > 0 => {
-                    let mut buf = [0u8; 4096];
-                    let _ = nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf);
+            match self.reader_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(_) => {
+                    // Data received and discarded; keep draining.
                 }
-                Ok(0) => break, // silence — done draining
-                _ => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => break, // silence — done draining
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     }
@@ -358,22 +320,15 @@ impl BashCoprocess {
         }
     }
 
-    /// Write all bytes to the master fd.
-    fn write_all(&self, data: &[u8]) -> bool {
-        let mut written = 0;
-        while written < data.len() {
-            match nix_write(&self.master_fd, &data[written..]) {
-                Ok(n) => written += n,
-                Err(_) => return false,
-            }
-        }
-        true
+    /// Write all bytes to the PTY writer.
+    fn write_all(&mut self, data: &[u8]) -> bool {
+        self.writer.write_all(data).is_ok()
     }
 
     /// Read from the PTY until the expanded sentinel is found or timeout expires.
     fn read_until_sentinel(&self, sentinel: &str, timeout_ms: i32) -> String {
         let mut accumulated = String::new();
-        let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -381,50 +336,20 @@ impl BashCoprocess {
                 break;
             }
 
-            // Cap the per-iteration poll timeout to 1000ms so the deadline check
-            // fires at least once per second. This guards against poll blocking
-            // for the full remaining time when data never arrives (e.g., because
-            // bash exited without triggering POLLHUP on some platforms).
-            let iter_ms = remaining.as_millis().min(1000) as i32;
-            let poll_timeout =
-                PollTimeout::try_from(iter_ms).unwrap_or(PollTimeout::try_from(1000i32).unwrap());
-
-            let borrowed_fd = self.master_fd.as_fd();
-            let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
-
-            match poll(&mut poll_fds, poll_timeout) {
-                Ok(n) if n > 0 => {
-                    if let Some(revents) = poll_fds[0].revents() {
-                        if revents.contains(PollFlags::POLLIN) {
-                            let mut buf = [0u8; 4096];
-                            match nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf) {
-                                Ok(n) if n > 0 => {
-                                    let chunk = String::from_utf8_lossy(&buf[..n]);
-                                    accumulated.push_str(&chunk);
-                                    // Check if expanded sentinel is present
-                                    if Self::find_expanded_sentinel(&accumulated, sentinel)
-                                        .is_some()
-                                    {
-                                        break;
-                                    }
-                                }
-                                Ok(_) => break, // read returned 0: PTY EOF
-                                Err(nix::errno::Errno::EINTR) => continue, // signal interrupted read; retry
-                                Err(_) => break,
-                            }
-                        } else if revents.contains(PollFlags::POLLHUP)
-                            || revents.contains(PollFlags::POLLERR)
-                        {
-                            break;
-                        }
-                        // POLLPRI (terminal state change on macOS) or other flags:
-                        // no data to read, just loop and poll again.
+            let wait = remaining.min(Duration::from_millis(1000));
+            match self.reader_rx.recv_timeout(wait) {
+                Ok(data) => {
+                    let chunk = String::from_utf8_lossy(&data);
+                    accumulated.push_str(&chunk);
+                    // Check if expanded sentinel is present
+                    if Self::find_expanded_sentinel(&accumulated, sentinel).is_some() {
+                        break;
                     }
                 }
-                Ok(0) => {}      // poll timed out — loop back so deadline check can fire
-                Ok(_) => break,  // unexpected return value
-                Err(nix::errno::Errno::EINTR) => continue, // signal interrupted poll; retry
-                Err(_) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Loop back so deadline check can fire
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
@@ -433,35 +358,18 @@ impl BashCoprocess {
 
     /// Drain initial prompt output after spawning.
     ///
-    /// Reads and discards all output from the shell until 200 ms of silence.
-    /// This ensures the initial prompt (and any shell startup messages) are
-    /// consumed before the first `execute` call sees the PTY output.
-    fn drain_initial_output(&self) {
-        let timeout = PollTimeout::try_from(200i32).unwrap();
-        for _ in 0..20 {
-            let borrowed_fd = self.master_fd.as_fd();
-            let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
-            match poll(&mut poll_fds, timeout) {
-                Ok(n) if n > 0 => {
-                    if let Some(revents) = poll_fds[0].revents() {
-                        if revents.contains(PollFlags::POLLIN) {
-                            let mut buf = [0u8; 4096];
-                            // Ignore errors: a read failure (including EIO on
-                            // macOS PTY close) simply means no more data to drain.
-                            let _ = nix::unistd::read(self.master_fd.as_raw_fd(), &mut buf);
-                        } else if revents.contains(PollFlags::POLLHUP)
-                            || revents.contains(PollFlags::POLLERR)
-                        {
-                            break; // shell exited during startup
-                        }
-                        // POLLPRI (terminal state change, common on macOS):
-                        // no data, just loop and poll again — do NOT break early.
-                    }
-                }
-                Ok(0) => break, // 200 ms of silence: done draining
-                Err(nix::errno::Errno::EINTR) => continue, // signal interrupted; retry
-                _ => break,
-            }
+    /// Uses the full sentinel protocol (with `__SLATE_EXIT`) so the expanded
+    /// sentinel is distinguishable from the echoed command line. This ensures
+    /// the initial prompt and any shell startup messages are consumed before
+    /// the first `execute` call sees the PTY output.
+    fn drain_initial_output(&mut self) {
+        let sentinel = Self::generate_sentinel();
+        let cmd = format!(
+            "true; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
+            sentinel
+        );
+        if self.write_all(cmd.as_bytes()) {
+            self.read_until_sentinel(&sentinel, 5000);
         }
     }
 
@@ -560,32 +468,8 @@ impl BashCoprocess {
 
 impl Drop for BashCoprocess {
     fn drop(&mut self) {
-        // Send SIGTERM first
-        let _ = kill(self.child_pid, Signal::SIGTERM);
-
-        // Give it a moment to exit
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Check if still alive and send SIGKILL if needed
-        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-            Ok(nix::sys::wait::WaitStatus::StillAlive) => {
-                let _ = kill(self.child_pid, Signal::SIGKILL);
-                // Give it up to 500ms to die instead of blocking forever
-                for _ in 0..5 {
-                    match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-                        Ok(nix::sys::wait::WaitStatus::StillAlive) => {
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                        _ => break,
-                    }
-                }
-            }
-            _ => {
-                // Already exited or error — try to reap just in case
-                let _ = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG));
-            }
-        }
-        // OwnedFd will be closed automatically on drop
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -594,7 +478,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// PTY tests must run sequentially — concurrent forkpty() calls under the
+    /// PTY tests must run sequentially — concurrent PTY calls under the
     /// parallel test harness cause resource contention that makes bash slow to
     /// start, breaking the sentinel-based protocol.
     static PTY_LOCK: Mutex<()> = Mutex::new(());
@@ -602,7 +486,7 @@ mod tests {
     #[test]
     fn test_execute_echo_hello() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo hello");
         assert_eq!(result.exit_code, 0, "exit code should be 0");
         assert!(
@@ -615,7 +499,7 @@ mod tests {
     #[test]
     fn test_execute_false_exit_code() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("false");
         assert_eq!(result.exit_code, 1, "exit code of 'false' should be 1");
     }
@@ -623,7 +507,7 @@ mod tests {
     #[test]
     fn test_execute_multiline() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo line1; echo line2");
         assert_eq!(result.exit_code, 0);
         assert!(
@@ -645,7 +529,7 @@ mod tests {
     #[test]
     fn test_capture_cwd() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let cwd = coproc.capture_cwd();
         assert!(!cwd.is_empty(), "cwd should not be empty");
         assert!(
@@ -658,7 +542,7 @@ mod tests {
     #[test]
     fn test_capture_env() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
         let env = coproc.capture_env();
         assert!(!env.is_empty(), "env should not be empty");
         // There should be at least some standard env vars
@@ -698,7 +582,7 @@ mod tests {
     fn test_large_output_not_truncated() {
         let _lock = PTY_LOCK.lock().unwrap();
         // Verify that output larger than the PTY row count is fully captured.
-        let coproc = BashCoprocess::spawn(500, 10).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 10).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("seq 1 100");
         assert_eq!(result.exit_code, 0);
         let lines: Vec<&str> = result.output.lines().collect();
@@ -724,13 +608,13 @@ mod tests {
     #[test]
     fn test_start_command_and_check_complete() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
 
         let sentinel = coproc.start_command("echo hello").expect("start_command failed");
         let mut accumulated = String::new();
 
         // Poll until sentinel appears (up to 5s).
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let result = loop {
             if Instant::now() > deadline {
                 panic!("timed out waiting for sentinel, accumulated: {:?}", accumulated);
@@ -742,7 +626,7 @@ mod tests {
             if let Some(r) = BashCoprocess::check_complete(&accumulated, "echo hello", &sentinel) {
                 break r;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         };
 
         assert_eq!(result.exit_code, 0, "exit code should be 0");
@@ -759,7 +643,7 @@ mod tests {
         let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
 
         // Drain initial output first.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(200));
         while !coproc.try_read().is_empty() {}
 
         // Now there should be no data.
@@ -774,7 +658,7 @@ mod tests {
     #[test]
     fn test_send_bytes_during_command() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
 
         // Use send_bytes to write a complete command to the PTY.
         // This verifies the public API writes through to the PTY
@@ -786,7 +670,7 @@ mod tests {
         );
 
         // Give bash time to process and produce output.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(500));
 
         // Read back the output — it should contain the echoed text.
         let mut output = String::new();
@@ -817,13 +701,13 @@ mod tests {
     #[test]
     fn test_interrupt_hanging_command() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
 
         // Start `sleep 60` which blocks but is cleanly interruptible.
         let sentinel = coproc.start_command("sleep 60").expect("start_command failed");
 
         // Give it a moment to start.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(200));
 
         // Send Ctrl-C via PTY (delivers SIGINT to entire foreground
         // process group, including the sleep child process).
@@ -832,7 +716,7 @@ mod tests {
         // Poll until sentinel appears (SIGINT causes sleep to exit,
         // then the sentinel echo runs with exit code 130).
         let mut accumulated = String::new();
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let result = loop {
             if Instant::now() > deadline {
                 break None;
@@ -844,7 +728,7 @@ mod tests {
             if let Some(r) = BashCoprocess::check_complete(&accumulated, "sleep 60", &sentinel) {
                 break Some(r);
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         };
 
         // Whether sentinel was found or not, drain residual output.

@@ -96,7 +96,7 @@ fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str)
 /// This function takes ownership of the terminal, enters the alternate screen
 /// with raw mode, and runs a synchronous event loop until the user exits.
 pub fn run(
-    bash: &BashCoprocess,
+    bash: &mut BashCoprocess,
     command_index: &CommandIndex,
     shutdown: Arc<AtomicBool>,
     initial_cwd: String,
@@ -156,7 +156,7 @@ fn event_loop(
     scroll_offset: &mut usize,
     input: &mut InputLine,
     interactive_session: &mut InteractiveSession,
-    bash: &BashCoprocess,
+    bash: &mut BashCoprocess,
     command_index: &CommandIndex,
     shutdown: &Arc<AtomicBool>,
     cwd: &mut String,
@@ -243,12 +243,15 @@ fn event_loop(
             execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
             // Proxy stdin↔coprocess PTY until the sentinel appears.
-            let accumulated = interactive_session.enter_with_sentinel(
-                bash.master_raw_fd(),
-                &pending.sentinel,
-                real_size.height,
-                real_size.width,
-            );
+            let master_fd = bash.master_raw_fd();
+            let accumulated = master_fd.and_then(|fd| {
+                interactive_session.enter_with_sentinel(
+                    fd,
+                    &pending.sentinel,
+                    real_size.height,
+                    real_size.width,
+                )
+            });
 
             // Resize coprocess PTY back to wide mode for sentinel protocol.
             let rows = real_size.height.saturating_sub(1).max(1);
@@ -494,8 +497,8 @@ fn event_loop(
                         bash.drain_for(100);
                         pending_command = None;
                     } else {
-                        // No command running — signal bash directly.
-                        let _ = bash.send_signal(nix::sys::signal::Signal::SIGINT);
+                        // No command running — send Ctrl-C via PTY.
+                        bash.send_interrupt();
                     }
                     parser.process(b"^C\r\n");
                     *prompt_is_live = false;

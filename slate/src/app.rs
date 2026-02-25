@@ -14,7 +14,7 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
     let (_cols, rows) = crossterm::terminal::size().unwrap_or((500, 24));
     // Use a wide PTY so the sentinel command (~82 chars) never wraps.
     // ratatui handles display-width rendering independently.
-    let bash = BashCoprocess::spawn(500, rows)?;
+    let mut bash = BashCoprocess::spawn(500, rows)?;
 
     // 2. Build command index
     let mut command_index = CommandIndex::new();
@@ -25,13 +25,13 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
     let cwd = bash.capture_cwd();
 
     // 4. Connect to daemon
-    let client = connect_to_daemon(&bash, &cwd);
+    let client = connect_to_daemon(&mut bash, &cwd);
 
     // 5. Run the terminal UI (blocks until exit)
-    ui::terminal::run(&bash, &command_index, shutdown, cwd, client)
+    ui::terminal::run(&mut bash, &command_index, shutdown, cwd, client)
 }
 
-fn connect_to_daemon(bash: &BashCoprocess, cwd: &str) -> Option<SlatedClient> {
+fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<SlatedClient> {
     // Try to ensure daemon is running (3s timeout).
     if !daemon_launcher::ensure_daemon_running(Duration::from_secs(3)) {
         return None;
