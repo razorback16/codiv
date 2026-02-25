@@ -7,6 +7,8 @@
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 
+use super::bash_coprocess::BashCoprocess;
+
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::pty::{forkpty, ForkptyResult, Winsize};
@@ -205,6 +207,144 @@ impl InteractiveSession {
         self.exit();
     }
 
+    /// Proxy stdin↔master_fd until the sentinel appears in output.
+    ///
+    /// Same raw-mode poll loop as `enter()`, but instead of breaking on
+    /// POLLHUP, we accumulate output and break when the expanded sentinel
+    /// is detected. Returns the accumulated tail (last 4KB) for exit code
+    /// extraction, or `None` on error.
+    pub fn enter_with_sentinel(
+        &mut self,
+        master_fd: RawFd,
+        sentinel: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Option<(String, Option<Vec<u8>>)> {
+        let stdin_fd = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
+        let master_bfd = unsafe { BorrowedFd::borrow_raw(master_fd) };
+
+        // Save current termios and switch to raw mode.
+        match termios::tcgetattr(stdin_fd) {
+            Ok(attrs) => {
+                self.saved_termios = Some(attrs.clone());
+                let mut raw = attrs;
+                termios::cfmakeraw(&mut raw);
+                let _ = termios::tcsetattr(stdin_fd, SetArg::TCSANOW, &raw);
+            }
+            Err(_) => {}
+        }
+
+        self.in_session = true;
+
+        let mut buf = [0u8; 4096];
+        // Keep only the last 4KB of accumulated output to bound memory.
+        const TAIL_CAP: usize = 4096;
+        let mut tail = String::with_capacity(TAIL_CAP + 512);
+        let mut found_sentinel = false;
+
+        // Shadow parser to track alternate screen state and capture content.
+        let mut shadow = vt100::Parser::new(rows, cols, 0);
+        let mut last_alt_screen: Option<Vec<u8>> = None;
+
+        loop {
+            if !self.in_session {
+                break;
+            }
+
+            let mut poll_fds = [
+                PollFd::new(stdin_fd, PollFlags::POLLIN),
+                PollFd::new(master_bfd, PollFlags::POLLIN),
+            ];
+
+            let ret = poll(&mut poll_fds, PollTimeout::from(100u16));
+            match ret {
+                Err(Errno::EINTR) => continue,
+                Err(_) => break,
+                Ok(_) => {}
+            }
+
+            // stdin -> master_fd
+            if let Some(revents) = poll_fds[0].revents() {
+                if revents.contains(PollFlags::POLLIN) {
+                    match unistd::read(libc::STDIN_FILENO, &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if !write_all(master_fd, &buf[..n]) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // master_fd -> stdout, accumulate for sentinel detection
+            if let Some(revents) = poll_fds[1].revents() {
+                if revents.contains(PollFlags::POLLIN) {
+                    match unistd::read(master_fd, &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            // Write to stdout for the user to see.
+                            let stdout_fd = unsafe { BorrowedFd::borrow_raw(libc::STDOUT_FILENO) };
+                            let _ = unistd::write(stdout_fd, &buf[..n]);
+
+                            // Feed shadow parser and snapshot while in alt screen.
+                            shadow.process(&buf[..n]);
+                            if shadow.screen().alternate_screen() {
+                                last_alt_screen = Some(snapshot_rows(shadow.screen(), cols));
+                            }
+
+                            // Accumulate for sentinel detection.
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            tail.push_str(&chunk);
+                            // Trim to last TAIL_CAP bytes to bound memory.
+                            if tail.len() > TAIL_CAP * 2 {
+                                let start = tail.len() - TAIL_CAP;
+                                // Find a valid char boundary.
+                                let start = tail.ceil_char_boundary(start);
+                                tail = tail[start..].to_string();
+                            }
+
+                            if BashCoprocess::find_expanded_sentinel(&tail, sentinel).is_some() {
+                                found_sentinel = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if revents.intersects(PollFlags::POLLHUP | PollFlags::POLLERR) {
+                    // Drain remaining output.
+                    loop {
+                        match unistd::read(master_fd, &mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                let stdout_fd = unsafe { BorrowedFd::borrow_raw(libc::STDOUT_FILENO) };
+                                let _ = unistd::write(stdout_fd, &buf[..n]);
+                                shadow.process(&buf[..n]);
+                                if shadow.screen().alternate_screen() {
+                                    last_alt_screen = Some(snapshot_rows(shadow.screen(), cols));
+                                }
+                                let chunk = String::from_utf8_lossy(&buf[..n]);
+                                tail.push_str(&chunk);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Restore terminal — but don't write cleanup escape sequences
+        // (the TUI caller will handle re-entering alternate screen).
+        if let Some(ref saved) = self.saved_termios.take() {
+            let stdin_fd = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
+            let _ = termios::tcsetattr(stdin_fd, SetArg::TCSANOW, saved);
+        }
+        self.in_session = false;
+
+        if found_sentinel { Some((tail, last_alt_screen)) } else { None }
+    }
+
     /// Restore the saved terminal attributes and mark the session as inactive.
     pub fn exit(&mut self) {
         // Write terminal cleanup sequences before restoring termios.
@@ -227,6 +367,32 @@ impl Drop for InteractiveSession {
     fn drop(&mut self) {
         self.exit();
     }
+}
+
+/// Snapshot visible rows from the shadow screen using per-row formatted output.
+///
+/// Uses `rows_formatted()` instead of `contents_formatted()` to avoid absolute
+/// cursor positioning sequences. Trailing blank rows are trimmed. Rows are
+/// joined with `\r\n` so the output flows naturally as scrollback text.
+fn snapshot_rows(screen: &vt100::Screen, cols: u16) -> Vec<u8> {
+    let rows: Vec<Vec<u8>> = screen.rows_formatted(0, cols).collect();
+    let plain: Vec<String> = screen.rows(0, cols).collect();
+
+    // Find the last non-blank row.
+    let last_non_blank = plain
+        .iter()
+        .rposition(|r| !r.trim().is_empty())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let mut buf = Vec::new();
+    for (i, row) in rows[..last_non_blank].iter().enumerate() {
+        buf.extend_from_slice(row);
+        if i + 1 < last_non_blank {
+            buf.extend_from_slice(b"\r\n");
+        }
+    }
+    buf
 }
 
 /// Query the real terminal size via ioctl(TIOCGWINSZ).

@@ -226,45 +226,76 @@ fn event_loop(
             }
         }
 
-        // If the parser detected alternate screen mode (e.g. less, man, git log
-        // pager), interrupt the coprocess and re-launch via Interactive path.
+        // If the parser detected alternate screen mode (e.g. less, man, vim,
+        // git log pager), proxy the coprocess PTY directly to the real
+        // terminal. The program keeps running untouched — we just change
+        // how I/O is routed.
         if parser.screen().alternate_screen() && pending_command.is_some() {
-            bash.send_interrupt();
-            bash.drain_for(100);
+            let pending = pending_command.take().unwrap();
 
-            let relaunch_cmd = pending_command.as_ref().unwrap().command.clone();
-            pending_command = None;
+            // Resize coprocess PTY to real terminal dimensions.
+            // This triggers SIGWINCH so the program redraws at correct size.
+            let real_size = term.size()?;
+            bash.resize_full(real_size.height, real_size.width);
 
-            // Reset the parser (clear partial alternate screen output).
-            let term_size = term.size()?;
-            let rows = term_size.height.saturating_sub(1).max(1);
-            let cols = term_size.width.max(1);
-            *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
-
-            // Snapshot env/cwd and launch through Interactive path.
-            let env = bash.capture_env();
-            let interactive_cwd = cwd.clone();
-
+            // Suspend the TUI.
             terminal::disable_raw_mode()?;
             execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
-            interactive_session.spawn_and_enter(&relaunch_cmd, &env, &interactive_cwd);
+            // Proxy stdin↔coprocess PTY until the sentinel appears.
+            let accumulated = interactive_session.enter_with_sentinel(
+                bash.master_raw_fd(),
+                &pending.sentinel,
+                real_size.height,
+                real_size.width,
+            );
 
-            // Resume TUI.
-            let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1bc");
+            // Resize coprocess PTY back to wide mode for sentinel protocol.
+            let rows = real_size.height.saturating_sub(1).max(1);
+            bash.resize_full(rows, 500);
+
+            // Resume TUI — clear the real terminal's visible area before
+            // re-entering alternate screen so no sentinel noise persists.
+            let _ = std::io::Write::write_all(
+                &mut std::io::stdout(),
+                b"\x1b[2J\x1b[H",
+            );
             let _ = std::io::Write::flush(&mut std::io::stdout());
             execute!(term.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
             terminal::enable_raw_mode()?;
             term.clear()?;
 
-            let visible_rows = parser.screen().size().0;
-            for _ in 0..visible_rows {
-                parser.process(b"\r\n");
+            // Restore the parser's normal buffer by exiting alternate screen.
+            // This preserves all previous scrollback — no parser reset needed.
+            let cols = real_size.width.max(1);
+            parser.screen_mut().set_size(rows, cols);
+            parser.process(b"\x1b[?1049l");
+            parser.process(b"\x1b[?25h");
+
+            if let Some((acc, captured_screen)) = accumulated {
+                // Feed captured alt screen content (last page the user saw)
+                // into scrollback, like iTerm2's "save to scrollback" feature.
+                if let Some(screen_bytes) = captured_screen {
+                    parser.process(&screen_bytes);
+                    parser.process(b"\r\n");
+                }
+
+                if let Some(result) = BashCoprocess::check_complete(
+                    &acc,
+                    &pending.command,
+                    &pending.sentinel,
+                ) {
+                    if result.exit_code != 0 {
+                        parser_push_styled(
+                            parser,
+                            &format!("exit code: {}", result.exit_code),
+                            "\x1b[31m",
+                        );
+                    }
+                }
             }
-            parser.process(b"\x1b[2J\x1b[H");
 
             *cwd = bash.capture_cwd();
-            parser_push_styled(parser, "(interactive session ended)", "\x1b[90m");
             *scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
@@ -528,12 +559,11 @@ fn event_loop(
                                 &interactive_cwd,
                             );
 
-                            // Reset terminal state before re-entering TUI.
-                            // RIS (Reset to Initial State) clears any residual
-                            // state left by the interactive program (e.g. vim).
+                            // Clear the real terminal's visible area before
+                            // re-entering alternate screen.
                             let _ = std::io::Write::write_all(
                                 &mut std::io::stdout(),
-                                b"\x1bc",
+                                b"\x1b[2J\x1b[H",
                             );
                             let _ = std::io::Write::flush(&mut std::io::stdout());
 
@@ -542,18 +572,21 @@ fn event_loop(
                             terminal::enable_raw_mode()?;
                             term.clear()?;
 
-                            // Push visible content into scrollback, then clear.
-                            // Push newlines from the current cursor position (NOT
-                            // from the bottom row). From cursor row C in a screen
-                            // of R rows, the first R-C newlines just move the
-                            // cursor down without scrolling, then subsequent ones
-                            // scroll only the actual content rows into scrollback
-                            // — no blank rows end up in scrollback.
-                            let visible_rows = parser.screen().size().0;
-                            for _ in 0..visible_rows {
-                                parser.process(b"\r\n");
+                            // Handle parser state based on whether the program
+                            // used alternate screen mode.
+                            if parser.screen().alternate_screen() {
+                                // Program used alt screen — restore normal buffer.
+                                parser.process(b"\x1b[?1049l");
+                                parser.process(b"\x1b[?25h");
+                            } else {
+                                // Program didn't use alt screen — push visible
+                                // content into scrollback, then clear.
+                                let visible_rows = parser.screen().size().0;
+                                for _ in 0..visible_rows {
+                                    parser.process(b"\r\n");
+                                }
+                                parser.process(b"\x1b[2J\x1b[H");
                             }
-                            parser.process(b"\x1b[2J\x1b[H");
 
                             // Update cwd — the interactive command may have
                             // changed the directory (e.g. via shell escape in vim).

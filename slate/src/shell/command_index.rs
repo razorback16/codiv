@@ -141,11 +141,15 @@ fn is_variable_assignment(first_word: &str) -> bool {
 }
 
 /// Set of commands that require interactive / PTY passthrough handling.
+///
+/// Only includes REPLs and remote sessions that need a real TTY but do NOT
+/// enter alternate screen mode. Fullscreen programs (vim, less, htop, man,
+/// etc.) are handled automatically: they run through Execute and get
+/// re-launched via Interactive when alternate screen mode is detected.
 fn interactive_commands() -> HashSet<&'static str> {
     [
-        "vim", "vi", "nvim", "nano", "emacs", "htop", "top", "less", "more", "man", "ssh",
-        "tmux", "screen", "python", "python3", "node", "irb", "ghci",
-        "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3", "fzf", "docker",
+        "ssh", "tmux", "screen", "python", "python3", "node", "irb", "ghci",
+        "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3", "docker",
         "sudo",
     ]
     .into_iter()
@@ -251,12 +255,22 @@ mod tests {
     #[test]
     fn classify_interactive() {
         let idx = CommandIndex::new();
-        assert_eq!(
-            classify_input("vim foo.txt", &idx),
-            InputAction::Interactive
-        );
-        assert_eq!(classify_input("htop", &idx), InputAction::Interactive);
+        // REPLs and remote sessions are still explicitly Interactive.
         assert_eq!(classify_input("ssh user@host", &idx), InputAction::Interactive);
+        assert_eq!(classify_input("python3", &idx), InputAction::Interactive);
+        assert_eq!(classify_input("node", &idx), InputAction::Interactive);
+    }
+
+    #[test]
+    fn classify_fullscreen_not_interactive() {
+        let idx = CommandIndex::new();
+        // Fullscreen programs (vim, htop, less, man) are no longer hardcoded
+        // as Interactive — they go through Execute and get auto-detected via
+        // alternate screen mode.
+        assert_ne!(classify_input("vim foo.txt", &idx), InputAction::Interactive);
+        assert_ne!(classify_input("htop", &idx), InputAction::Interactive);
+        assert_ne!(classify_input("less foo.txt", &idx), InputAction::Interactive);
+        assert_ne!(classify_input("man ls", &idx), InputAction::Interactive);
     }
 
     #[test]

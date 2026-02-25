@@ -123,14 +123,27 @@ impl BashCoprocess {
         self.write_all(data)
     }
 
+    /// Expose the PTY master fd for direct proxying (e.g. interactive
+    /// alternate-screen passthrough).
+    pub fn master_raw_fd(&self) -> std::os::fd::RawFd {
+        self.master_fd.as_raw_fd()
+    }
+
     /// Update the PTY window size. Called on terminal resize so that
     /// programs querying ioctl(TIOCGWINSZ) — including `tput lines` in
     /// the PAGER command — get the current dimensions.
     pub fn resize(&self, rows: u16) {
         // Keep cols at 500 (wide PTY prevents sentinel wrapping).
+        self.resize_full(rows, 500);
+    }
+
+    /// Resize the PTY to arbitrary dimensions. Used to match the real
+    /// terminal size when proxying interactive programs, and to restore
+    /// the wide sentinel-protocol dimensions afterwards.
+    pub fn resize_full(&self, rows: u16, cols: u16) {
         let ws = libc::winsize {
             ws_row: rows,
-            ws_col: 500,
+            ws_col: cols,
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
@@ -325,7 +338,7 @@ impl BashCoprocess {
     ///
     /// The expanded sentinel is followed by a digit (the exit code), as opposed
     /// to the echoed command line which contains `${__SLATE_EXIT}` literally.
-    fn find_expanded_sentinel(text: &str, sentinel: &str) -> Option<usize> {
+    pub fn find_expanded_sentinel(text: &str, sentinel: &str) -> Option<usize> {
         let mut search_from = 0;
         loop {
             match text[search_from..].find(sentinel) {
