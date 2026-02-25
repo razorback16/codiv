@@ -6,4 +6,5 @@
 
 pub mod completion_popup;
 pub mod input;
+pub mod selection;
 pub mod terminal;

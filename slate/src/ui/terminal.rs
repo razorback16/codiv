@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -27,6 +27,7 @@ use crate::shell::interactive::InteractiveSession;
 
 use super::completion_popup::CompletionPopup;
 use super::input::InputLine;
+use super::selection::TextSelection;
 use crate::VERSION;
 
 /// Tracks a command that has been submitted to bash but hasn't completed yet.
@@ -168,6 +169,8 @@ fn event_loop(
     let mut pending_command: Option<PendingCommand> = None;
     let mut completion_engine = CompletionEngine::new();
     let mut completion_popup = CompletionPopup::new();
+    let mut selection = TextSelection::new();
+    let mut clipboard = arboard::Clipboard::new().ok();
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -261,7 +264,7 @@ fn event_loop(
             completion_engine.poll_init(bash);
         }
 
-        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, &completion_popup)?;
+        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, &completion_popup, &selection)?;
 
         // Poll for events with a short timeout (10ms when executing for
         // responsive output polling, 50ms otherwise).
@@ -281,7 +284,31 @@ fn event_loop(
                             *scroll_offset = scroll_offset.saturating_sub(3);
                             parser.screen_mut().set_scrollback(*scroll_offset);
                         }
-                        _ => {}
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            selection.start_at(mouse.column, mouse.row);
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            selection.update(mouse.column, mouse.row);
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            selection.finish();
+                            if selection.is_active() {
+                                let term_area_height = term.size().map(|s| s.height.saturating_sub(1).max(1)).unwrap_or(1);
+                                let text = selection.extract_text(
+                                    parser.screen(),
+                                    0,
+                                    term_area_height,
+                                );
+                                if !text.is_empty() {
+                                    if let Some(ref mut cb) = clipboard {
+                                        let _ = cb.set_text(text);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            selection.clear();
+                        }
                     }
                     continue;
                 }
@@ -300,6 +327,9 @@ fn event_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => key,
                 _ => continue,
             };
+
+            // Clear text selection on any keypress.
+            selection.clear();
 
             // --- Forward keystrokes to PTY when a command is executing ---
             // This allows the user to respond to prompts (sudo password,
@@ -700,6 +730,7 @@ fn render_frame(
     prompt_is_live: &mut bool,
     is_executing: bool,
     completion_popup: &CompletionPopup,
+    selection: &TextSelection,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing).
@@ -742,6 +773,29 @@ fn render_frame(
         let pseudo_term = PseudoTerminal::new(parser.screen())
             .cursor(PtCursor::default().visibility(cursor_visible));
         frame.render_widget(pseudo_term, term_area);
+
+        // --- Render selection highlight ---
+        if selection.is_active() {
+            let ((sc, sr), (ec, er)) = selection.normalized_range();
+            let buf = frame.buffer_mut();
+            for row in sr..=er {
+                if row < term_area.top() || row >= term_area.bottom() {
+                    continue;
+                }
+                let col_start = if row == sr { sc } else { 0 };
+                let col_end = if row == er { ec } else { term_area.right().saturating_sub(1) };
+                for col in col_start..=col_end {
+                    if col >= term_area.right() {
+                        break;
+                    }
+                    let cell = &mut buf[(col, row)];
+                    let fg = cell.fg;
+                    let bg = cell.bg;
+                    cell.fg = if bg == Color::Reset { Color::Black } else { bg };
+                    cell.bg = if fg == Color::Reset { Color::White } else { fg };
+                }
+            }
+        }
 
         // --- Render status bar ---
         render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area);
