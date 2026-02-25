@@ -346,7 +346,9 @@ impl BashCoprocess {
             let wait = remaining.min(Duration::from_millis(1000));
             match self.reader_rx.recv_timeout(wait) {
                 Ok(data) => {
-                    let chunk = String::from_utf8_lossy(&data);
+                    // Strip \r so that macOS PTY line-wrap injections (\r\n at
+                    // column boundaries) don't split the sentinel string.
+                    let chunk = String::from_utf8_lossy(&data).replace('\r', "");
                     accumulated.push_str(&chunk);
                     // Check if expanded sentinel is present
                     if Self::find_expanded_sentinel(&accumulated, sentinel).is_some() {
