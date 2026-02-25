@@ -16,6 +16,7 @@ pub struct SlatedClient {
 
 impl SlatedClient {
     pub fn connect(socket_path: &str) -> Option<Self> {
+        log::debug!("connecting to daemon at {}", socket_path);
         let stream = UnixStream::connect(socket_path).ok()?;
         let reader_stream = stream.try_clone().ok()?;
 
@@ -27,6 +28,7 @@ impl SlatedClient {
             reader_loop(reader_stream, tx, connected_clone);
         });
 
+        log::info!("connected to daemon");
         Some(SlatedClient {
             stream,
             rx,
@@ -93,5 +95,6 @@ fn reader_loop(
         }
     }
 
+    log::warn!("daemon connection lost");
     connected.store(false, Ordering::Relaxed);
 }

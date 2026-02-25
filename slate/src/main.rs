@@ -15,6 +15,11 @@ fn main() {
         return;
     }
 
+    if let Some(level) = parse_debug_flag(&args) {
+        init_logging(level);
+        log::info!("slate {} starting (args: {:?})", VERSION, args);
+    }
+
     let shutdown = Arc::new(AtomicBool::new(false));
 
     // SIGTERM handler
@@ -32,10 +37,64 @@ fn main() {
     match app::run(shutdown) {
         Ok(()) => {}
         Err(e) => {
+            log::error!("fatal: {}", e);
             eprintln!("slate: {}", e);
             std::process::exit(1);
         }
     }
+}
+
+/// Parse `--debug` or `--debug=<level>` from args.
+/// Returns `Some(level)` if present, `None` otherwise.
+/// Supported levels: error, warn, info, debug, trace.
+/// `--debug` without a value defaults to `debug`.
+fn parse_debug_flag(args: &[String]) -> Option<log::LevelFilter> {
+    for arg in args {
+        if arg == "--debug" {
+            return Some(log::LevelFilter::Debug);
+        }
+        if let Some(level_str) = arg.strip_prefix("--debug=") {
+            return Some(match level_str.to_lowercase().as_str() {
+                "error" => log::LevelFilter::Error,
+                "warn" => log::LevelFilter::Warn,
+                "info" => log::LevelFilter::Info,
+                "debug" => log::LevelFilter::Debug,
+                "trace" => log::LevelFilter::Trace,
+                _ => {
+                    eprintln!("slate: unknown log level '{}', using 'debug'", level_str);
+                    log::LevelFilter::Debug
+                }
+            });
+        }
+    }
+    None
+}
+
+/// Initialize logging to `/tmp/slate-debug.log` at the given level.
+fn init_logging(level: log::LevelFilter) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let target = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/slate-debug.log")
+        .expect("failed to open /tmp/slate-debug.log");
+
+    env_logger::Builder::new()
+        .filter_level(level)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:>5} {}] {}",
+                buf.timestamp_millis(),
+                record.level(),
+                record.target(),
+                record.args()
+            )
+        })
+        .target(env_logger::Target::Pipe(Box::new(target)))
+        .init();
 }
 
 static SHUTDOWN_FLAG: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();

@@ -44,6 +44,7 @@ impl InteractiveSession {
         env: &[(String, String)],
         cwd: &str,
     ) {
+        log::debug!("spawn_and_enter: cmd={:?} cwd={}", command, cwd);
         // Get real terminal size via crossterm.
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
 
@@ -78,11 +79,13 @@ impl InteractiveSession {
             None => return,
         };
 
+        log::debug!("spawn_and_enter: entering poll loop ({}x{})", cols, rows);
         // Enter the poll loop (blocks until HUP).
         self.enter(master_fd);
 
         // Reap the child.
         let _ = child.wait();
+        log::debug!("spawn_and_enter: child reaped");
         drop(pair.master);
     }
 

@@ -149,6 +149,7 @@ impl CompletionEngine {
         if !matches!(self.state, InitState::NotStarted) {
             return;
         }
+        log::debug!("completion_engine: starting init (sourcing bash-completion)");
         if let Some(sentinel) = bash.start_command(SOURCE_CMD) {
             self.state = InitState::Sourcing {
                 sentinel,
@@ -196,6 +197,7 @@ impl CompletionEngine {
                     let helper_cmd = helper_eval_cmd();
                     if BashCoprocess::check_complete(accumulated, &helper_cmd, sentinel).is_some()
                     {
+                        log::info!("completion_engine: fully initialized");
                         self.state = InitState::Ready;
                     }
                 }
@@ -249,6 +251,7 @@ impl CompletionEngine {
         cursor: usize,
     ) -> Option<CompletionResult> {
         if !self.is_ready() {
+            log::debug!("complete: engine not ready, blocking init");
             self.finish_init_blocking(bash);
         }
 
@@ -275,6 +278,8 @@ impl CompletionEngine {
             .map(|l| l.trim_end().to_string())
             .filter(|l| !l.is_empty())
             .collect();
+
+        log::debug!("complete: line={:?} cursor={} -> {} candidates", line, cursor, candidates.len());
 
         Some(CompletionResult {
             candidates,

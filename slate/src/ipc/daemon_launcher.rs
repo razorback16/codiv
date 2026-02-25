@@ -59,6 +59,7 @@ pub fn ensure_daemon_running(timeout: Duration) -> bool {
     // Already running?
     let sock = socket_path();
     if std::path::Path::new(&sock).exists() && is_daemon_running() {
+        log::debug!("daemon already running (socket={})", sock);
         return true;
     }
 
@@ -66,15 +67,18 @@ pub fn ensure_daemon_running(timeout: Duration) -> bool {
     let binary = match find_slated_binary() {
         Some(b) => b,
         None => {
+            log::warn!("slated binary not found");
             eprintln!("slate: slated binary not found");
             return false;
         }
     };
 
+    log::info!("launching daemon: {}", binary);
     // Launch as background daemon (no --foreground flag).
     match Command::new(&binary).spawn() {
         Ok(_) => {}
         Err(e) => {
+            log::error!("failed to launch slated: {}", e);
             eprintln!("slate: failed to launch slated: {}", e);
             return false;
         }
@@ -89,6 +93,7 @@ pub fn ensure_daemon_running(timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(100));
     }
 
+    log::warn!("timed out waiting for slated socket");
     eprintln!("slate: timed out waiting for slated socket");
     false
 }

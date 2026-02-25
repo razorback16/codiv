@@ -47,6 +47,7 @@ impl BashCoprocess {
     /// Creates a PTY via portable-pty, spawns `bash --noediting --norc --noprofile -i`,
     /// and starts a background reader thread. Drains initial prompt output adaptively.
     pub fn spawn(cols: u16, rows: u16) -> std::io::Result<Self> {
+        log::debug!("BashCoprocess::spawn(cols={}, rows={})", cols, rows);
         let pty_system = native_pty_system();
 
         let pair = pty_system
@@ -99,6 +100,7 @@ impl BashCoprocess {
 
         // Drain the initial prompt output adaptively.
         coprocess.drain_initial_output();
+        log::info!("bash coprocess ready (pid=child)");
         Ok(coprocess)
     }
 
@@ -147,6 +149,7 @@ impl BashCoprocess {
 
     /// Execute a command in the bash co-process and return its output and exit code.
     pub fn execute(&mut self, command: &str, timeout_ms: i32) -> CommandResult {
+        log::debug!("execute: cmd={:?} timeout={}ms", command, timeout_ms);
         let sentinel = Self::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
         // Single-line format: command and sentinel on one line so bash parses
@@ -180,6 +183,7 @@ impl BashCoprocess {
         }
 
         let output = Self::clean_output(&raw, command, &sentinel);
+        log::debug!("execute: exit_code={} output_len={}", exit_code, output.len());
         CommandResult { output, exit_code }
     }
 
@@ -217,6 +221,7 @@ impl BashCoprocess {
     /// Returns the sentinel string needed to detect completion, or `None`
     /// if the write failed.
     pub fn start_command(&mut self, command: &str) -> Option<String> {
+        log::debug!("start_command: cmd={:?}", command);
         let sentinel = Self::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
         // Single-line format: see execute() for rationale.
@@ -365,6 +370,7 @@ impl BashCoprocess {
     /// the initial prompt and any shell startup messages are consumed before
     /// the first `execute` call sees the PTY output.
     fn drain_initial_output(&mut self) {
+        log::debug!("draining initial PTY output");
         let sentinel = Self::generate_sentinel();
         let cmd = format!(
             "true; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
