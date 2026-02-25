@@ -243,15 +243,16 @@ fn event_loop(
             execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
             // Proxy stdin↔coprocess PTY until the sentinel appears.
-            let master_fd = bash.master_raw_fd();
-            let accumulated = master_fd.and_then(|fd| {
-                interactive_session.enter_with_sentinel(
-                    fd,
-                    &pending.sentinel,
-                    real_size.height,
-                    real_size.width,
-                )
-            });
+            // Use the reader channel (not the raw fd) to avoid a race
+            // condition with the background reader thread.
+            let (reader_rx, writer) = bash.reader_and_writer();
+            let accumulated = interactive_session.enter_with_sentinel(
+                reader_rx,
+                writer,
+                &pending.sentinel,
+                real_size.height,
+                real_size.width,
+            );
 
             // Resize coprocess PTY back to wide mode for sentinel protocol.
             let rows = real_size.height.saturating_sub(1).max(1);

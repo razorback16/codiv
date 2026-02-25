@@ -5,7 +5,9 @@
 //! terminal is in raw mode.
 
 use std::ffi::CString;
+use std::io::Write;
 use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::sync::mpsc::Receiver;
 
 use super::bash_coprocess::BashCoprocess;
 
@@ -207,21 +209,24 @@ impl InteractiveSession {
         self.exit();
     }
 
-    /// Proxy stdin↔master_fd until the sentinel appears in output.
+    /// Proxy stdin↔PTY until the sentinel appears in output.
     ///
-    /// Same raw-mode poll loop as `enter()`, but instead of breaking on
-    /// POLLHUP, we accumulate output and break when the expanded sentinel
-    /// is detected. Returns the accumulated tail (last 4KB) for exit code
-    /// extraction, or `None` on error.
+    /// Reads PTY output from the reader thread's mpsc channel (not from
+    /// the raw fd) to avoid a race condition with dual readers. Polls
+    /// only stdin for input events; PTY data is drained from the channel
+    /// on each iteration.
+    ///
+    /// Returns the accumulated tail (last 4KB) for exit code extraction,
+    /// or `None` on error.
     pub fn enter_with_sentinel(
         &mut self,
-        master_fd: RawFd,
+        reader_rx: &Receiver<Vec<u8>>,
+        writer: &mut dyn Write,
         sentinel: &str,
         rows: u16,
         cols: u16,
     ) -> Option<(String, Option<Vec<u8>>)> {
         let stdin_fd = unsafe { BorrowedFd::borrow_raw(libc::STDIN_FILENO) };
-        let master_bfd = unsafe { BorrowedFd::borrow_raw(master_fd) };
 
         // Save current termios and switch to raw mode.
         match termios::tcgetattr(stdin_fd) {
@@ -251,25 +256,25 @@ impl InteractiveSession {
                 break;
             }
 
+            // Poll only stdin (short timeout so we also check the channel frequently).
             let mut poll_fds = [
                 PollFd::new(stdin_fd, PollFlags::POLLIN),
-                PollFd::new(master_bfd, PollFlags::POLLIN),
             ];
 
-            let ret = poll(&mut poll_fds, PollTimeout::from(100u16));
+            let ret = poll(&mut poll_fds, PollTimeout::from(10u16));
             match ret {
-                Err(Errno::EINTR) => continue,
+                Err(Errno::EINTR) => {}
                 Err(_) => break,
                 Ok(_) => {}
             }
 
-            // stdin -> master_fd
+            // stdin -> PTY writer
             if let Some(revents) = poll_fds[0].revents() {
                 if revents.contains(PollFlags::POLLIN) {
                     match unistd::read(libc::STDIN_FILENO, &mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            if !write_all(master_fd, &buf[..n]) {
+                            if writer.write_all(&buf[..n]).is_err() {
                                 break;
                             }
                         }
@@ -277,60 +282,38 @@ impl InteractiveSession {
                 }
             }
 
-            // master_fd -> stdout, accumulate for sentinel detection
-            if let Some(revents) = poll_fds[1].revents() {
-                if revents.contains(PollFlags::POLLIN) {
-                    match unistd::read(master_fd, &mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            // Write to stdout for the user to see.
-                            let stdout_fd = unsafe { BorrowedFd::borrow_raw(libc::STDOUT_FILENO) };
-                            let _ = unistd::write(stdout_fd, &buf[..n]);
+            // Drain all available PTY data from the reader thread's channel.
+            loop {
+                match reader_rx.try_recv() {
+                    Ok(data) => {
+                        // Write to stdout for the user to see.
+                        let stdout_bfd = unsafe { BorrowedFd::borrow_raw(libc::STDOUT_FILENO) };
+                        let _ = unistd::write(stdout_bfd, &data);
 
-                            // Feed shadow parser and snapshot while in alt screen.
-                            shadow.process(&buf[..n]);
-                            if shadow.screen().alternate_screen() {
-                                last_alt_screen = Some(snapshot_rows(shadow.screen(), cols));
-                            }
+                        // Feed shadow parser and snapshot while in alt screen.
+                        shadow.process(&data);
+                        if shadow.screen().alternate_screen() {
+                            last_alt_screen = Some(snapshot_rows(shadow.screen(), cols));
+                        }
 
-                            // Accumulate for sentinel detection.
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            tail.push_str(&chunk);
-                            // Trim to last TAIL_CAP bytes to bound memory.
-                            if tail.len() > TAIL_CAP * 2 {
-                                let start = tail.len() - TAIL_CAP;
-                                // Find a valid char boundary.
-                                let start = tail.ceil_char_boundary(start);
-                                tail = tail[start..].to_string();
-                            }
-
-                            if BashCoprocess::find_expanded_sentinel(&tail, sentinel).is_some() {
-                                found_sentinel = true;
-                                break;
-                            }
+                        // Accumulate for sentinel detection.
+                        let chunk = String::from_utf8_lossy(&data);
+                        tail.push_str(&chunk);
+                        // Trim to last TAIL_CAP bytes to bound memory.
+                        if tail.len() > TAIL_CAP * 2 {
+                            let start = tail.len() - TAIL_CAP;
+                            let start = tail.ceil_char_boundary(start);
+                            tail = tail[start..].to_string();
                         }
                     }
+                    Err(_) => break,
                 }
+            }
 
-                if revents.intersects(PollFlags::POLLHUP | PollFlags::POLLERR) {
-                    // Drain remaining output.
-                    loop {
-                        match unistd::read(master_fd, &mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                let stdout_fd = unsafe { BorrowedFd::borrow_raw(libc::STDOUT_FILENO) };
-                                let _ = unistd::write(stdout_fd, &buf[..n]);
-                                shadow.process(&buf[..n]);
-                                if shadow.screen().alternate_screen() {
-                                    last_alt_screen = Some(snapshot_rows(shadow.screen(), cols));
-                                }
-                                let chunk = String::from_utf8_lossy(&buf[..n]);
-                                tail.push_str(&chunk);
-                            }
-                        }
-                    }
-                    break;
-                }
+            // Check for sentinel after draining all available data.
+            if BashCoprocess::find_expanded_sentinel(&tail, sentinel).is_some() {
+                found_sentinel = true;
+                break;
             }
         }
 

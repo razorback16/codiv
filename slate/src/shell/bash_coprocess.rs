@@ -6,8 +6,7 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use rand::Rng;
 use std::io::{Read, Write};
-use std::os::fd::RawFd;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -24,7 +23,7 @@ pub struct BashCoprocess {
     reader_rx: Receiver<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    _reader_handle: JoinHandle<()>,
+    reader_handle: Option<JoinHandle<()>>,
 }
 
 fn reader_thread(mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<Vec<u8>>) {
@@ -95,7 +94,7 @@ impl BashCoprocess {
             reader_rx: rx,
             master: pair.master,
             child,
-            _reader_handle: handle,
+            reader_handle: Some(handle),
         };
 
         // Drain the initial prompt output adaptively.
@@ -119,11 +118,11 @@ impl BashCoprocess {
         self.write_all(data)
     }
 
-    /// Expose the PTY master fd for direct proxying (e.g. interactive
-    /// alternate-screen passthrough). Returns `None` if the fd is not
-    /// available (e.g. on non-Unix platforms).
-    pub fn master_raw_fd(&self) -> Option<RawFd> {
-        self.master.as_raw_fd()
+    /// Expose the reader channel and writer for use by `enter_with_sentinel()`.
+    /// Returns both references at once to satisfy the borrow checker (avoids
+    /// overlapping immutable + mutable borrows on `self`).
+    pub fn reader_and_writer(&mut self) -> (&Receiver<Vec<u8>>, &mut dyn Write) {
+        (&self.reader_rx, &mut *self.writer)
     }
 
     /// Update the PTY window size. Called on terminal resize so that
@@ -235,11 +234,14 @@ impl BashCoprocess {
     /// Non-blocking read from the PTY. Returns bytes if data is available,
     /// or an empty vec if there is nothing to read right now.
     pub fn try_read(&self) -> Vec<u8> {
-        match self.reader_rx.try_recv() {
-            Ok(data) => data,
-            Err(TryRecvError::Empty) => Vec::new(),
-            Err(TryRecvError::Disconnected) => Vec::new(),
+        let mut result = Vec::new();
+        loop {
+            match self.reader_rx.try_recv() {
+                Ok(data) => result.extend_from_slice(&data),
+                Err(_) => break,
+            }
         }
+        result
     }
 
     /// Drain residual PTY output for up to `ms` milliseconds.
@@ -470,6 +472,10 @@ impl Drop for BashCoprocess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Child is dead → slave fd closed → reader's read() returns error → thread exits.
+        if let Some(handle) = self.reader_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
