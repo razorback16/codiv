@@ -517,6 +517,36 @@ fn event_loop(
                             );
                         }
 
+                        InputAction::Clear => {
+                            let term_size = term.size()?;
+                            let rows = term_size.height.saturating_sub(1).max(1);
+                            let cols = term_size.width.max(1);
+                            *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
+                            *scroll_offset = 0;
+                            *prompt_is_live = false;
+                        }
+
+                        InputAction::Reset => {
+                            let term_size = term.size()?;
+                            let rows = term_size.height.saturating_sub(1).max(1);
+                            let cols = term_size.width.max(1);
+                            *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
+                            *scroll_offset = 0;
+                            *prompt_is_live = false;
+
+                            input.clear_history();
+                            completion_engine = CompletionEngine::new();
+                            completion_engine.start_init(bash);
+                            completion_popup.dismiss();
+                            selection.clear();
+
+                            parser_push_styled(
+                                parser,
+                                &format!("slate v{} — type 'exit' to quit", crate::VERSION),
+                                "\x1b[90m",
+                            );
+                        }
+
                         InputAction::Execute => {
                             match bash.start_command(&raw_input) {
                                 Some(sentinel) => {

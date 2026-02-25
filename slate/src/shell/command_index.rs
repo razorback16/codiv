@@ -98,6 +98,10 @@ pub enum InputAction {
     AiQuery,
     /// Unknown command — first word returned.
     NotFound(String),
+    /// Clear screen and scrollback.
+    Clear,
+    /// Full session reset (screen, scrollback, history, completions).
+    Reset,
     /// User wants to exit the shell.
     Exit,
     /// Empty input line.
@@ -158,6 +162,14 @@ pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
 
     if trimmed == "exit" || trimmed == "quit" {
         return InputAction::Exit;
+    }
+
+    if trimmed == "clear" {
+        return InputAction::Clear;
+    }
+
+    if trimmed == "reset" {
+        return InputAction::Reset;
     }
 
     if trimmed.starts_with('?') {

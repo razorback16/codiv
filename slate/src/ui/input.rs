@@ -180,6 +180,13 @@ impl InputLine {
     pub fn cursor_byte_offset(&self) -> usize {
         self.cursor
     }
+
+    /// Clear all command history and reset the history browsing state.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.history_index = None;
+        self.saved_input.clear();
+    }
     // --- Private helpers ---
 
     /// Find the byte offset of the previous character boundary before `self.cursor`.
