@@ -17,7 +17,12 @@ pub struct CompletionResult {
 /// Tracks the background initialization state of the completion engine.
 enum InitState {
     NotStarted,
-    /// Defining the __slate_complete helper function.
+    /// Sourcing bash-completion libraries (step 1 of 2).
+    Sourcing {
+        sentinel: String,
+        accumulated: String,
+    },
+    /// Defining the __slate_complete helper function (step 2 of 2).
     DefiningHelper {
         sentinel: String,
         accumulated: String,
@@ -31,9 +36,10 @@ pub struct CompletionEngine {
     state: InitState,
 }
 
-/// The bash helper function that handles completion:
-/// 1. Command completions (compgen -c) for the first word
-/// 2. File completions (compgen -f) for subsequent words
+/// The bash helper function that handles all three completion tiers:
+/// 1. Programmable completions (COMP_WORDS/COMPREPLY)
+/// 2. Command completions (compgen -c) for the first word
+/// 3. File completions (compgen -f) for subsequent words
 const BASH_HELPER: &str = r#"
 __slate_complete() {
     local line="$1"
@@ -59,7 +65,47 @@ __slate_complete() {
         cword=$(( ${#words[@]} - 1 ))
     fi
 
-    # Fallback: command completion for first word, file completion otherwise
+    # Try programmable completion first
+    local comp_spec func
+    comp_spec=$(complete -p "$cmd" 2>/dev/null)
+
+    # bash-completion v2 uses a default handler (complete -D) with
+    # _completion_loader for lazy loading. If no command-specific spec
+    # exists, invoke the default handler to load it, then re-fetch.
+    if [[ -z "$comp_spec" ]]; then
+        local default_spec
+        default_spec=$(complete -p -D 2>/dev/null)
+        if [[ -n "$default_spec" ]]; then
+            func=$(echo "$default_spec" | sed -n 's/.*-F \([^ ]*\).*/\1/p')
+            if [[ -n "$func" ]]; then
+                COMP_LINE="$line"
+                COMP_POINT=$point
+                COMP_WORDS=("${words[@]}")
+                COMP_CWORD=$cword
+                "$func" "$cmd" 2>/dev/null
+                comp_spec=$(complete -p "$cmd" 2>/dev/null)
+            fi
+        fi
+    fi
+
+    if [[ -n "$comp_spec" ]]; then
+        func=$(echo "$comp_spec" | sed -n 's/.*-F \([^ ]*\).*/\1/p')
+
+        if [[ -n "$func" ]]; then
+            COMP_LINE="$line"
+            COMP_POINT=$point
+            COMP_WORDS=("${words[@]}")
+            COMP_CWORD=$cword
+            COMPREPLY=()
+            "$func" 2>/dev/null
+            if [[ ${#COMPREPLY[@]} -gt 0 ]]; then
+                printf '%s\n' "${COMPREPLY[@]}" | head -100
+                return
+            fi
+        fi
+    fi
+
+    # Fallback
     local prefix="${words[$cword]}"
     if [[ $cword -eq 0 ]]; then
         compgen -c -- "$prefix" 2>/dev/null | sort -u | head -100
@@ -69,21 +115,26 @@ __slate_complete() {
 }
 "#;
 
-/// Wrap BASH_HELPER in `eval $'...'` so it's sent as a single line to bash.
+const SOURCE_CMD: &str = "source /usr/share/bash-completion/bash_completion 2>/dev/null || \
+             source /opt/homebrew/etc/bash_completion 2>/dev/null || \
+             true";
+
+/// Command used to verify the helper function was defined successfully.
+const HELPER_VERIFY_CMD: &str = "type __slate_complete >/dev/null 2>&1";
+
+/// Send the helper function definition as multi-line input to the PTY,
+/// then return a short verification command for sentinel-based tracking.
 ///
-/// Multi-line function definitions sent to an interactive bash PTY get processed
-/// line-by-line with PS2 continuation prompts. The sentinel appended by
-/// `start_command()` ends up inside the continuation context, causing
-/// `bash: syntax error near unexpected token ';'`. Wrapping in `eval $'...'`
-/// makes the entire function definition a single logical line — bash processes
-/// the `$'...'` quoting atomically, then `eval` defines the function.
-fn helper_eval_cmd() -> String {
-    let escaped = BASH_HELPER
-        .trim()
-        .replace('\\', "\\\\") // escape backslashes first
-        .replace('\'', "\\'")  // escape single quotes
-        .replace('\n', "\\n"); // encode newlines as \n (interpreted by $'...')
-    format!("eval $'{}'", escaped)
+/// The full helper with programmable completion is ~1600 chars — too long
+/// for a single-line `eval $'...'` on macOS, whose PTY input buffer is
+/// limited to 1024 bytes (MAX_INPUT). Instead we send the function
+/// definition as raw multi-line input (each line <100 chars, well within
+/// limits). Bash enters function-definition mode on seeing `name() {`,
+/// reads body lines via PS2 continuation, and completes on `}`.
+/// The verification command confirms the function exists.
+fn send_helper_definition(bash: &mut BashCoprocess) {
+    let definition = format!("{}\n", BASH_HELPER.trim());
+    bash.send_bytes(definition.as_bytes());
 }
 
 impl CompletionEngine {
@@ -94,15 +145,14 @@ impl CompletionEngine {
     }
 
     /// Kick off background initialization (non-blocking).
-    /// Sends the helper function definition to the coprocess.
+    /// Sends the first command (sourcing bash-completion) to the coprocess.
     pub fn start_init(&mut self, bash: &mut BashCoprocess) {
         if !matches!(self.state, InitState::NotStarted) {
             return;
         }
-        log::debug!("completion_engine: starting init (defining helper function)");
-        let helper_cmd = helper_eval_cmd();
-        if let Some(sentinel) = bash.start_command(&helper_cmd) {
-            self.state = InitState::DefiningHelper {
+        log::debug!("completion_engine: starting init (sourcing bash-completion)");
+        if let Some(sentinel) = bash.start_command(SOURCE_CMD) {
+            self.state = InitState::Sourcing {
                 sentinel,
                 accumulated: String::new(),
             };
@@ -112,24 +162,51 @@ impl CompletionEngine {
     /// Poll initialization progress (non-blocking). Call each event loop tick
     /// when no user command is pending (they share the coprocess).
     pub fn poll_init(&mut self, bash: &mut BashCoprocess) {
-        match &mut self.state {
-            InitState::DefiningHelper {
-                sentinel,
-                accumulated,
-            } => {
-                let bytes = bash.try_read();
-                if !bytes.is_empty() {
-                    // Strip \r so macOS PTY line-wrap (\r\n) doesn't split sentinels.
-                    accumulated.push_str(&String::from_utf8_lossy(&bytes).replace('\r', ""));
+        loop {
+            match &mut self.state {
+                InitState::Sourcing {
+                    sentinel,
+                    accumulated,
+                } => {
+                    let bytes = bash.try_read();
+                    if !bytes.is_empty() {
+                        // Strip \r so macOS PTY line-wrap (\r\n) doesn't split sentinels.
+                        accumulated.push_str(&String::from_utf8_lossy(&bytes).replace('\r', ""));
+                    }
+                    if BashCoprocess::check_complete(accumulated, SOURCE_CMD, sentinel).is_some()
+                    {
+                        // Step 1 done — start step 2: send the multi-line
+                        // function definition, then a short verification command.
+                        send_helper_definition(bash);
+                        if let Some(new_sentinel) = bash.start_command(HELPER_VERIFY_CMD) {
+                            self.state = InitState::DefiningHelper {
+                                sentinel: new_sentinel,
+                                accumulated: String::new(),
+                            };
+                            continue;
+                        } else {
+                            self.state = InitState::NotStarted;
+                        }
+                    }
                 }
-                let helper_cmd = helper_eval_cmd();
-                if BashCoprocess::check_complete(accumulated, &helper_cmd, sentinel).is_some()
-                {
-                    log::info!("completion_engine: fully initialized");
-                    self.state = InitState::Ready;
+                InitState::DefiningHelper {
+                    sentinel,
+                    accumulated,
+                } => {
+                    let bytes = bash.try_read();
+                    if !bytes.is_empty() {
+                        // Strip \r so macOS PTY line-wrap (\r\n) doesn't split sentinels.
+                        accumulated.push_str(&String::from_utf8_lossy(&bytes).replace('\r', ""));
+                    }
+                    if BashCoprocess::check_complete(accumulated, HELPER_VERIFY_CMD, sentinel).is_some()
+                    {
+                        log::info!("completion_engine: fully initialized");
+                        self.state = InitState::Ready;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+            break;
         }
     }
 
@@ -144,7 +221,9 @@ impl CompletionEngine {
         match &self.state {
             InitState::Ready => return,
             InitState::NotStarted => {
-                bash.execute(&helper_eval_cmd(), 2000);
+                bash.execute(SOURCE_CMD, 5000);
+                send_helper_definition(bash);
+                bash.execute(HELPER_VERIFY_CMD, 2000);
                 self.state = InitState::Ready;
                 return;
             }
@@ -162,7 +241,9 @@ impl CompletionEngine {
 
         // If still not ready after timeout, force blocking init.
         if !self.is_ready() {
-            bash.execute(&helper_eval_cmd(), 2000);
+            bash.execute(SOURCE_CMD, 5000);
+            send_helper_definition(bash);
+            bash.execute(HELPER_VERIFY_CMD, 2000);
             self.state = InitState::Ready;
         }
     }
@@ -280,6 +361,36 @@ mod tests {
             "should have no matches, got: {:?}",
             result.candidates
         );
+    }
+
+    #[test]
+    fn test_git_subcommand_completion() {
+        let _lock = PTY_LOCK.lock().unwrap();
+        let mut bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut engine = CompletionEngine::new();
+
+        // This test requires bash-completion to be installed (provides
+        // programmable completions via _completion_loader). Skip gracefully
+        // if not available — the engine falls back to compgen which doesn't
+        // know about git subcommands.
+        let probe = bash.execute("complete -p -D 2>/dev/null | grep -q _completion_loader", 2000);
+        if probe.exit_code != 0 {
+            eprintln!("skipping: bash-completion not installed");
+            return;
+        }
+
+        // Complete "git sta" — should include status/stash via lazy-loaded completion
+        let result = engine.complete(&mut bash, "git sta", 7).unwrap();
+        assert!(
+            result
+                .candidates
+                .iter()
+                .any(|c| c.trim() == "status" || c.trim() == "stash"),
+            "should complete 'git sta' to include 'status' or 'stash', got: {:?}",
+            result.candidates
+        );
+        assert_eq!(result.replace_start, 4);
+        assert_eq!(result.replace_end, 7);
     }
 
     #[test]
