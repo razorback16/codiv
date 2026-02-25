@@ -206,6 +206,11 @@ fn event_loop(
                         let out = format!("{}\n", line);
                         parser.process(out.as_bytes());
                     }
+
+                    // Detect alternate screen mode — break out to handle below.
+                    if parser.screen().alternate_screen() {
+                        break;
+                    }
                 }
             }
 
@@ -219,20 +224,63 @@ fn event_loop(
                     parser.process(buf.as_bytes());
                 }
             }
+        }
 
+        // If the parser detected alternate screen mode (e.g. less, man, git log
+        // pager), interrupt the coprocess and re-launch via Interactive path.
+        if parser.screen().alternate_screen() && pending_command.is_some() {
+            bash.send_interrupt();
+            bash.drain_for(100);
+
+            let relaunch_cmd = pending_command.as_ref().unwrap().command.clone();
+            pending_command = None;
+
+            // Reset the parser (clear partial alternate screen output).
+            let term_size = term.size()?;
+            let rows = term_size.height.saturating_sub(1).max(1);
+            let cols = term_size.width.max(1);
+            *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
+
+            // Snapshot env/cwd and launch through Interactive path.
+            let env = bash.capture_env();
+            let interactive_cwd = cwd.clone();
+
+            terminal::disable_raw_mode()?;
+            execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+
+            interactive_session.spawn_and_enter(&relaunch_cmd, &env, &interactive_cwd);
+
+            // Resume TUI.
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1bc");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            execute!(term.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+            terminal::enable_raw_mode()?;
+            term.clear()?;
+
+            let visible_rows = parser.screen().size().0;
+            for _ in 0..visible_rows {
+                parser.process(b"\r\n");
+            }
+            parser.process(b"\x1b[2J\x1b[H");
+
+            *cwd = bash.capture_cwd();
+            parser_push_styled(parser, "(interactive session ended)", "\x1b[90m");
+            *scroll_offset = 0;
+            parser.screen_mut().set_scrollback(0);
+        }
+
+        if let Some(ref mut pending) = pending_command {
             if let Some(result) = BashCoprocess::check_complete(
                 &pending.accumulated,
                 &pending.command,
                 &pending.sentinel,
             ) {
                 // Flush any remaining display buffer.
-                if let Some(ref mut p) = pending_command {
-                    let buf = std::mem::take(&mut p.display_buf);
-                    if !buf.is_empty()
-                        && !is_sentinel_noise(&buf, &p.command, &p.sentinel)
-                    {
-                        parser.process(buf.as_bytes());
-                    }
+                let buf = std::mem::take(&mut pending.display_buf);
+                if !buf.is_empty()
+                    && !is_sentinel_noise(&buf, &pending.command, &pending.sentinel)
+                {
+                    parser.process(buf.as_bytes());
                 }
                 // Only show exit code if non-zero.
                 if result.exit_code != 0 {
@@ -316,6 +364,7 @@ fn event_loop(
                     let parser_rows = rows.saturating_sub(1).max(1);
                     let parser_cols = (*cols).max(1);
                     parser.screen_mut().set_size(parser_rows, parser_cols);
+                    bash.resize(parser_rows);
                     continue;
                 }
                 _ => {}

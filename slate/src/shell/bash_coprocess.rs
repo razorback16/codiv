@@ -86,19 +86,6 @@ impl BashCoprocess {
                         b"/dev/null\0".as_ptr() as *const libc::c_char,
                         1,
                     );
-                    // Disable pagers — the slate scroll buffer acts as the pager.
-                    // Empty string makes git skip the pager entirely (isatty still
-                    // returns true, so color.ui=auto produces colors naturally).
-                    libc::setenv(
-                        b"GIT_PAGER\0".as_ptr() as *const libc::c_char,
-                        b"\0".as_ptr() as *const libc::c_char,
-                        1,
-                    );
-                    libc::setenv(
-                        b"PAGER\0".as_ptr() as *const libc::c_char,
-                        b"\0".as_ptr() as *const libc::c_char,
-                        1,
-                    );
                     libc::setenv(
                         b"TERM\0".as_ptr() as *const libc::c_char,
                         b"xterm-256color\0".as_ptr() as *const libc::c_char,
@@ -134,6 +121,22 @@ impl BashCoprocess {
     /// prompts for `apt install`).
     pub fn send_bytes(&self, data: &[u8]) -> bool {
         self.write_all(data)
+    }
+
+    /// Update the PTY window size. Called on terminal resize so that
+    /// programs querying ioctl(TIOCGWINSZ) — including `tput lines` in
+    /// the PAGER command — get the current dimensions.
+    pub fn resize(&self, rows: u16) {
+        // Keep cols at 500 (wide PTY prevents sentinel wrapping).
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: 500,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        unsafe {
+            libc::ioctl(self.master_fd.as_raw_fd(), libc::TIOCSWINSZ, &ws);
+        }
     }
 
     /// Execute a command in the bash co-process and return its output and exit code.
