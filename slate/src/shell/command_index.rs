@@ -76,17 +76,6 @@ impl CommandIndex {
         }
     }
 
-    /// Return all command names that start with `prefix`, sorted alphabetically.
-    pub fn complete(&self, prefix: &str) -> Vec<String> {
-        let mut results: Vec<String> = self
-            .index
-            .iter()
-            .filter(|name| prefix.is_empty() || name.starts_with(prefix))
-            .cloned()
-            .collect();
-        results.sort();
-        results
-    }
 }
 
 impl Default for CommandIndex {
@@ -224,20 +213,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_prefix() {
-        let idx = path_only_index();
-        let results = idx.complete("gi");
-        assert!(
-            results.contains(&"git".to_string()),
-            "complete(\"gi\") should contain \"git\", got: {:?}",
-            results
-        );
-        let mut sorted = results.clone();
-        sorted.sort();
-        assert_eq!(results, sorted, "complete() results must be sorted");
-    }
-
-    #[test]
     fn unknown_is_not_known() {
         let idx = path_only_index();
         assert!(
@@ -329,15 +304,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn complete_includes_builtins() {
-        let mut idx = CommandIndex::new();
-        idx.add_builtins();
-        let results = idx.complete("cd");
-        assert!(
-            results.contains(&"cd".to_string()),
-            "complete(\"cd\") should contain \"cd\" after add_builtins(), got: {:?}",
-            results
-        );
-    }
 }

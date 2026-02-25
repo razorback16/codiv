@@ -22,8 +22,10 @@ use crate::ipc::client::SlatedClient;
 use crate::ipc::messages as ipc_messages;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::shell::command_index::{classify_input, CommandIndex, InputAction};
+use crate::shell::completion_engine::CompletionEngine;
 use crate::shell::interactive::InteractiveSession;
 
+use super::completion_popup::CompletionPopup;
 use super::input::InputLine;
 use crate::VERSION;
 
@@ -120,6 +122,12 @@ fn event_loop(
     let mut last_daemon_timestamp: i64 = 0;
     let session_id = format!("slate-{}", std::process::id());
     let mut pending_command: Option<PendingCommand> = None;
+    let mut completion_engine = CompletionEngine::new();
+    let mut completion_popup = CompletionPopup::new();
+
+    // Start background initialization (non-blocking) so the first Tab
+    // press is fast without freezing the UI at startup.
+    completion_engine.start_init(bash);
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -175,7 +183,12 @@ fn event_loop(
 
         let is_executing = pending_command.is_some();
 
-        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing)?;
+        // Poll completion engine background init when the coprocess is free.
+        if pending_command.is_none() {
+            completion_engine.poll_init(bash);
+        }
+
+        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, &completion_popup)?;
 
         // Poll for events with a short timeout (10ms when executing for
         // responsive output polling, 50ms otherwise).
@@ -214,6 +227,39 @@ fn event_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => key,
                 _ => continue,
             };
+
+            // --- Completion popup key interception ---
+            if completion_popup.is_visible() {
+                match key.code {
+                    KeyCode::Up => {
+                        completion_popup.select_prev();
+                        continue;
+                    }
+                    KeyCode::Down => {
+                        completion_popup.select_next();
+                        continue;
+                    }
+                    KeyCode::Enter | KeyCode::Tab => {
+                        if let Some((selected, start, end)) = completion_popup.confirm() {
+                            let suffix = if std::path::Path::new(&selected).is_dir() {
+                                "/"
+                            } else {
+                                " "
+                            };
+                            input.replace_range(start, end, &format!("{}{}", selected, suffix));
+                        }
+                        continue;
+                    }
+                    KeyCode::Esc => {
+                        completion_popup.dismiss();
+                        continue;
+                    }
+                    _ => {
+                        // Any other key dismisses popup and falls through to normal handling.
+                        completion_popup.dismiss();
+                    }
+                }
+            }
 
             match (key.code, key.modifiers) {
                 // --- Ctrl combos ---
@@ -360,16 +406,46 @@ fn event_loop(
                 }
 
                 // --- Tab: completion ---
-                (KeyCode::Tab, _) => {
-                    let content = input.content().to_string();
-                    let word = content
-                        .split_whitespace()
-                        .last()
-                        .unwrap_or("")
-                        .to_string();
+                (KeyCode::Tab, _) if pending_command.is_none() => {
+                    let line = input.content().to_string();
+                    let cursor = input.cursor_byte_offset();
 
-                    let completions = command_index.complete(&word);
-                    input.complete(&completions);
+                    if let Some(result) = completion_engine.complete(bash, &line, cursor) {
+                        match result.candidates.len() {
+                            0 => {}
+                            1 => {
+                                let candidate = &result.candidates[0];
+                                let suffix =
+                                    if std::path::Path::new(candidate).is_dir() {
+                                        "/"
+                                    } else {
+                                        " "
+                                    };
+                                input.replace_range(
+                                    result.replace_start,
+                                    result.replace_end,
+                                    &format!("{}{}", candidate, suffix),
+                                );
+                            }
+                            _ => {
+                                // Complete the common prefix first.
+                                let common = longest_common_prefix(&result.candidates);
+                                let prefix = &line[result.replace_start..result.replace_end];
+                                if common.len() > prefix.len() {
+                                    input.replace_range(
+                                        result.replace_start,
+                                        result.replace_end,
+                                        &common,
+                                    );
+                                }
+                                completion_popup.open(
+                                    result.candidates,
+                                    result.replace_start,
+                                    result.replace_end,
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // --- History navigation ---
@@ -505,6 +581,7 @@ fn render_frame(
     scroll_offset: usize,
     prompt_is_live: &mut bool,
     is_executing: bool,
+    completion_popup: &CompletionPopup,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing).
@@ -550,6 +627,15 @@ fn render_frame(
 
         // --- Render status bar ---
         render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area);
+
+        // --- Render completion popup ---
+        if completion_popup.is_visible() {
+            let (cursor_row, _cursor_col) = parser.screen().cursor_position();
+            let prompt_len = cwd.len() + 2; // "{cwd}$ "
+            let anchor_x = (prompt_len + input.cursor_position()) as u16;
+            let anchor_y = term_area.top() + cursor_row;
+            completion_popup.render(frame, anchor_x, anchor_y);
+        }
     })?;
 
     Ok(())
@@ -600,4 +686,22 @@ fn render_status_bar(
     )));
 
     frame.render_widget(paragraph, area);
+}
+
+/// Find the longest common prefix of a list of strings.
+fn longest_common_prefix(strings: &[String]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    let mut prefix = strings[0].clone();
+    for s in &strings[1..] {
+        let shared: String = prefix
+            .chars()
+            .zip(s.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a)
+            .collect();
+        prefix = shared;
+    }
+    prefix
 }

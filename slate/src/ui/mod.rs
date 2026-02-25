@@ -4,5 +4,6 @@
 //! - [`input`]: Line editor with history and tab-completion.
 //! - [`terminal`]: Main event loop, rendering, and command dispatch.
 
+pub mod completion_popup;
 pub mod input;
 pub mod terminal;

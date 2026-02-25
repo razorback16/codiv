@@ -137,9 +137,10 @@ impl BashCoprocess {
         }
 
         let sentinel = Self::generate_sentinel();
+        let cmd_trimmed = command.trim_end_matches('\n');
         let full_cmd = format!(
-            "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
-            command, sentinel
+            "{}\n__SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
+            cmd_trimmed, sentinel
         );
 
         if !self.write_all(full_cmd.as_bytes()) {
@@ -206,9 +207,10 @@ impl BashCoprocess {
             return None;
         }
         let sentinel = Self::generate_sentinel();
+        let cmd_trimmed = command.trim_end_matches('\n');
         let full_cmd = format!(
-            "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
-            command, sentinel
+            "{}\n__SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
+            cmd_trimmed, sentinel
         );
         if self.write_all(full_cmd.as_bytes()) {
             Some(sentinel)

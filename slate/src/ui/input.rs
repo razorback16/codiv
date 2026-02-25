@@ -166,66 +166,20 @@ impl InputLine {
         self.buffer[..self.cursor].chars().count()
     }
 
-    /// Tab-completion.
-    ///
-    /// Extracts the word at the cursor, matches it against `completions`.
-    /// - If exactly one match, replace the word with the match.
-    /// - If multiple matches, find the longest common prefix and extend to it.
-    /// - If no matches, do nothing.
-    pub fn complete(&mut self, completions: &[String]) {
-        if completions.is_empty() {
-            return;
-        }
-
-        // Find the word being completed: scan backwards from cursor to
-        // whitespace or start-of-line.
-        let word_start = self.buffer[..self.cursor]
-            .rfind(char::is_whitespace)
-            .map(|pos| pos + 1)
-            .unwrap_or(0);
-
-        let prefix = &self.buffer[word_start..self.cursor];
-
-        // Filter completions that start with the prefix.
-        let matches: Vec<&String> = completions
-            .iter()
-            .filter(|c| c.starts_with(prefix))
-            .collect();
-
-        if matches.is_empty() {
-            return;
-        }
-
-        let replacement = if matches.len() == 1 {
-            // Single match — use it directly, add a trailing space.
-            let mut r = matches[0].clone();
-            r.push(' ');
-            r
-        } else {
-            // Multiple matches — find longest common prefix.
-            let mut common = matches[0].clone();
-            for m in &matches[1..] {
-                let shared: String = common
-                    .chars()
-                    .zip(m.chars())
-                    .take_while(|(a, b)| a == b)
-                    .map(|(a, _)| a)
-                    .collect();
-                common = shared;
-            }
-            common
-        };
-
-        // Only replace if the replacement is longer than or equal to the prefix.
-        if replacement.len() >= prefix.len() {
-            let after_cursor = self.buffer[self.cursor..].to_string();
-            self.buffer.truncate(word_start);
-            self.buffer.push_str(&replacement);
-            self.cursor = self.buffer.len();
-            self.buffer.push_str(&after_cursor);
-        }
+    /// Replace a byte range [start..end) in the buffer with `replacement`.
+    /// Cursor is positioned at the end of the replacement text.
+    pub fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
+        let after = self.buffer[end..].to_string();
+        self.buffer.truncate(start);
+        self.buffer.push_str(replacement);
+        self.cursor = self.buffer.len();
+        self.buffer.push_str(&after);
     }
 
+    /// Return the cursor position as a byte offset into the buffer.
+    pub fn cursor_byte_offset(&self) -> usize {
+        self.cursor
+    }
     // --- Private helpers ---
 
     /// Find the byte offset of the previous character boundary before `self.cursor`.
@@ -449,62 +403,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_single_match() {
-        let mut input = InputLine::new();
-        input.insert('g');
-        input.insert('i');
-
-        let completions = vec!["git".to_string(), "grep".to_string()];
-        input.complete(&completions);
-        assert_eq!(input.content(), "git ");
-    }
-
-    #[test]
-    fn complete_common_prefix() {
-        let mut input = InputLine::new();
-        input.insert('g');
-
-        let completions = vec!["git".to_string(), "grep".to_string(), "gcc".to_string()];
-        input.complete(&completions);
-        // Common prefix of git, grep, gcc starting with "g" is "g" — but all
-        // start with "g" so common prefix is just "g". Actually: git/grep/gcc
-        // common prefix = "g".  Since that equals what's already typed, it
-        // won't visually change, but the logic still runs.
-        assert_eq!(input.content(), "g");
-    }
-
-    #[test]
-    fn complete_extends_common_prefix() {
-        let mut input = InputLine::new();
-        input.insert('g');
-        input.insert('i');
-
-        let completions = vec![
-            "git".to_string(),
-            "git-lfs".to_string(),
-            "gist".to_string(),
-        ];
-        input.complete(&completions);
-        // Matches: git, git-lfs, gist. Common prefix of those = "gi".
-        // "gi" is already typed, so no visible change.
-        // But only "git" and "git-lfs" start with "gi", plus "gist".
-        // Common prefix of "git", "git-lfs", "gist" = "gi".
-        assert_eq!(input.content(), "gi");
-    }
-
-    #[test]
-    fn complete_no_matches() {
-        let mut input = InputLine::new();
-        input.insert('z');
-        input.insert('z');
-        input.insert('z');
-
-        let completions = vec!["git".to_string()];
-        input.complete(&completions);
-        assert_eq!(input.content(), "zzz");
-    }
-
-    #[test]
     fn clear() {
         let mut input = InputLine::new();
         input.insert('h');
@@ -512,5 +410,56 @@ mod tests {
         input.clear();
         assert_eq!(input.content(), "");
         assert_eq!(input.cursor_position(), 0);
+    }
+
+    #[test]
+    fn replace_range_basic() {
+        let mut input = InputLine::new();
+        for c in "ls gi".chars() {
+            input.insert(c);
+        }
+        input.replace_range(3, 5, "git ");
+        assert_eq!(input.content(), "ls git ");
+        assert_eq!(input.cursor_byte_offset(), 7);
+    }
+
+    #[test]
+    fn replace_range_preserves_trailing_text() {
+        let mut input = InputLine::new();
+        for c in "ls foo bar".chars() {
+            input.insert(c);
+        }
+        // Move cursor back to end of "foo" (byte 6)
+        input.move_left(); // r
+        input.move_left(); // a
+        input.move_left(); // b
+        input.move_left(); // ' '
+        // cursor is now at byte 6, after "foo"
+        input.replace_range(3, 6, "foobar");
+        assert_eq!(input.content(), "ls foobar bar");
+    }
+
+    #[test]
+    fn replace_range_at_start() {
+        let mut input = InputLine::new();
+        for c in "gi".chars() {
+            input.insert(c);
+        }
+        input.replace_range(0, 2, "git ");
+        assert_eq!(input.content(), "git ");
+        assert_eq!(input.cursor_byte_offset(), 4);
+    }
+
+    #[test]
+    fn cursor_byte_offset_matches_cursor() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.cursor_byte_offset(), 5);
+        input.move_left();
+        assert_eq!(input.cursor_byte_offset(), 4);
+        input.home();
+        assert_eq!(input.cursor_byte_offset(), 0);
     }
 }
