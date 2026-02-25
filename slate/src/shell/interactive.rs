@@ -4,19 +4,17 @@
 //! and proxies stdin/stdout bidirectionally to a PTY master fd while the
 //! terminal is in raw mode.
 
-use std::ffi::CString;
 use std::io::Write;
-use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::mpsc::Receiver;
 
 use super::bash_coprocess::BashCoprocess;
 
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::pty::{forkpty, ForkptyResult, Winsize};
 use nix::sys::termios::{self, SetArg, Termios};
-use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 /// An interactive passthrough session that proxies raw I/O between the
 /// user's terminal and a PTY master file descriptor.
@@ -46,71 +44,46 @@ impl InteractiveSession {
         env: &[(String, String)],
         cwd: &str,
     ) {
-        // Get the real terminal size.
-        let ws = get_terminal_winsize().unwrap_or(Winsize {
-            ws_row: 24,
-            ws_col: 80,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        });
+        // Get real terminal size via crossterm.
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
 
-        // Pre-compute all CStrings before fork (no allocation after fork).
-        let bash_cstr = CString::new("bash").unwrap();
-        let args: Vec<CString> = vec![
-            CString::new("bash").unwrap(),
-            CString::new("-c").unwrap(),
-            CString::new(command).unwrap(),
-        ];
-        let cwd_cstr = CString::new(cwd).unwrap();
-        let env_cstrs: Vec<(CString, CString)> = env
-            .iter()
-            .filter_map(|(k, v)| {
-                Some((CString::new(k.as_str()).ok()?, CString::new(v.as_str()).ok()?))
-            })
-            .collect();
-
-        // Safety: child immediately execs; only async-signal-safe calls between
-        // fork and exec.
-        let fork_result = match unsafe { forkpty(&ws, None) } {
-            Ok(r) => r,
+        let pty_system = native_pty_system();
+        let pair = match pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(p) => p,
             Err(_) => return,
         };
 
-        match fork_result {
-            ForkptyResult::Parent { child, master } => {
-                let master_fd = master.as_raw_fd();
-
-                // Enter the poll loop (this blocks until HUP).
-                self.enter(master_fd);
-
-                // Reap the child process.
-                let _ = waitpid(child, Some(WaitPidFlag::WNOHANG));
-
-                // master (OwnedFd) is dropped here, closing the PTY.
-                drop(master);
-            }
-            ForkptyResult::Child => {
-                // In child: only async-signal-safe operations.
-                unsafe {
-                    // Clear the environment, then set the snapshot.
-                    libc::clearenv();
-                    for (k, v) in &env_cstrs {
-                        libc::setenv(k.as_ptr(), v.as_ptr(), 1);
-                    }
-                    // Ensure TERM is set for interactive programs.
-                    libc::setenv(
-                        b"TERM\0".as_ptr() as *const libc::c_char,
-                        b"xterm-256color\0".as_ptr() as *const libc::c_char,
-                        1,
-                    );
-                    // Change to the shell's cwd.
-                    libc::chdir(cwd_cstr.as_ptr());
-                }
-
-                let _ = nix::unistd::execvp(&bash_cstr, &args);
-                unsafe { libc::_exit(127) };
-            }
+        let mut cmd = CommandBuilder::new("bash");
+        cmd.args(["-c", command]);
+        cmd.cwd(cwd);
+        for (k, v) in env {
+            cmd.env(k, v);
         }
+        cmd.env("TERM", "xterm-256color");
+
+        let mut child = match pair.slave.spawn_command(cmd) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        drop(pair.slave);
+
+        // Get the raw fd for the poll loop.
+        let master_fd = match pair.master.as_raw_fd() {
+            Some(fd) => fd,
+            None => return,
+        };
+
+        // Enter the poll loop (blocks until HUP).
+        self.enter(master_fd);
+
+        // Reap the child.
+        let _ = child.wait();
+        drop(pair.master);
     }
 
     /// Enter the interactive session.
@@ -376,22 +349,6 @@ fn snapshot_rows(screen: &vt100::Screen, cols: u16) -> Vec<u8> {
         }
     }
     buf
-}
-
-/// Query the real terminal size via ioctl(TIOCGWINSZ).
-fn get_terminal_winsize() -> Option<Winsize> {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
-    if ret == 0 && ws.ws_row > 0 && ws.ws_col > 0 {
-        Some(Winsize {
-            ws_row: ws.ws_row,
-            ws_col: ws.ws_col,
-            ws_xpixel: ws.ws_xpixel,
-            ws_ypixel: ws.ws_ypixel,
-        })
-    } else {
-        None
-    }
 }
 
 /// Write the entire buffer to `fd`, retrying on `EINTR`.
