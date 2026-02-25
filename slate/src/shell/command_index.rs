@@ -142,6 +142,7 @@ fn interactive_commands() -> HashSet<&'static str> {
         "vim", "vi", "nvim", "nano", "emacs", "htop", "top", "less", "more", "man", "ssh",
         "tmux", "screen", "python", "python3", "node", "irb", "ghci",
         "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3", "fzf", "docker",
+        "sudo",
     ]
     .into_iter()
     .collect()

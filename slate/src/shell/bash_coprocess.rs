@@ -127,6 +127,15 @@ impl BashCoprocess {
         self.write_all(b"\x03")
     }
 
+    /// Write raw bytes to the PTY master fd.
+    ///
+    /// Used to forward user keystrokes to the bash coprocess while a
+    /// command is executing (e.g. password prompts for `sudo`, Y/n
+    /// prompts for `apt install`).
+    pub fn send_bytes(&self, data: &[u8]) -> bool {
+        self.write_all(data)
+    }
+
     /// Execute a command in the bash co-process and return its output and exit code.
     pub fn execute(&self, command: &str, timeout_ms: i32) -> CommandResult {
         if self.master_fd.as_raw_fd() < 0 {
@@ -138,8 +147,11 @@ impl BashCoprocess {
 
         let sentinel = Self::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
+        // Single-line format: command and sentinel on one line so bash parses
+        // the entire compound command before executing. This prevents commands
+        // that read from stdin (like `read`) from consuming the sentinel line.
         let full_cmd = format!(
-            "{}\n__SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
+            "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
             cmd_trimmed, sentinel
         );
 
@@ -208,8 +220,9 @@ impl BashCoprocess {
         }
         let sentinel = Self::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
+        // Single-line format: see execute() for rationale.
         let full_cmd = format!(
-            "{}\n__SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
+            "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
             cmd_trimmed, sentinel
         );
         if self.write_all(full_cmd.as_bytes()) {
@@ -437,7 +450,7 @@ impl BashCoprocess {
     }
 
     /// Strip ANSI escape sequences and carriage returns from text.
-    fn strip_ansi(text: &str) -> String {
+    pub fn strip_ansi(text: &str) -> String {
         let mut result = String::with_capacity(text.len());
         let mut chars = text.chars().peekable();
         while let Some(ch) = chars.next() {
@@ -739,6 +752,49 @@ mod tests {
             bytes.is_empty(),
             "try_read should return empty when no data, got {} bytes",
             bytes.len()
+        );
+    }
+
+    #[test]
+    fn test_send_bytes_during_command() {
+        let _lock = PTY_LOCK.lock().unwrap();
+        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+
+        // Use send_bytes to write a complete command to the PTY.
+        // This verifies the public API writes through to the PTY
+        // master fd (the same mechanism used for sudo passwords,
+        // apt Y/n prompts, etc.).
+        assert!(
+            coproc.send_bytes(b"echo via_send_bytes\n"),
+            "send_bytes should succeed"
+        );
+
+        // Give bash time to process and produce output.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Read back the output — it should contain the echoed text.
+        let mut output = String::new();
+        loop {
+            let bytes = coproc.try_read();
+            if bytes.is_empty() {
+                break;
+            }
+            output.push_str(&String::from_utf8_lossy(&bytes));
+        }
+
+        assert!(
+            output.contains("via_send_bytes"),
+            "PTY output should contain text sent via send_bytes, got: {:?}",
+            output
+        );
+
+        // Verify the shell is still usable via the sentinel protocol.
+        let result = coproc.execute("echo recovered", 10_000);
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result.output.contains("recovered"),
+            "output should contain 'recovered', got: {:?}",
+            result.output
         );
     }
 

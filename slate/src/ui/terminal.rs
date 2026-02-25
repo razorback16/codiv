@@ -34,11 +34,55 @@ struct PendingCommand {
     sentinel: String,
     accumulated: String,
     command: String,
-    started_at: Instant,
+    last_activity: Instant,
+    display_buf: String,
+    last_output: Instant,
 }
 
 /// Default scrollback limit (number of lines retained).
 const MAX_SCROLLBACK: usize = 10_000;
+
+/// Timeout before flushing incomplete line buffer (for prompts that don't end with \n).
+const DISPLAY_FLUSH_MS: u64 = 100;
+
+/// Check whether a line is sentinel protocol noise that should be suppressed.
+fn is_sentinel_noise(line: &str, command: &str, sentinel: &str) -> bool {
+    let plain = BashCoprocess::strip_ansi(line);
+    let trimmed = plain.trim();
+
+    // Lines containing the sentinel marker
+    if trimmed.contains(sentinel) {
+        return true;
+    }
+
+    // Lines containing __SLATE_EXIT
+    if trimmed.contains("__SLATE_EXIT") {
+        return true;
+    }
+
+    // Bare prompt lines
+    if trimmed == "$" || trimmed == "$ " {
+        return true;
+    }
+
+    let without_prompt = trimmed.strip_prefix("$ ").unwrap_or(trimmed);
+    let cmd_trimmed = command.trim();
+
+    // Echoed command line
+    if !cmd_trimmed.is_empty() && without_prompt == cmd_trimmed {
+        return true;
+    }
+
+    // Echoed command with sentinel suffix (e.g. "ls; __SLATE_EXIT=$?; ...")
+    if !cmd_trimmed.is_empty() && without_prompt.starts_with(cmd_trimmed) {
+        let rest = &without_prompt[cmd_trimmed.len()..];
+        if rest.starts_with("; __SLATE_EXIT") {
+            return true;
+        }
+    }
+
+    false
+}
 
 /// Helper: write styled text to the vt100 parser using ANSI SGR codes.
 fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str) {
@@ -145,7 +189,32 @@ fn event_loop(
         if let Some(ref mut pending) = pending_command {
             let bytes = bash.try_read();
             if !bytes.is_empty() {
-                pending.accumulated.push_str(&String::from_utf8_lossy(&bytes));
+                let text = String::from_utf8_lossy(&bytes);
+                pending.accumulated.push_str(&text);
+                pending.display_buf.push_str(&text);
+                pending.last_activity = Instant::now();
+                pending.last_output = Instant::now();
+
+                // Process complete lines through the noise filter.
+                while let Some(newline_pos) = pending.display_buf.find('\n') {
+                    let line = pending.display_buf[..newline_pos].to_string();
+                    pending.display_buf = pending.display_buf[newline_pos + 1..].to_string();
+                    if !is_sentinel_noise(&line, &pending.command, &pending.sentinel) {
+                        let out = format!("{}\n", line);
+                        parser.process(out.as_bytes());
+                    }
+                }
+            }
+
+            // Flush incomplete line buffer after timeout (shows prompts like
+            // sudo password, apt Y/n that don't end with \n).
+            if !pending.display_buf.is_empty()
+                && pending.last_output.elapsed() > Duration::from_millis(DISPLAY_FLUSH_MS)
+            {
+                let buf = std::mem::take(&mut pending.display_buf);
+                if !is_sentinel_noise(&buf, &pending.command, &pending.sentinel) {
+                    parser.process(buf.as_bytes());
+                }
             }
 
             if let Some(result) = BashCoprocess::check_complete(
@@ -153,12 +222,16 @@ fn event_loop(
                 &pending.command,
                 &pending.sentinel,
             ) {
-                if !result.output.is_empty() {
-                    parser.process(result.output.as_bytes());
-                    if !result.output.ends_with('\n') {
-                        parser.process(b"\r\n");
+                // Flush any remaining display buffer.
+                if let Some(ref mut p) = pending_command {
+                    let buf = std::mem::take(&mut p.display_buf);
+                    if !buf.is_empty()
+                        && !is_sentinel_noise(&buf, &p.command, &p.sentinel)
+                    {
+                        parser.process(buf.as_bytes());
                     }
                 }
+                // Only show exit code if non-zero.
                 if result.exit_code != 0 {
                     parser_push_styled(
                         parser,
@@ -170,11 +243,11 @@ fn event_loop(
                 pending_command = None;
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
-            } else if pending.started_at.elapsed() > Duration::from_secs(30) {
-                // Timeout — interrupt via PTY Ctrl-C and recover.
+            } else if pending.last_activity.elapsed() > Duration::from_secs(300) {
+                // Timeout after 5 minutes of inactivity (no output or keystrokes).
                 bash.send_interrupt();
                 bash.drain_for(100);
-                parser_push_styled(parser, "command timed out", "\x1b[31m");
+                parser_push_styled(parser, "command timed out (no activity for 5m)", "\x1b[31m");
                 pending_command = None;
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
@@ -227,6 +300,46 @@ fn event_loop(
                 Event::Key(key) if key.kind == KeyEventKind::Press => key,
                 _ => continue,
             };
+
+            // --- Forward keystrokes to PTY when a command is executing ---
+            // This allows the user to respond to prompts (sudo password,
+            // apt Y/n, `read` input, etc.). Ctrl+C falls through to the
+            // existing interrupt handler below.
+            if pending_command.is_some() {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                        // Fall through to existing Ctrl+C handler below.
+                    }
+                    (KeyCode::Enter, _) => {
+                        bash.send_bytes(b"\r");
+                        if let Some(ref mut p) = pending_command {
+                            p.last_activity = Instant::now();
+                        }
+                        continue;
+                    }
+                    (KeyCode::Char(ch), _) => {
+                        let mut buf = [0u8; 4];
+                        let s = ch.encode_utf8(&mut buf);
+                        bash.send_bytes(s.as_bytes());
+                        if let Some(ref mut p) = pending_command {
+                            p.last_activity = Instant::now();
+                        }
+                        continue;
+                    }
+                    (KeyCode::Backspace, _) => {
+                        bash.send_bytes(b"\x7f");
+                        if let Some(ref mut p) = pending_command {
+                            p.last_activity = Instant::now();
+                        }
+                        continue;
+                    }
+                    _ => {
+                        // Consume other keys silently (arrows/tab don't
+                        // make sense for stdin prompts).
+                        continue;
+                    }
+                }
+            }
 
             // --- Completion popup key interception ---
             if completion_popup.is_visible() {
@@ -350,14 +463,17 @@ fn event_loop(
                             terminal::enable_raw_mode()?;
                             term.clear()?;
 
-                            // Push current visible content into scrollback before clearing.
+                            // Push visible content into scrollback, then clear.
+                            // Push newlines from the current cursor position (NOT
+                            // from the bottom row). From cursor row C in a screen
+                            // of R rows, the first R-C newlines just move the
+                            // cursor down without scrolling, then subsequent ones
+                            // scroll only the actual content rows into scrollback
+                            // — no blank rows end up in scrollback.
                             let visible_rows = parser.screen().size().0;
-                            parser.process(format!("\x1b[{};1H", visible_rows).as_bytes());
                             for _ in 0..visible_rows {
                                 parser.process(b"\r\n");
                             }
-                            // Reset the vt100 parser screen — it is stale because
-                            // interactive output bypassed the parser entirely.
                             parser.process(b"\x1b[2J\x1b[H");
 
                             // Update cwd — the interactive command may have
@@ -378,7 +494,9 @@ fn event_loop(
                                         sentinel,
                                         accumulated: String::new(),
                                         command: raw_input.clone(),
-                                        started_at: Instant::now(),
+                                        last_activity: Instant::now(),
+                                        display_buf: String::new(),
+                                        last_output: Instant::now(),
                                     });
                                 }
                                 None => {

@@ -66,11 +66,29 @@ __slate_complete() {
     fi
 
     # Try programmable completion first
-    local comp_spec
+    local comp_spec func
     comp_spec=$(complete -p "$cmd" 2>/dev/null)
 
+    # bash-completion v2 uses a default handler (complete -D) with
+    # _completion_loader for lazy loading. If no command-specific spec
+    # exists, invoke the default handler to load it, then re-fetch.
+    if [[ -z "$comp_spec" ]]; then
+        local default_spec
+        default_spec=$(complete -p -D 2>/dev/null)
+        if [[ -n "$default_spec" ]]; then
+            func=$(echo "$default_spec" | sed -n 's/.*-F \([^ ]*\).*/\1/p')
+            if [[ -n "$func" ]]; then
+                COMP_LINE="$line"
+                COMP_POINT=$point
+                COMP_WORDS=("${words[@]}")
+                COMP_CWORD=$cword
+                "$func" "$cmd" 2>/dev/null
+                comp_spec=$(complete -p "$cmd" 2>/dev/null)
+            fi
+        fi
+    fi
+
     if [[ -n "$comp_spec" ]]; then
-        local func
         func=$(echo "$comp_spec" | sed -n 's/.*-F \([^ ]*\).*/\1/p')
 
         if [[ -n "$func" ]]; then
@@ -254,7 +272,7 @@ impl CompletionEngine {
         let candidates: Vec<String> = result
             .output
             .lines()
-            .map(|l| l.to_string())
+            .map(|l| l.trim_end().to_string())
             .filter(|l| !l.is_empty())
             .collect();
 
@@ -333,6 +351,25 @@ mod tests {
             "should have no matches, got: {:?}",
             result.candidates
         );
+    }
+
+    #[test]
+    fn test_git_subcommand_completion() {
+        let _lock = PTY_LOCK.lock().unwrap();
+        let bash = BashCoprocess::spawn(500, 24).expect("spawn");
+        let mut engine = CompletionEngine::new();
+        // Complete "git sta" — should include status/stash via lazy-loaded completion
+        let result = engine.complete(&bash, "git sta", 7).unwrap();
+        assert!(
+            result
+                .candidates
+                .iter()
+                .any(|c| c.trim() == "status" || c.trim() == "stash"),
+            "should complete 'git sta' to include 'status' or 'stash', got: {:?}",
+            result.candidates
+        );
+        assert_eq!(result.replace_start, 4);
+        assert_eq!(result.replace_end, 7);
     }
 
     #[test]
