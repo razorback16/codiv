@@ -1,12 +1,12 @@
 # Slate Agent — Product Requirements Document
 
-**Version**: 1.6 **Date**: 2026-02-23 **Author**: Subhagato **Status**: Draft
+**Version**: 2.0 **Date**: 2026-02-26 **Author**: Subhagato **Status**: Draft
 
 ---
 
 ## 1. Executive Summary
 
-**Slate Agent** is a C++/Rust terminal-native coding agent (Rust client, C++ daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
+**Slate Agent** is a Rust/C++ terminal-native coding agent (Rust client, C++ daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
 **Key differentiators:**
 
@@ -14,7 +14,7 @@
 - **Multi-model orchestration**: different AI models assigned to different roles (planning, coding, review, research) based on task complexity — not locked to a single provider
 - **Recursive agent hierarchy**: TeamLead can deploy sub-TeamLeads, enabling arbitrarily deep task decomposition for complex work — validated by Anthropic's research showing orchestrator+subagent patterns outperform single agents by 90.2%
 - **Shared state over agent chat**: agents coordinate through explicit artifacts and task state, not implicit message passing; single-writer ownership ensures no two agents can corrupt shared state — a pattern validated by Cursor's failure with reader-writer locks (agents held locks too long, 20 agents degraded to throughput of 2-3)
-- **C++ performance**: daemon architecture with worker thread pool for true concurrent execution
+- **Rust + C++ performance**: Rust client with ratatui TUI for memory-safe terminal handling; C++ daemon with worker process pool for true concurrent execution
 
 **Vision**: The terminal becomes the IDE — developers think in natural language, and Slate Agent decomposes, executes, reviews, and summarizes the work end-to-end.
 
@@ -36,7 +36,7 @@
 
 | Tool | Type | Models | Agent Architecture | Memory | Command Fast-Pass | Pricing | Benchmark |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Claude Code** (Anthropic) | CLI | Anthropic only | Recursive subagents (up to 7 parallel; unreleased Swarms) | Hierarchical CLAUDE.md + Auto Memory + Subagent Memory; compaction at \~95% capacity | Permission allowlist (closest analog) | $20-200/mo | 80.9% SWE-bench |
+| **Claude Code** (Anthropic) | CLI | Anthropic only | Recursive subagents (up to 7 parallel; unreleased Swarms) | Hierarchical CLAUDE.md + Auto Memory + Subagent Memory; compaction at ~95% capacity | Permission allowlist (closest analog) | $20-200/mo | 80.9% SWE-bench |
 | **Codex CLI** (OpenAI) | Open-source Rust CLI | OpenAI family + Ollama local models | Flat agent (multi-agent via external Agents SDK + MCP) | AGENTS.md + session resume | No | $20-200/mo or API | N/A |
 | **Aider** | Open-source Python CLI | Most model-agnostic (any LLM) | Flat; "architect mode" pairs 2 models | Git-centric (no cross-session persistence) | No | Free (pay LLM API) | 64% (architect mode) |
 | **Cursor** | VS Code fork + CLI (Jan 2026) | 8+ models incl. proprietary Composer | Recursive subagents + background agents; Planner/Worker/Judge pattern | .cursorrules + codebase indexing (Turbopuffer vector DB, Merkle tree syncing) | N/A | $60-200/mo credits | N/A |
@@ -78,7 +78,7 @@
 | Work Item throughput (concurrent) | 1 (sequential) | 4+ parallel workers |
 | Memory footprint (daemon) | N/A | <50MB resident |
 | Context persistence accuracy | 0% (no memory) | >90% relevant recall |
-| Multi-agent token overhead vs single agent | 1x | <8x (industry avg is \~15x) |
+| Multi-agent token overhead vs single agent | 1x | <8x (industry avg is ~15x) |
 
 ---
 
@@ -122,6 +122,58 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - **Goal**: An agent with built-in safety gates and the ability to hire specialist roles (Security, Perf) when needed.
 - **Success**: "When I ask it to modify the CI pipeline, it flags the security implications and asks for confirmation before running destructive commands."
 
+### 5.5 User Stories with Acceptance Criteria
+
+#### Fast-Pass & Command Execution
+
+**US-001**: As Alex (senior backend dev), I want to type `make test` and have it execute instantly without AI routing, so that my shell workflow has zero overhead.
+- **AC**: Recognized commands execute in <10ms overhead. No network call to LLM. Command output renders inline with no border, indistinguishable from a normal terminal.
+
+**US-002**: As Alex, I want to type `?make test` (or any `?`-prefixed command) and have the agent interpret it as an AI query, so that I can force agent routing when I need help with a recognized command.
+- **AC**: `?` prefix bypasses fast-pass classification. Agent receives the full input (minus `?`) as a natural language query.
+
+#### Agent Task Execution
+
+**US-003**: As Alex, I want to type "refactor the auth module to use JWT" and have the agent decompose, execute, review, and present a diff, so that complex tasks are handled end-to-end.
+- **AC**: Agent creates Work Items, executes tools (Edit, Bash, Read), Reviewer validates outputs, final diff shown. All intermediate output streams in color-coded agent blocks.
+
+**US-004**: As Priya (full-stack dev), I want the agent to create a file, compile it, and run it when I describe a program in natural language, so that I can prototype quickly.
+- **AC**: Agent uses Write tool to create the file, Bash tool to compile, Bash tool to run. Output streams inline. Exit code captured and reported.
+
+#### Multi-Agent & Work Items
+
+**US-005**: As Alex, I want complex tasks to be split into parallel Work Items that execute concurrently, so that large refactoring tasks complete faster.
+- **AC**: Independent Work Items run in parallel (visible in DAG tree). Dependent Work Items wait. Progress updates stream to terminal per Work Item.
+
+**US-006**: As Marcus (devops), I want the agent to hire a Security specialist role when my task involves infrastructure or credential changes, so that risky operations get expert scrutiny.
+- **AC**: TeamLead detects security-relevant characteristics in the task, hires Security role, Security agent reviews before changes are applied. User sees Security agent's output in red-bordered block.
+
+#### Memory & Context
+
+**US-007**: As Priya, I want the agent to remember my project conventions across sessions, so that I don't repeat myself.
+- **AC**: Memory persists across sessions. Preferences stated in session N are available in session N+1 without re-stating. Project context auto-switches on `cd`.
+
+**US-008**: As Priya, I want the agent to automatically switch project context when I `cd` into a different repository, so that conventions from repo A don't bleed into repo B.
+- **AC**: On `cd` to a different git root, agent loads the new project's `project.md` and unloads the previous one. Agent announces the switch.
+
+#### Safety & Confirmation
+
+**US-009**: As Marcus, I want destructive commands to require confirmation, so that the agent doesn't accidentally damage production.
+- **AC**: Commands in the high/critical risk list (e.g., `rm -rf`, `git push --force`, `DROP TABLE`) trigger a confirmation prompt. No auto-execution. User must explicitly approve.
+
+**US-010**: As Marcus, I want a full audit trail of every command the agent executes, so that I can review what happened during a session for compliance.
+- **AC**: All commands, outputs, diffs, and decisions are logged to `~/.slate-agent/audit/`. Logs are machine-parseable and include timestamps, Work Item IDs, and agent roles.
+
+#### Tool System
+
+**US-011**: As Alex, I want to install a custom tool with `slate install ./my-tool` and have it immediately available to the agent, so that I can extend the agent's capabilities.
+- **AC**: After `slate install`, the tool appears in `slate tools list`. Agent sees it in Tier 0 context. Tool's `--help` and `--agent-guide` are accessible. No daemon restart required.
+
+#### Multi-Model
+
+**US-012**: As Alex, I want the TeamLead to assign different models to different Work Items based on task complexity, so that simple tasks use cheap/fast models and complex tasks use frontier models.
+- **AC**: TeamLead selects model from catalog per Work Item. Model selection visible in Work Item metadata. Cost-tier and intelligence-level influence selection. User can override with `[roles.default_worker]` config.
+
 ---
 
 ## 6. Functional Requirements
@@ -149,39 +201,49 @@ The following are **not** in scope for the MVP or near-term roadmap:
   | TeamLead | White/bold | Task tree entries |
   | User commands | Default terminal color | No border, no prefix |
   Multiple Engineers: cycle through cyan variants (cyan, bright cyan, teal) per Work Item ID.
-- Spawns a **persistent bash co-process** (`bash --noediting -i`) at startup via pty pair
-- Commands piped to bash co-process stdin; output read from pty with **sentinel-based boundary detection** (unique marker echoed after each command to detect output boundaries)
-- Maintains shell state continuity: env vars, aliases, cwd, `.bashrc` state persist across commands
+- Spawns a **persistent bash co-process** (`bash --noediting --norc --noprofile -i`) at startup via **portable-pty**
+- Commands piped to bash co-process stdin; output read from PTY with **sentinel-based boundary detection** (`cmd; __SLATE_EXIT=$?; echo "SENTINEL${__SLATE_EXIT}__"` to detect output boundaries and capture exit codes)
+- Maintains shell state continuity: env vars, aliases, cwd persist across commands
 - User command output renders inline with no border, no prefix (feels like normal terminal)
-- **Interactive command passthrough**: commands like vim, htop, ssh detected — ratatui suspends, raw PTY takeover for direct terminal control, ratatui resumes on exit
+- **VT100 terminal emulation**: uses tui-term + vt100 crate for ANSI-preserved output rendering in the ratatui widget tree
+- **Interactive command passthrough**: commands like vim, htop, ssh, python REPL detected — dedicated PTY with raw terminal mode for direct terminal control, resumes normal mode on exit
 - **Signal forwarding**: Ctrl+C forwarded to bash co-process child process
+- **10,000 line scrollback limit**
+- **Mouse support**: scroll and click via crossterm mouse events
+- **Clipboard integration**: copy/paste via arboard crate
 - Provides context to daemon: cwd, env allowlist, tty info, shell history, last exit code
 - Streams output from daemon back to terminal and renders in agent output blocks
-- **Markdown rendering**: comrak for CommonMark+GFM parsing + syntect for syntax highlighting in code blocks; emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
+- **Markdown rendering** (planned): comrak for CommonMark+GFM parsing + syntect for syntax highlighting in code blocks; emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
 - **Communication**: Unix domain socket at well-known path (see FR-002)
+- **Tab completion**: 3-tier system — programmable completions (bash-completion integration) → command completions → file completions
+- **Structured logging**: `--debug` flag enables structured logging via log + env_logger to `/tmp/slate-debug.log`
 
 ### FR-002: Daemon (Persistent C++ Process — `slated`)
 
-- Listen on Unix domain socket for slate client connections
+- C++20 singleton daemon process
+- Listen on Unix domain socket (`/tmp/slated-{uid}.sock`) for slate client connections
+- PID file at `~/.slate-agent/slated.pid`
 - Manage lifecycle: start on first slate client connection, stay resident, graceful shutdown
 - Handle multiple concurrent slate client sessions
 - Provide streaming responses (token-by-token for AI, chunked for command output)
-- **Env snapshot protocol**: `slate` captures an env snapshot on connect to `slated` — env vars, PATH, aliases, shell functions, cwd. Refreshed on demand: auto-refresh on `cd`/`source`, manual via `slate sync-env`. Stored per-session in `slated` (each slate client has its own snapshot).
-- **Worker bash sessions**: `slated` spawns a **fresh bash process** (`bash --noediting`) per Work Item that needs shell execution. Each worker initialized from the latest env snapshot: env vars injected, aliases/functions sourced, cwd set. Worker killed when Work Item completes — no reuse, no stale state. Workers are non-interactive (pipe stdin/stdout/stderr, no pty needed). Bash startup is ~5-10ms — negligible vs LLM latency, no need for a warm pool. Multiple Work Items run their own bash processes concurrently (true parallelism).
+- **FlatBuffers IPC protocol**: 4-byte big-endian length prefix + FlatBuffer payload; message types include ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error
+- **Env snapshot protocol**: `slate` captures an env snapshot on connect to `slated` — session_id, env_vars, PATH, cwd. Stored per-session in `slated` (each slate client has its own snapshot).
+- **Heartbeat mechanism**: 5-second interval from client, 30-second stale timeout in daemon for detecting disconnected clients
+- **Worker bash sessions**: `slated` spawns a **fresh bash process** per Work Item that needs shell execution. Each worker initialized from the latest env snapshot: env vars injected, cwd set. Worker killed when Work Item completes — no reuse, no stale state. Workers are non-interactive (pipe stdin/stdout/stderr). Bash startup is ~5-10ms — negligible vs LLM latency, no need for a warm pool. Multiple Work Items run their own bash processes concurrently (true parallelism).
 - **Command execution routing**:
   - **User commands** → `slate`'s persistent bash co-process (interactive, stateful)
   - **Agent Bash tool calls** → `slated`'s worker bash sessions (parallel, env-snapshot-initialized)
   - **Bidirectional IPC** carries: env snapshots (slate→slated), streaming output from worker sessions + confirmation requests (slated→slate)
-- **IPC protocol**: `SOCK_STREAM` with **FlatBuffers** — 4-byte length prefix + FlatBuffer payload. Zero-copy field access, schema evolution, type-safe.
+- **Daemon logging**: logs to `~/.slate-agent/slated.log`
 - **I/O multiplexing**: kqueue (macOS) / epoll (Linux) for non-blocking I/O
 
 ### FR-003: Command Fast-Pass
 
-- Build command index on startup in `slate` binary from: PATH executables, shell builtins, aliases, functions (sourced from the persistent bash co-process's environment)
-- Store in hash map: command name → type + path/builtin + completion hints
-- Classify input: recognized command → execute immediately via bash co-process; unknown → route to agent mode; `?` prefix → force AI
-- Update index incrementally when PATH or aliases change
-- Provide completion hints via autocomplete in `slate` binary
+- Build command index on startup in `slate` binary from: PATH executables (scanning) + 65 bash builtins
+- Store in **O(1) hash map**: command name → type + path/builtin
+- **Input classification categories**: Execute (recognized command), Interactive (vim, ssh, python, etc.), AiQuery (natural language), NotFound, Clear, Reset, Exit, Empty
+- Recognized commands execute immediately through bash co-process; unknown commands route to agent mode; `?` prefix forces AI
+- Provide completion hints via tab completion in `slate` binary
 
 ### FR-004: Agent System
 
@@ -248,8 +310,8 @@ External tools (binary and prompt) are discovered via `SLATE_TOOLS_PATH` and pre
 The Narrator should implement MemGPT-style bounded memory management:
 
 - **Cognitive triage**: The Narrator LLM evaluates the future value of each piece of information before deciding what to keep, compress, or evict. Approximately 70% of conversational messages should be evicted to maintain continuity on long tasks.
-- **Recursive summarization**: When memory approaches capacity, older entries are recursively summarized into increasingly compressed forms. Core memory blocks default to \~2,000 characters each (MemGPT convention), though Slate Agent's 64KB/128KB caps are appropriate for a coding context.
-- **Preservation priorities**: Architectural decisions, unresolved bugs, user-stated preferences, and project conventions are high-value and should resist eviction. This mirrors Claude Code's compaction behavior (preserves architectural decisions, keeps 5 most recently accessed files, compacts at \~95% of \~33,000-token buffer).
+- **Recursive summarization**: When memory approaches capacity, older entries are recursively summarized into increasingly compressed forms. Core memory blocks default to ~2,000 characters each (MemGPT convention), though Slate Agent's 64KB/128KB caps are appropriate for a coding context.
+- **Preservation priorities**: Architectural decisions, unresolved bugs, user-stated preferences, and project conventions are high-value and should resist eviction. This mirrors Claude Code's compaction behavior (preserves architectural decisions, keeps 5 most recently accessed files, compacts at ~95% of ~33,000-token buffer).
 - **No vector DB for MVP**: Unlike Cursor (Turbopuffer vector DB + Merkle trees for re-indexing), Slate Agent's bounded text memory with Narrator curation is simpler and sufficient for the terminal-native use case. Vector-based RAG can be added later if recall accuracy falls below target.
 
 ### FR-008: Shared Project State
@@ -385,39 +447,30 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 ---
 
-### Phase 1: Terminal Foundation
+### Phase 1: Terminal Foundation ✅ COMPLETE
 
 **Goal**: A working terminal client that can execute commands via daemon IPC.
 
-**Deliverables**:
+**Status**: Complete. The `slate` binary (~4,300 lines of Rust) and `slated` daemon (~1,240 lines of C++20) are fully implemented and functional.
 
-- `slate` binary rewritten in **Rust** with **ratatui + crossterm** for linear scroll-down terminal flow, input handling, history, and autocomplete
-- Persistent bash co-process (`bash --noediting -i`) spawned via pty pair at startup
-- Sentinel-based output boundary detection for command completion
-- Interactive command passthrough (ratatui suspends, raw PTY takeover for vim, htop, ssh, etc.)
-- Signal forwarding (Ctrl+C → bash child)
-- `slated` daemon (C++) that listens on Unix socket, receives commands, streams output back
-- Command index built in `slate` from PATH + builtins + bash co-process environment (hash map lookup)
-- Fast-pass: recognized commands execute immediately through bash co-process
-- Basic autocomplete from command index
-- Graceful daemon lifecycle (start, stay resident, shutdown)
-- FlatBuffers IPC protocol between slate and slated
+**Delivered summary**:
 
-**Testable outcome**: User launches `slate`, types `ls`, `git status`, `make` — commands execute via persistent bash co-process with near-zero overhead. Interactive commands like `vim` work correctly. Unknown commands print "not found" or similar.
+- Rust TUI client (`slate`) with ratatui + crossterm for linear scroll-down terminal flow
+- Persistent bash co-process via portable-pty with sentinel-based output boundary detection
+- Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
+- C++ daemon (`slated`) with Unix socket IPC, FlatBuffers protocol, streaming output
+- Command fast-pass: PATH scanning + bash builtins in O(1) hash map, input classification routing
+- 3-tier tab completion: programmable (bash-completion) → command → file
+- Env snapshot protocol, heartbeat mechanism, worker bash sessions
+- Structured logging with `--debug` flag
+
+**Verified outcome**: User launches `slate`, types `ls`, `git status`, `make` — commands execute via persistent bash co-process with near-zero overhead. Interactive commands work correctly with PTY passthrough. Tab completion works across all three tiers. Unknown commands are classified for future agent routing.
 
 **Dependencies**: None (greenfield)
 
-**Tech**:
+**Key tech choices**: Rust (Cargo) for `slate`, C++20 (CMake) for `slated`, FlatBuffers IPC over Unix socket, portable-pty for PTY management, tui-term + vt100 for terminal emulation.
 
-- **Rust**, Cargo for `slate`; **C++20**, CMake for `slated`
-- **ratatui + crossterm** for terminal UI — linear scroll-down flow, input handling, inline agent output block rendering
-- **comrak + syntect** for markdown rendering (CommonMark+GFM parsing + syntax highlighting)
-- **flatbuffers** crate for IPC serialization (4-byte length prefix + FlatBuffer payload)
-- **tokio** for async I/O
-- **nix** / **portable-pty** for PTY management (bash co-process)
-- Unix domain sockets with `SOCK_STREAM`
-- kqueue (macOS) / epoll (Linux) for non-blocking I/O in `slated`
-- No AI/LLM needed yet
+See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for full module tables and tech stack.
 
 ---
 
@@ -439,12 +492,14 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
   - Command allowlist/denylist (configurable via TOML config)
   - No agent auto-execution of critical-risk commands
 - **Worker bash sessions in `slated`**: spawn fresh bash per Work Item, initialize from env snapshot, kill on completion
-- **Env snapshot protocol**: capture on `slate` connect, refresh on `cd`/`source`/manual `slate sync-env`
+- **Env snapshot refresh**: auto-refresh on `cd`/`source`/manual `slate sync-env`
 - **Color-coded output streaming**: worker bash output streamed to `slate`, rendered in color-bordered agent output blocks per Work Item
 
 **Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
 **Dependencies**: Phase 1
+
+**Backwards compatibility**: IPC protocol extends with new message types (AgentOutput, ConfirmationRequest, ConfirmationResponse); existing Phase 1 messages (ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error) remain unchanged.
 
 **Tech**:
 
@@ -472,6 +527,8 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 **Testable outcome**: User types "add input validation to the user registration form, write tests, and update the README" — agent creates 3+ Work Items, runs independent ones in parallel (validation + README), then tests after validation is done. User sees progress updates for each.
 
 **Dependencies**: Phase 2
+
+**Backwards compatibility**: Work Item schema is new (no prior schema to break). IPC protocol extends with Work Item status messages; existing Phase 2 agent messages unchanged. Daemon API extends with scheduler endpoints.
 
 **Tech**:
 
@@ -502,6 +559,8 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Dependencies**: Phase 3
 
+**Backwards compatibility**: Config format extends with model catalog section; existing config keys preserved. Work Item schema gains `model_id` and `assigned_role` fields (additive). Single-agent mode from Phase 2 continues to work (Orchestrator+Engineer combined role is a valid degenerate case).
+
 **Tech**:
 
 - Multiple concurrent ai-sdk-cpp sessions with different models
@@ -528,6 +587,8 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Dependencies**: Phase 4
 
+**Backwards compatibility**: Memory storage is entirely new (`~/.slate-agent/memory/`). No prior data to migrate. Config extends with `[memory]` section; existing config keys preserved.
+
 ---
 
 ### Phase 6: Tool System
@@ -548,6 +609,8 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Dependencies**: Phase 5
 
+**Backwards compatibility**: Tool discovery is new (`SLATE_TOOLS_PATH`). Built-in tools (Bash, Read, Write, Edit, Glob, Grep) remain unchanged and always available. Config extends with `[[tools.mcp]]`, `[[hooks]]`, and `[[aliases]]` sections; existing config keys preserved.
+
 ---
 
 ### Phase 7: Advanced Safety & Audit
@@ -567,12 +630,14 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Dependencies**: Phase 6
 
+**Backwards compatibility**: Safety policies are additive — existing behavior preserved. Audit trail is new storage. Config extends with `[privacy]` and `[safety]` sections; existing config keys preserved. OS-level sandboxing is opt-in.
+
 ---
 
 ### Phase Dependency Graph
 
 ```
-Phase 1 (Terminal Foundation)
+Phase 1 (Terminal Foundation) ✅ COMPLETE
     |
     v
 Phase 2 (Single-Agent AI Loop + Basic Safety)
@@ -601,18 +666,16 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| **ai-sdk-cpp maturity** — ClickHouse SDK exists (\~134 stars) and works for OpenAI + Anthropic with streaming + tool calling, but Google/Cohere not yet supported. C++20 with patched nlohmann/json. | Medium | High | Evaluate SDK early in Phase 2. It is the most complete C++ LLM SDK available. For unsupported providers, extend with direct HTTP (libcurl + cpr + custom SSE parser). llama.cpp server also supports OpenAI-compatible + Anthropic Messages API as a local fallback. |
-| **Persistent bash co-process complexity** — pty management, interactive command passthrough (raw mode switching), signal forwarding, sentinel-based output boundary detection | Medium | High | Start with basic command execution via pty; add interactive passthrough incrementally. Use `forkpty()` for clean pty management. Test sentinel markers across edge cases (binary output, multi-line commands). Signal forwarding via `kill()` to process group. |
-| **Multi-agent token costs** — multi-agent systems use \~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
+| **ai-sdk-cpp maturity** — ClickHouse SDK exists (~134 stars) and works for OpenAI + Anthropic with streaming + tool calling, but Google/Cohere not yet supported. C++20 with patched nlohmann/json. | Medium | High | Evaluate SDK early in Phase 2. It is the most complete C++ LLM SDK available. For unsupported providers, extend with direct HTTP (libcurl + cpr + custom SSE parser). llama.cpp server also supports OpenAI-compatible + Anthropic Messages API as a local fallback. |
+| **Multi-agent token costs** — multi-agent systems use ~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
 | **Lock contention in multi-agent coordination** — Cursor's reader-writer locks failed; agents held locks too long, 20 agents degraded to throughput of 2-3 | Medium | High | Use single-writer ownership pattern instead of reader-writer locks. One agent owns writes to a resource; others read. Role-based separation (Planner/Worker/Judge) reduces contention by design. |
 | **Multi-model latency** — orchestrating multiple LLM calls adds overhead | Medium | Medium | Keep fast-pass path completely AI-free; pipeline model calls where possible; cache model selections |
-| **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; \~70% eviction rate for conversational messages |
+| **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; ~70% eviction rate for conversational messages |
 | **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Taskflow library (battle-tested, header-only C++20) instead of hand-rolling scheduler; composable sub-taskflows for recursive decomposition |
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
 | **Security of executed commands** — agent could run destructive commands | Low | Critical | Basic risk classification + confirmation prompts (Phase 2); allowlists; audit trail (Phase 7); never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt, Phase 7) |
-| **1-week MVP timeline** — ambitious scope for AI-assisted development | High | Medium | Phases are incremental — even Phase 1+2 alone is a useful product; deprioritize Phases 5-7 if needed |
 | **Env snapshot drift** — snapshot captured at connect may diverge from slate's actual environment if user modifies env outside of tracked operations (e.g., manual `export` in a subshell) | Low | Medium | Auto-refresh on `cd`/`source`; manual `slate sync-env` command; snapshot includes timestamp for staleness detection |
-| **Rust/C++ build complexity** — two languages, two build systems (Cargo + CMake), increases CI/CD and contributor onboarding overhead | Medium | Medium | Clean boundary at Unix socket IPC — Cargo and CMake are fully independent builds with no cross-compilation. CI builds both in parallel. FlatBuffers schema shared, code generated separately for each language. |
+| **Rust/C++ build complexity** — two languages, two build systems (Cargo + CMake), increases CI/CD and contributor onboarding overhead | Medium | Medium | Clean boundary at Unix socket IPC — Cargo and CMake are fully independent builds with no cross-compilation. CI builds both in parallel. FlatBuffers schema shared, code generated separately for each language. Makefile orchestrates both builds. |
 
 ---
 
@@ -620,28 +683,157 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Decision | Choice | Rationale |
 | --- | --- | --- |
-| Language | Rust (`slate` client) + C++20 (`slated` daemon) | Rust for client: ratatui ecosystem, memory safety for UI handling untrusted input. C++20 for daemon: ai-sdk-cpp compatibility, direct system call access, Taskflow scheduler. |
-| Build system | Cargo (`slate`) + CMake (`slated`), Bazel (optional) | Independent builds connected at Unix socket IPC. Cargo for Rust ecosystem; CMake for C++ ecosystem. Bazel for future monorepo needs. |
-| IPC | Unix domain socket (`SOCK_STREAM` + FlatBuffers with 4-byte length prefix) | Low-latency, zero-copy field access, schema evolution, type-safe. kqueue/epoll for non-blocking I/O. |
-| Config format | TOML | Human-readable, well-supported in C++, good for nested config (model catalog) |
-| LLM SDK | ai-sdk-cpp (ClickHouse) | \~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. Uses patched nlohmann/json. |
+| Client language | Rust (`slate` binary) | ratatui ecosystem, memory safety for UI handling untrusted input, excellent cross-platform PTY support via portable-pty. |
+| Daemon language | C++20 (`slated` daemon) | ai-sdk-cpp compatibility, direct system call access, Taskflow scheduler for concurrent Work Item execution. |
+| Terminal UI framework | ratatui 0.30 + crossterm 0.28 | Most mature terminal UI ecosystem in Rust, proven by Zellij. Linear scroll-down flow with inline agent blocks — everything scrolls down like a normal terminal. |
+| PTY management | portable-pty 0.9 | Cross-platform PTY abstraction (macOS + Linux), clean API for spawning and managing pseudo-terminal pairs, avoids platform-specific `forkpty()` calls. |
+| VT100 emulation | tui-term 0.3 + vt100 0.16 | ANSI escape sequence parsing and rendering within ratatui's widget tree, preserving colors and formatting from command output. |
+| Build system | Cargo (`slate`) + CMake 3.20+ (`slated`), Makefile orchestrator | Independent builds connected at Unix socket IPC. Cargo for Rust ecosystem; CMake for C++ ecosystem. Makefile for unified build commands. |
+| IPC serialization | FlatBuffers (24.12.23 Rust, v24.3.25 C++) over Unix domain socket with 4-byte BE length prefix | Zero-copy field access, schema evolution, type-safe, language-neutral schema shared between Rust and C++. |
+| IPC schema | `schemas/ipc.fbs` with MessageTypes: ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error | Single schema file generates bindings for both Rust and C++. |
+| Config format | TOML | Human-readable, well-supported in both Rust and C++, good for nested config (model catalog). |
+| LLM SDK | ai-sdk-cpp (ClickHouse) | ~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. |
 | LLM SDK fallback | Direct HTTP via libcurl + cpr + custom SSE parser | For providers not yet in ai-sdk-cpp. cpr ("C++ Requests") is a modern libcurl wrapper. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
 | DAG scheduler | Taskflow | Header-only C++20, work-stealing scheduler, conditional tasking, composable sub-taskflows, built-in profiler. `tf::Executor` + `tf::Taskflow` with `precede()`/`succeed()`. Up to 29% faster than industrial systems. |
-| Terminal rendering | comrak + syntect | comrak for CommonMark+GFM parsing, syntect for syntax highlighting (same engine as Sublime Text). Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. Replaces cmark-gfm + tree-sitter. |
-| Terminal UI framework | ratatui + crossterm (Rust) | Most mature terminal UI ecosystem in Rust, proven by Zellij. Linear scroll-down flow with inline agent blocks — everything scrolls down like a normal terminal. Replaces FTXUI. |
-| Client language | Rust for `slate`, C++20 for `slated` | ratatui ecosystem, memory safety for UI layer handling untrusted input, clean language boundary at Unix socket. |
-| Command execution | Persistent bash co-process via pty | Maintains shell state (env, aliases, cwd) across commands. Sentinel-based output boundary detection. Interactive passthrough via raw pty mode. |
-| Agent command execution | Spawn-on-demand bash in `slated` | Fresh bash process per Work Item, initialized from env snapshot (env vars, aliases, functions, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
-| Storage location | `~/.slate-agent/` | Simple, user-local, follows common CLI tool conventions |
+| Terminal markdown rendering | comrak + syntect (planned) | comrak for CommonMark+GFM parsing, syntect for syntax highlighting (same engine as Sublime Text). Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. |
+| Command execution (user) | Persistent bash co-process via portable-pty | Maintains shell state (env, aliases, cwd) across commands. Sentinel-based output boundary detection. Interactive passthrough via dedicated PTY with raw terminal mode. |
+| Command execution (agent) | Spawn-on-demand bash in `slated` | Fresh bash process per Work Item, initialized from env snapshot (env vars, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
+| Tab completion | 3-tier: programmable → command → file | Programmable completions via bash-completion integration, command name completions from command index, file path completions as fallback. |
+| Storage location | `~/.slate-agent/` | Simple, user-local, follows common CLI tool conventions. |
 | Agent coordination | Single-writer ownership (no reader-writer locks) | Cursor's lock-based approach failed at scale. One writer per resource, concurrent readers. Role separation reduces contention. |
 | Memory architecture | Bounded text with Narrator curation (MemGPT-informed) | 64KB global + 128KB per project caps. Cognitive triage + recursive summarization. No vector DB for MVP (add later if needed). |
-| Tool package format | `tool.toml` manifest + binary or `guide.md` + bundled resources | Single primitive for both binary and prompt tools; TOML consistent with rest of config |
-| MCP bridge | cpp-mcp or custom (nlohmann/json + subprocess) | JSON-RPC 2.0 over stdio; thin wrapper makes MCP servers appear as regular tools |
-| Tool discovery | `SLATE_TOOLS_PATH` (project > user > system) | First-match-wins, mirrors Unix `PATH` semantics; built-in tools always available regardless |
+| Tool package format | `tool.toml` manifest + binary or `guide.md` + bundled resources | Single primitive for both binary and prompt tools; TOML consistent with rest of config. |
+| MCP bridge | cpp-mcp or custom (nlohmann/json + subprocess) | JSON-RPC 2.0 over stdio; thin wrapper makes MCP servers appear as regular tools. |
+| Tool discovery | `SLATE_TOOLS_PATH` (project > user > system) | First-match-wins, mirrors Unix `PATH` semantics; built-in tools always available regardless. |
+| Testing (C++) | GoogleTest v1.14.0 | Industry-standard C++ testing framework for `slated` daemon unit and integration tests. |
 
 ---
 
-## 10. Research Sources
+## 10. Data Models
+
+### Work Item
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string (UUID) | Unique identifier |
+| `goal` | string | Natural language description of what the Work Item must accomplish |
+| `acceptance_criteria` | list\<string\> | Conditions that must be true for the Work Item to be considered complete |
+| `dependencies` | list\<string\> | IDs of Work Items that must complete before this one can start |
+| `state` | enum | `pending` \| `running` \| `completed` \| `failed` \| `blocked` |
+| `assigned_role` | enum | `Engineer` \| `Reviewer` \| `Security` \| `Perf` \| `Researcher` |
+| `model_id` | string | ID from the model catalog (selected by TeamLead) |
+| `risk_level` | enum | `low` \| `medium` \| `high` \| `critical` |
+| `token_budget` | integer | Maximum tokens this Work Item may consume across all LLM calls |
+| `cost_budget` | float | Maximum cost in USD this Work Item may consume |
+| `inputs` | object | `{ repo: string, cwd: string, tool_allowlist: list<string> }` |
+| `outputs` | list\<string\> | Artifact IDs produced by this Work Item |
+| `parent_work_item_id` | string \| null | ID of the parent Work Item (for recursive decomposition by sub-TeamLeads) |
+| `created_at` | timestamp | ISO 8601 creation time |
+| `completed_at` | timestamp \| null | ISO 8601 completion time |
+
+### Env Snapshot
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `session_id` | string | Identifies the `slate` client session |
+| `env_vars` | map\<string, string\> | Captured environment variables (filtered by allowlist) |
+| `path` | string | `PATH` value at capture time |
+| `cwd` | string | Working directory at capture time |
+| `timestamp` | timestamp | ISO 8601 capture time |
+
+### Memory Entry (Episodic)
+
+The full schema is defined in the [Memory System Design](design-docs/memory-system-design.md). Summary of the `episodes` table:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | integer | Auto-increment primary key |
+| `session_id` | string | Session that produced this episode |
+| `work_item_id` | string \| null | Associated Work Item (null for non-Work-Item events) |
+| `scope` | string | `'user'` or `'project:<fingerprint>'` |
+| `timestamp` | timestamp | ISO 8601 |
+| `event_type` | string | `command_executed`, `file_modified`, `decision_made`, `error_encountered`, `error_resolved`, `pattern_observed`, `user_preference`, `task_completed`, `task_failed` |
+| `summary` | string | One-line human-readable summary |
+| `detail` | string \| null | Longer description when needed |
+| `tags` | string | Comma-separated, lowercase |
+| `files` | string | Comma-separated file paths involved |
+| `outcome` | string \| null | `'success'` \| `'failure'` \| `'partial'` |
+| `consolidated` | boolean | Whether the Narrator has processed this episode |
+| `high_value` | boolean | Resists age-based pruning |
+| `raw_context` | string \| null | Optional JSON blob for structured data |
+
+Semantic memory is stored as markdown files (`user.md`, `project.md`, `topics/*.md`) — see the [Memory System Design](design-docs/memory-system-design.md) for format and size caps.
+
+### Shared Project State
+
+| Field | Type | Description |
+| --- | --- | --- |
+| **Artifacts** | | |
+| `id` | string (UUID) | Unique identifier |
+| `work_item_id` | string | Work Item that produced this artifact |
+| `type` | enum | `file`, `diff`, `stdout`, `stderr`, `transcript`, `benchmark` |
+| `path` | string | File path or storage key |
+| `created_at` | timestamp | ISO 8601 |
+| **Decisions** | | |
+| `id` | string (UUID) | Unique identifier |
+| `work_item_id` | string | Work Item during which this decision was made |
+| `rationale` | string | Why this decision was made |
+| `created_at` | timestamp | ISO 8601 |
+| **Task State** | | |
+| `work_item_id` | string | Work Item this state tracks |
+| `status` | enum | Mirrors Work Item state |
+| `artifact_ids` | list\<string\> | Artifacts produced so far |
+
+---
+
+### 10.5 Analytics & Instrumentation Requirements
+
+All metrics are stored locally at `~/.slate-agent/metrics/` — no telemetry is sent externally.
+
+| Metric | Granularity | Description |
+| --- | --- | --- |
+| Token usage | Per Work Item, per agent role, per model | Total input/output tokens consumed |
+| Command execution latency | Per command | Time from input to first output byte; segmented by fast-pass vs agent-routed |
+| Work Item throughput | Per session | Concurrent execution count, completion rate, failure rate |
+| Memory utilization | Per project, per scope | Current size vs cap, compression ratio after Narrator passes |
+| Session duration & command count | Per session | Wall-clock session time and total commands executed |
+| Model selection distribution | Per session | Which models TeamLead selects most often; cost per model |
+| Agent turn count | Per Work Item | Number of LLM turns needed to complete a Work Item |
+| Tool invocation frequency | Per tool, per session | Which tools are called most often; average execution time |
+
+Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per session. A `slate metrics` command provides summary reports.
+
+---
+
+## 11. Edge Cases & Error States
+
+### Edge Cases
+
+| Scenario | Behavior |
+| --- | --- |
+| **Daemon (`slated`) crashes mid-task** | Work Items in `running` state transition to `failed`. The `slate` client detects the crash via heartbeat timeout, notifies the user, and offers to restart the daemon or continue in standalone mode (fast-pass only, no agent). |
+| **LLM API times out** | Retry with exponential backoff (3 attempts: 2s, 4s, 8s). If all retries fail, the Work Item transitions to `failed` and the TeamLead is notified for re-planning or model fallback. Token budget is debited for the failed attempt. |
+| **Work Item exceeds token/cost budget** | The Work Item is paused immediately. TeamLead is notified and can re-plan (split into smaller items), request user approval for budget increase, or fail the Work Item. |
+| **Two Work Items try to edit the same file** | Single-writer ownership prevents this by design. Only one agent holds write ownership of a file at a time. If a second Work Item needs the same file, it is blocked until the first completes and releases ownership. |
+| **User's environment changes while agent is running** | Env snapshot is refreshed on `cd`, `source`, and `slate sync-env`. Running Work Items continue with their original snapshot (they use their own bash process initialized at spawn time). New Work Items use the latest snapshot. |
+| **Memory hits its size cap** | The Narrator compresses aggressively: merges related entries, removes low-value content, performs recursive summarization, and as a last resort evicts the oldest low-value entries. See the [Memory System Design](design-docs/memory-system-design.md) for retention policy. |
+| **Command index is stale** | PATH is scanned on `slate` startup. The user can force a rescan with `slate rescan`. Commands installed mid-session are detected on the next tab completion attempt (incremental PATH check). |
+| **Interactive program (vim) running when agent needs attention** | Agent work queues until the interactive session exits. The `slate` client buffers agent output and displays a notification indicator. When the user exits the interactive program, queued agent output is rendered. |
+
+### Error States
+
+| Error | Detection | Recovery |
+| --- | --- | --- |
+| **Daemon dies** | `slate` detects via heartbeat timeout (30s with no response) | Offers restart (auto-launch `slated`) or standalone mode (fast-pass only). In-progress Work Items are lost and must be re-run. |
+| **LLM times out** | HTTP response timeout or SSE stream stalls | Retry with exponential backoff (3 attempts). After 3 failures, fail the Work Item and notify TeamLead for re-planning or model substitution. |
+| **Tool execution fails** | Non-zero exit code from tool | Work Item transitions to `failed`. Reviewer analyzes the failure and creates a fix Work Item, or escalates to TeamLead for re-planning. |
+| **IPC connection lost** | Socket read/write returns error | `slate` attempts reconnection with exponential backoff (3 attempts: 1s, 2s, 4s). User input is buffered during reconnection. If reconnection fails, falls back to standalone mode. |
+| **Disk full** | Write syscall returns `ENOSPC` | Memory writes fail gracefully — agent continues with in-memory context only. Audit log writes are best-effort. User is warned that persistence is degraded. |
+| **Invalid config** | TOML parse error or schema validation failure on startup | `slate`/`slated` prints a clear error message identifying the problematic key and expected format, then exits with non-zero status. |
+
+---
+
+## 12. Research Sources
 
 - Anthropic (2025). Multi-agent research system with orchestrator-subagent architecture. 90.2% improvement over single-agent Opus.
 - Cursor engineering blog (2025-2026). Multi-agent coordination: reader-writer lock failure, Planner/Worker/Judge pattern.
@@ -651,8 +843,13 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 - AWS Arbiter pattern. Shared semantic blackboard for multi-agent coordination.
 - ai-sdk-cpp (ClickHouse). github.com/ClickHouse/ai-sdk-cpp. C++20 LLM SDK.
 - Taskflow (Huang et al.). github.com/taskflow/taskflow. Header-only C++20 parallel task programming.
-- cmark-gfm (GitHub). github.com/github/cmark-gfm. CommonMark parsing with GitHub extensions.
-- tree-sitter (GitHub). github.com/tree-sitter/tree-sitter. Incremental parsing for syntax highlighting.
+- ratatui. github.com/ratatui/ratatui. Rust terminal UI framework.
+- crossterm. github.com/crossterm-rs/crossterm. Cross-platform terminal manipulation for Rust.
+- portable-pty. github.com/wez/wezterm/tree/main/pty. Cross-platform PTY abstraction from wezterm.
+- vt100. github.com/doy/vt100-rust. VT100 terminal emulator for Rust.
+- tui-term. Terminal widget for ratatui using vt100 backend.
+- comrak. github.com/kivikakk/comrak. CommonMark+GFM parsing in Rust.
+- syntect. github.com/trishume/syntect. Syntax highlighting in Rust (Sublime Text engine).
 - OWASP LLM Top 10 (2025). LLM06: Excessive Agency.
 - NIST AI Risk Management Framework (AI RMF 1.0).
 - Claude Code documentation (Anthropic, 2025). Sandboxing, compaction, subagent architecture.
@@ -663,4 +860,71 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 ---
 
-*PRD v1.5 for Slate Agent — a Rust+C++ terminal-native multi-model coding agent. Rust client (`slate`) using ratatui + crossterm with linear scroll-down terminal flow, inline agent output blocks, and inline task DAG tree. C++ daemon (`slated`) with worker bash sessions for parallel agent command execution with env snapshot protocol. Includes unified tool model, phase restructuring, competitive research, architecture validation, and technical implementation guidance.*
+---
+
+## Appendix A: Phase 1 Module Details
+
+### Module structure (`slate` binary, ~4,300 lines)
+
+| Module | Responsibility | Lines |
+| --- | --- | --- |
+| `main.rs` | Entry point, signal handling, logging init | — |
+| `app.rs` | App initialization, daemon connection | — |
+| `shell/bash_coprocess.rs` | PTY management via portable-pty | ~600 |
+| `shell/command_index.rs` | PATH scanning, input classification | ~250 |
+| `shell/completion_engine.rs` | Tab completion with bash-completion | ~350 |
+| `shell/interactive.rs` | Interactive session passthrough | ~200 |
+| `ui/terminal.rs` | Main event loop, rendering, VT100 parsing | ~1000 |
+| `ui/input.rs` | Line editor with history | ~250 |
+| `ui/completion_popup.rs` | Tab completion popup UI | ~250 |
+| `ui/selection.rs` | Text selection for clipboard | — |
+| `ipc/client.rs` | Unix socket client to daemon | — |
+| `ipc/daemon_launcher.rs` | Daemon discovery/startup | — |
+| `ipc/messages.rs` | FlatBuffers message building | — |
+
+### Module structure (`slated` daemon, ~1,240 lines)
+
+| Module | Responsibility |
+| --- | --- |
+| `main.cpp` | Entry point, daemonization, signal handlers |
+| `daemon.h/.cpp` | SlatedDaemon class, message dispatch, session management |
+| `types.h` | Constants, paths, version |
+| `session.h` | ClientSession state tracking |
+| `worker_process.h/.cpp` | Subprocess management for command execution |
+| `ipc_protocol.h/.cpp` | FlatBuffers framing |
+| `ipc/socket_server.h/.cpp` | Socket server |
+| `ipc/event_loop.h/.cpp` | Event loop |
+
+### Full delivered feature list
+
+- `slate` binary in **Rust** with **ratatui 0.30 + crossterm 0.28** for linear scroll-down terminal flow, input handling, history, and tab completion
+- Persistent bash co-process (`bash --noediting --norc --noprofile -i`) spawned via **portable-pty 0.9** at startup
+- Sentinel-based output boundary detection for command completion and exit code capture (`cmd; __SLATE_EXIT=$?; echo "SENTINEL${__SLATE_EXIT}__"`)
+- Interactive command passthrough with dedicated PTY and raw terminal mode (vim, ssh, python REPL, etc.)
+- Signal forwarding (Ctrl+C → bash child process)
+- VT100 terminal emulation via **tui-term 0.3 + vt100 0.16** for ANSI-preserved output rendering
+- 10,000 line scrollback limit
+- Mouse support (scroll, click) and clipboard integration (arboard 3)
+- `slated` daemon (C++20) that listens on Unix socket (`/tmp/slated-{uid}.sock`), receives commands, streams output back
+- FlatBuffers IPC protocol (flatbuffers 24.12.23 for Rust, v24.3.25 for C++) with message types: ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error
+- Command index built in `slate` from PATH scanning + 65 bash builtins (O(1) hash map lookup)
+- Input classification: Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty
+- 3-tier tab completion: programmable completions (bash-completion integration) → command completions → file completions
+- Env snapshot protocol: session_id, env_vars, path, cwd (captured on connect, stored per-session in daemon)
+- Heartbeat mechanism (5s interval from client, 30s stale timeout in daemon)
+- Worker bash sessions: spawn-on-demand per Work Item, initialized from env snapshot, killed on completion
+- Graceful daemon lifecycle (start, stay resident, shutdown) with PID file at `~/.slate-agent/slated.pid`
+- Structured logging with `--debug` flag to `/tmp/slate-debug.log` (log + env_logger); daemon logs to `~/.slate-agent/slated.log`
+
+### Tech stack
+
+- **Rust** (Cargo) for `slate`: ratatui 0.30, crossterm 0.28, portable-pty 0.9, vt100 0.16, tui-term 0.3, flatbuffers 24.12.23, nix 0.29, arboard 3, log + env_logger
+- **C++20** (CMake 3.20+) for `slated`: FlatBuffers v24.3.25, GoogleTest v1.14.0
+- **IPC**: FlatBuffers over Unix domain socket (4-byte BE length prefix)
+- **Schema**: `schemas/ipc.fbs`
+- **Build**: Makefile orchestrates both (cargo build for slate, cmake for slated)
+- No AI/LLM needed yet
+
+---
+
+*PRD v2.0 for Slate Agent — a Rust/C++ terminal-native multi-model coding agent. Rust client (`slate`) using ratatui + crossterm with portable-pty for PTY management, tui-term + vt100 for terminal emulation, 3-tier tab completion, and linear scroll-down terminal flow. C++ daemon (`slated`) with FlatBuffers IPC, worker bash sessions for parallel agent command execution, heartbeat-based session management, and env snapshot protocol. Phase 1 (Terminal Foundation) complete. Future phases: agent system, Work Item DAG, multi-model orchestration, memory, unified tool system, and safety/audit.*

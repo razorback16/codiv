@@ -1,390 +1,322 @@
-## Why
+# Slate Agent — Technical Proposal
 
-Developers need an intelligent terminal assistant that seamlessly integrates with their existing shell workflow. Rather than switching between a terminal and a separate AI interface, this agent acts as a standalone terminal client—interpreting both traditional commands and natural language instructions.
+**Date**: 2026-02-26 | **Author**: Subhagato | **Status**: Draft | **Document type**: Proposal (approval/funding)
 
-Built in C++ for performance and powered by **ClickHouse ai-sdk-cpp** for model access (streaming + tool calling), Slate Agent provides a Claude Code-like experience directly in the terminal with a clean separation between thinking (agents) and execution (worker pool).
+---
 
-## What We Build
+## 1. Executive Summary
 
-- **`slate` binary + `slated` daemon architecture**: `slate` binary (per-terminal) with FTXUI terminal UI framework for three-zone display layout (status bar, scrollable main canvas with agent output blocks and task DAG tree, input bar), persistent bash co-process for user command execution, command index classifier; `slated` daemon (singleton) for orchestration, memory, scheduling, worker bash sessions (fresh bash per Work Item for parallel agent command execution), and env snapshot protocol. FlatBuffers IPC over Unix domain socket.
-- **Command fast-pass**: `slate`-maintained command index for near-zero latency on recognized commands; agent mode only when needed
-- **Work Item abstraction**: Single core unit for all tasks—goal, acceptance criteria, dependencies, outputs, risk level, budgets
-- **Tree of agents, graph of tasks**: 3 agent types (Orchestrator, Executor roles, Narrator) with a DAG scheduler for Work Items
-- **Role-based execution**: TeamLead decomposes tasks, Engineers execute, Reviewers gate—with optional Security/Perf/Researcher roles hired on demand
-- **Bounded memory model**: Global user memory + per-project memories, curated by Narrator, with automatic project context switching
-- **Shared Project State**: Coordination through explicit artifacts, decisions, and task state—no agent-to-agent chat
+**Slate Agent** is a terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. Built as a dual-language system — a Rust TUI client (`slate`) and a C++ daemon (`slated`) — it looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
-## UX
+The core insight is that most terminal interactions are simple commands that should execute instantly, while complex tasks benefit from a structured multi-agent system with specialized roles. Slate Agent bridges both: recognized commands run with near-zero latency through a command fast-pass, while natural language requests are decomposed and executed by a hierarchy of AI agents — each assigned a purpose-fit model based on the task at hand.
 
-- `slate` owns the terminal experience — looks and behaves like a normal shell
-- **FTXUI** owns the entire terminal: input, output rendering, layout, and colors
-- **Three-zone display layout** (no outer window border):
-  1. **Status Bar** (top): project path, git branch, active agent count, daemon status
-  2. **Main Canvas** (middle, scrollable): user command output inline (no border), task DAG tree with live status indicators, color-bordered agent output blocks per Work Item
-  3. **Input Bar** (bottom, sticky): history, tab completion, Ctrl+R search, multi-line, inline completion ghosts
-- Input auto-detection:
-  1. **Command mode**: recognized command → execute immediately via persistent bash co-process
-  2. **Agent mode**: otherwise → plan + execute Work Items, stream progress, show diffs/results
+**Key differentiators:**
 
-## Capabilities
+- **Command fast-pass (<10ms)**: Recognized shell commands execute immediately without any AI round-trip. No competitor offers this.
+- **Multi-model orchestration**: Different AI models are assigned to different roles (planning, coding, review, research) based on task complexity — not locked to a single provider.
+- **Recursive agent hierarchy**: An Orchestrator delegates to a TeamLead, who decomposes tasks into a Work Item DAG executed by Engineers and validated by Reviewers. Sub-TeamLeads enable arbitrarily deep decomposition for complex work.
+- **Bounded memory with Narrator curation**: Global and per-project memories are size-capped and actively curated by a dedicated Narrator agent, with automatic project context switching.
+- **Shared state over agent chat**: Agents coordinate through explicit artifacts and task state, not implicit message passing — a pattern validated by production multi-agent systems.
 
-### Core Capabilities
+**Phase 1 (Terminal Foundation) is complete.** Development is entering Phase 2 (Single-Agent AI Loop).
 
-- `slate-binary`: Standalone C++ terminal client with **FTXUI** terminal UI framework. Three-zone display layout: status bar (top), scrollable main canvas with inline task DAG tree and color-bordered agent output blocks (middle), input bar with `Input()` + `CatchEvent()` for history, tab completion, and keybindings (bottom). Spawns persistent bash co-process (`bash --noediting -i`) via pty pair for user command execution. Maintains shell state (env vars, aliases, cwd) across commands. Provides context to daemon (cwd, env allowlist, tty, history, last exit code). Captures **env snapshot** on connect to `slated` (env vars, PATH, aliases, functions, cwd); refreshed on `cd`/`source`/manual `slate sync-env`. Interactive command passthrough (vim, htop, ssh → raw pty mode). Signal forwarding (Ctrl+C to bash child). Agent output rendered in color-coded blocks per Work Item.
+---
 
-- `slated-daemon`: Persistent C++ daemon (singleton) that manages agent system, orchestration, memory, task graph, scheduling, and tool execution. Spawns **worker bash sessions** on demand — fresh bash process (`bash --noediting`) per Work Item, initialized from the client's env snapshot (env vars injected, aliases/functions sourced, cwd set), killed on Work Item completion. No reuse, no stale state. Multiple Work Items run their own bash processes concurrently (true parallelism). Communicates with slate clients via FlatBuffers over Unix domain socket. **Command execution routing**: user commands → `slate`'s persistent bash co-process; agent Bash tool calls → `slated`'s worker bash sessions. Bidirectional IPC carries env snapshots (slate→slated) and streaming worker output + confirmations (slated→slate).
+## 2. Problem Statement
 
-- `command-fast-pass`: `slate` binary builds and maintains a **command index** from PATH executables, builtins, aliases, and functions:
+### The Developer's Terminal Problem
 
-  - Stores in a hash map: command → type + path/builtin + completion hints
-  - Recognized input → run immediately with near-zero latency
-  - Unknown/ambiguous → routes to agent mode (TeamLead can still choose to run a command)
+Developers live in the terminal. Yet when they need AI assistance, they must context-switch to a separate interface — a chat window, an IDE sidebar, or a web app. This switching cost is real: studies on cognitive switching estimate a 15-25% productivity loss per task switch.
 
-- `agent-system`: Three agent types, always present:
+Existing tools that attempt to solve this fall short in several ways:
 
-  1. **Orchestrator**
+| Pain Point | Impact |
+| --- | --- |
+| **Context switching** between terminal and AI interface | Flow disruption, lost productivity on every interaction |
+| **Single-model lock-in** (Claude Code = Anthropic only, Codex CLI = OpenAI only) | No single model excels at every task; users lose access to the best model for each job |
+| **Flat agent architectures** — one agent does everything | Poor decomposition of complex multi-step tasks; no specialization |
+| **No command-level intelligence** — every input treated as an AI query | Unnecessary latency on `ls`, `git status`, `make`; wasted API costs |
+| **Ephemeral context** — tools lose memory between sessions | Repeated explanations, no learning from user patterns or project conventions |
 
-     - Owns the session, user preferences, and **project auto-switching**
-     - Delegates to executor roles via Work Items
-     - Only component with long-term user context
+### Competitive Landscape
 
-  2. **Executor (role-based)**
+| Tool | Type | Models | Multi-Agent | Memory | Command Fast-Pass |
+| --- | --- | --- | --- | --- | --- |
+| **Claude Code** | CLI | Anthropic only | Recursive subagents | Hierarchical + compaction | No |
+| **Codex CLI** | Rust CLI | OpenAI + local | Flat (external multi-agent) | Session-based | No |
+| **Cursor** | IDE + CLI | 8+ models | Recursive (Planner/Worker/Judge) | Codebase indexing | N/A (IDE) |
+| **Aider** | Python CLI | Most model-agnostic | Flat; architect mode (2 models) | Git-centric | No |
+| **Gemini CLI** | Node.js CLI | Gemini family | ReAct loop + MCP | Session-based | No |
+| **Warp AI** | Rust terminal | Multi-model | Agent with terminal control | Session-based | No |
+| **Devin** | Cloud VM | Proprietary | Full autonomous environment | Cloud-persistent | N/A |
+| **Slate Agent** | **Rust+C++ CLI** | **Any provider** | **Recursive tree** | **Bounded + Narrator-curated** | **Yes (<10ms)** |
 
-     - Primary roles: **TeamLead, Engineer, Reviewer**
-     - Optional roles: **Researcher, Security, Perf**
-     - TeamLead decides whether to do it solo, split into multiple Work Items, or hire optional roles based on triggers:
-       - **Security** for risky commands/secrets/supply-chain changes
-       - **Perf** for hot paths/regressions
-       - **Researcher** for unknown domains/large design choices
-     - Runs Work Items under policies/budgets
+**Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to one provider. Aider and Cline offer the broadest model support but have flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound.
 
-  3. **Narrator / Memory Agent**
+---
 
-     - Compresses + curates memory
-     - Produces succinct "state snapshots" for Orchestrator context
+## 3. Proposed Solution
 
-- `work-item-system`: The single core abstraction—everything is a **Work Item**:
+### What We Are Building
 
-  - Goal + acceptance criteria
-  - Inputs/constraints (repo, cwd, tool allowlist, risk level, budgets)
-  - Dependencies (forming a DAG)
-  - Outputs (diff, logs, test report, summary)
-  - Assigned role (Engineer/Reviewer/Researcher/etc.)
-  - The scheduler runs ready Work Items concurrently via a worker thread pool
+Slate Agent is a shell replacement that functions as both a high-performance terminal and an intelligent coding assistant. The system has two components:
 
-- `tool-system`: Claude Code style tools for agent execution:
+- **`slate`** (Rust binary, per-terminal): The user-facing TUI client. Owns the terminal experience — rendering, input, tab completion, command execution via a persistent bash co-process, and interactive program passthrough (vim, ssh, python REPL). Communicates with the daemon over IPC.
 
-  - `Bash`: Shell command execution with timeout and background support
-  - `Read`: File content retrieval
-  - `Write`: File creation/overwrite
-  - `Edit`: String replacement in files
-  - `Glob`: File pattern matching
-  - `Grep`: Content search (ripgrep-based)
-  - `WebFetch`: URL content retrieval
-  - `Task`: Sub-agent spawning for complex subtasks
+- **`slated`** (C++ daemon, singleton): The backend intelligence. Manages client sessions, spawns worker bash processes for agent tool calls, and hosts the agent system — orchestration, memory, task scheduling, and LLM access.
 
-- `memory-system`: Bounded memory model:
+### Core Concepts
 
-  - **Global memory** (user + operating habits): size-capped, curated by Narrator
-  - **Project memories** (per repo/project): many, each size-capped
-  - Orchestrator **auto-switches** project context using cwd/repo fingerprint/file references/task semantics
+**Command Fast-Pass**: On startup, `slate` scans PATH directories and known bash builtins to build a command index. Every input is classified instantly: recognized commands execute immediately through the persistent bash co-process; natural language or ambiguous input routes to the agent system. This ensures the terminal never feels slow for everyday commands.
 
-- `shared-project-state`: All coordination through minimal shared state:
+**Multi-Agent Hierarchy**: The agent system uses a tree of specialized roles:
 
-  - **Artifacts**: command transcripts, stdout/stderr, diffs, files, benchmarks
-  - **Decisions**: short rationale for key choices
-  - **Task state**: Work Item status + pointers to artifacts
-  - No agent-to-agent "chat"; agents read/write state
+- **Orchestrator** — owns the session, interprets user intent, delegates tasks, manages project context
+- **TeamLead** — decomposes tasks into a Work Item DAG, sets acceptance criteria, selects models, hires specialist roles when needed
+- **Engineer** — executes Work Items (file edits, command runs, code generation)
+- **Reviewer** — validates outputs against acceptance criteria; approves or creates fix items
+- **Narrator** — compresses and curates memory after each task
+- **Optional specialists** — Security, Perf, Researcher — hired by TeamLead on demand
 
-- `skill-system`: Extensible slash-command plugins
+**Work Item DAG**: Every task the agent performs is represented as a Work Item with a goal, acceptance criteria, dependencies, outputs, and budgets. Work Items form a directed acyclic graph. Independent items execute concurrently; dependencies are enforced by the scheduler.
 
-  - Built-in skills: `/commit`, `/plan`, `/tasks`, `/help`, `/history`
-  - User-defined skills via `~/.config/slate-agent/skills/`
+**Multi-Model Strategy**: Each agent role has different intelligence requirements. Rather than using a single model for everything, the system assigns purpose-fit models: a frontier model for the Orchestrator (infrequent, high-stakes decisions), a fast/cheap model for the Narrator (frequent, well-defined compression), and a strong planning model for the TeamLead. Worker agents (Engineers, Reviewers) receive models dynamically selected by the TeamLead based on task complexity, required capability, cost sensitivity, and latency needs. A simple file rename gets a cheap model; a security audit gets a frontier model.
 
-## Control Loop
+**Bounded Memory**: All memory is size-capped. Global memory tracks user preferences and habits. Per-project memory tracks conventions, decisions, and patterns for each repository. The Narrator curates aggressively, using cognitive triage to decide what to keep, compress, or evict. The Orchestrator auto-switches project context when the user changes directories or repositories.
 
-For every user input:
+**Unified Tool System**: Agents interact with the codebase through a standard set of tools — Bash (shell execution), Read, Write, Edit, Glob, Grep, WebFetch, and Task (sub-agent spawning). External tools, MCP servers, and prompt-based tools all present the same interface to the agent.
 
-1. Classify command vs task
-2. TeamLead builds/updates the Work Item DAG + acceptance criteria
-3. Scheduler runs ready Work Items concurrently
-4. Engineer/optional roles execute → produce artifacts
-5. Reviewer gates → approve or create fix Work Items
-6. Narrator summarizes → updates memory (bounded)
+**Shared State Coordination**: Agents do not chat with each other. All coordination happens through explicit shared state: artifacts (diffs, logs, test results), decisions (short rationale), and task state (Work Item status). Single-writer ownership ensures no two agents can corrupt shared state — a lesson learned from Cursor's experience with reader-writer locks degrading throughput.
 
-## Key Design Principles
+---
 
-1. **Separate thinking from execution**: Agents decide (Orchestrator + role executors). Worker threads execute Work Items. Scale concurrency by the scheduler/worker pool, not by spawning more agents.
-
-2. **One core abstraction—Work Item**: Everything flows through Work Items. This is the only unit the scheduler runs. Uniform handling of all task types.
-
-3. **Tree of agents, graph of tasks**: Agent structure is a simple tree (Orchestrator → Executor roles → Narrator). Task plan is a DAG of Work Items—parallelize independent steps safely, enforce dependencies.
-
-4. **Shared Project State over agent chat**: All coordination through explicit artifacts, decisions, and task state. No implicit agent-to-agent communication.
-
-5. **Dynamic role hiring without complexity**: TeamLead decides scope—solo, multi-step, or with optional specialist roles—based on simple triggers rather than complex strategy selection.
-
-6. **`slate` binary + `slated` daemon separation**: `slate` owns the terminal experience (FTXUI display, bash co-process, command routing, rendering); `slated` handles AI orchestration, memory, and task scheduling. Clean separation of concerns.
-
-7. **Command fast-pass**: Recognized commands execute immediately without AI round-trip. Command index provides both routing and autocomplete.
-
-8. **Bounded memory**: All memory is size-capped. Narrator curates aggressively. Project context auto-switches based on cwd/repo fingerprint.
-
-## Impact
-
-- **Dependencies**: ClickHouse ai-sdk-cpp, FTXUI, FlatBuffers, C++20 compiler, Bazel or CMake
-- **IPC**: FlatBuffers (4-byte length prefix + payload) over Unix domain socket between `slate` and `slated`
-- **API Keys**: Requires configuration for LLM provider API credentials
-- **User Environment**: Needs access to user's filesystem, ability to execute shell commands
-- **Storage**: Shared Project State + memory at \~/.slate-agent/ or XDG-compliant location
-- **Performance**: Near-zero latency for fast-pass commands, streaming responses, concurrent Work Item execution via worker pool
-
-## Architecture Overview
+## 4. High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Slate Agent                                   │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ slate binary (per-terminal)                                        │ │
-│  │                                                                    │ │
-│  │  ┌──────────────┐    ┌──────────────────┐    ┌─────────────────┐   │ │
-│  │  │    FTXUI     │    │ Persistent Bash  │    │ Command Index   │   │ │
-│  │  │ (terminal UI,│    │  Co-Process      │    │ (Fast-Pass)     │   │ │
-│  │  │  3-zone      │───▶│ (bash --noediting│◀──▶│ PATH + builtins │   │ │
-│  │  │  layout,     │    │  -i via pty)     │    │ + aliases       │   │ │
-│  │  │  rendering)  │    │                  │    │                 │   │ │
-│  │  └──────────────┘    └──────────────────┘    └─────────────────┘   │ │
-│  │         │                     ▲                                    │ │
-│  │         │                     │ tool execution requests            │ │
-│  │         ▼                     │ (bidirectional)                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │ FlatBuffers IPC (Unix domain socket)                         │  │ │
-│  │  │ 4-byte length prefix + FlatBuffer payload                    │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-│                              │                                          │
-│                              ▼                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ slated daemon (singleton)                                          │ │
-│  │                                                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │                       Agent System                           │  │ │
-│  │  │                                                              │  │ │
-│  │  │  ┌────────────────────────────────────────────────────────┐  │  │ │
-│  │  │  │ Orchestrator                                           │  │  │ │
-│  │  │  │ - Owns session + user preferences                      │  │  │ │
-│  │  │  │ - Project auto-switching (cwd/repo fingerprint)        │  │  │ │
-│  │  │  │ - Delegates to executor roles via Work Items           │  │  │ │
-│  │  │  └─────────────────────────┬──────────────────────────────┘  │  │ │
-│  │  │                            │ delegates                       │  │ │
-│  │  │  ┌─────────────────────────▼──────────────────────────────┐  │  │ │
-│  │  │  │ Executor Roles                                         │  │  │ │
-│  │  │  │ - Primary: TeamLead, Engineer, Reviewer                │  │  │ │
-│  │  │  │ - Optional: Researcher, Security, Perf                 │  │  │ │
-│  │  │  │ - TeamLead decomposes → Work Item DAG                  │  │  │ │
-│  │  │  │ - Engineer executes → produces artifacts               │  │  │ │
-│  │  │  │ - Reviewer gates → approve or create fix items         │  │  │ │
-│  │  │  └────────────────────────────────────────────────────────┘  │  │ │
-│  │  │                                                              │  │ │
-│  │  │  ┌────────────────────────────────────────────────────────┐  │  │ │
-│  │  │  │ Narrator / Memory Agent                                │  │  │ │
-│  │  │  │ - Compresses + curates memory                          │  │  │ │
-│  │  │  │ - Global memory (user habits) + Project memories       │  │  │ │
-│  │  │  │ - Produces state snapshots for Orchestrator            │  │  │ │
-│  │  │  └────────────────────────────────────────────────────────┘  │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  │                                                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │ Scheduler + Worker Pool                                      │  │ │
-│  │  │ - Runs Work Item DAG concurrently                            │  │ │
-│  │  │ - Respects dependencies, budgets, risk policies              │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  │                                                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │ Tools (Claude Code Style)                                    │  │ │
-│  │  │ Bash | Read | Write | Edit | Glob | Grep | WebFetch | Task   │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  │                                                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │ Shared Project State                                         │  │ │
-│  │  │ ┌────────────┐  ┌────────────┐  ┌──────────────────────────┐ │  │ │
-│  │  │ │ Artifacts  │  │ Decisions  │  │ Task State (Work Items)  │ │  │ │
-│  │  │ │ (diffs,    │  │ (rationale │  │ (status + artifact ptrs) │ │  │ │
-│  │  │ │  logs,     │  │  for key   │  │                          │ │  │ │
-│  │  │ │  outputs)  │  │  choices)  │  │                          │ │  │ │
-│  │  │ └────────────┘  └────────────┘  └──────────────────────────┘ │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  │                                                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
-│  │  │ ai-sdk-cpp (ClickHouse)                                      │  │ │
-│  │  │ - Streaming LLM access + tool calling                        │  │ │
-│  │  └──────────────────────────────────────────────────────────────┘  │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                     User's Terminal                     │
+│                                                         │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  slate (Rust, per-terminal)                       │  │
+│  │                                                   │  │
+│  │  TUI Rendering    Persistent Bash    Command      │  │
+│  │  (ratatui)        Co-Process (PTY)   Index        │  │
+│  │                                                   │  │
+│  │  Tab Completion   Interactive        Clipboard    │  │
+│  │  (3-tier)         Passthrough                     │  │
+│  └──────────────────────┬────────────────────────────┘  │
+│                         │ FlatBuffers IPC               │
+│                         │ (Unix domain socket)          │
+│  ┌──────────────────────▼────────────────────────────┐  │
+│  │  slated (C++20, singleton daemon)                 │  │
+│  │                                                   │  │
+│  │  Session Manager         Worker Bash Sessions     │  │
+│  │  (env snapshots,         (spawn per Work Item,    │  │
+│  │   heartbeat)              parallel execution)     │  │
+│  │                                                   │  │
+│  │  Agent System            Memory & State           │  │
+│  │  (Orchestrator,          (global + per-project,   │  │
+│  │   TeamLead, Engineer,     Narrator-curated,       │  │
+│  │   Reviewer, Narrator)     shared project state)   │  │
+│  │                                                   │  │
+│  │  Scheduler (DAG)         LLM Integration          │  │
+│  │  (concurrent Work        (multi-provider,         │  │
+│  │   Item execution)         streaming + tools)      │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
-## Safety & Audit
+The architecture enforces a clean separation: `slate` owns everything the user touches (rendering, input, command execution), while `slated` owns everything the agent does (orchestration, memory, scheduling, LLM access). They communicate over a binary IPC protocol on a Unix domain socket. This separation enables independent development, deployment, and language-appropriate optimizations for each component.
 
-- Tool/command allowlist, risk classification, confirmations for destructive actions
-- Full audit trail in Shared Project State: commands, outputs, diffs, decisions
+---
 
-## Multi-Model Strategy
+## 5. Deliverables by Phase
 
-Each agent role has different intelligence requirements. Rather than using a single model, the system assigns **purpose-fit models** to each role and lets the TeamLead dynamically select models for worker agents based on Work Item characteristics.
+### Phase 1: Terminal Foundation -- COMPLETE
 
-### Fixed Role Assignments
+**Goal**: A working terminal client that executes commands via daemon IPC.
 
-| Role | Model | Rationale |
+- `slate` Rust binary: TUI with persistent bash co-process, command index classifier, 3-tier tab completion, interactive program passthrough, VT100 terminal emulation, clipboard support
+- `slated` C++ daemon: Unix socket server, IPC protocol, session management with env snapshots, worker bash process spawning, heartbeat detection
+- Binary IPC protocol between `slate` and `slated`
+
+### Phase 2: Single-Agent AI Loop
+
+**Goal**: Natural language input routes to a single AI agent that can reason and use tools.
+
+- LLM integration with streaming and tool calling
+- Single agent (Orchestrator + Engineer combined) that receives input, reasons, and calls tools
+- Built-in tool implementations: Bash, Read, Write, Edit, Glob, Grep
+- Basic safety controls: risk classification, confirmation prompts for destructive commands
+- Terminal markdown rendering for agent output
+
+### Phase 3: Work Item DAG + Scheduler
+
+**Goal**: Complex tasks decompose into a Work Item DAG and execute concurrently.
+
+- Work Item data structure with goals, acceptance criteria, dependencies, budgets
+- DAG construction and concurrent scheduler
+- Artifact storage in shared project state
+- Budget enforcement (token and cost caps per Work Item)
+
+### Phase 4: Multi-Agent Roles + Multi-Model
+
+**Goal**: Separate agent roles with different models assigned per role and per task.
+
+- Role separation: Orchestrator, TeamLead, Engineer, Reviewer, Narrator
+- Model catalog in config; TeamLead dynamically selects models per Work Item
+- Reviewer gating on Work Item outputs
+- Optional specialist roles (Security, Perf, Researcher) hired on demand
+
+### Phase 5: Memory + Project Context
+
+**Goal**: Persistent, bounded memory that survives sessions and auto-switches per project.
+
+- Global memory store (user preferences, habits) and per-project memory stores
+- Narrator agent curates memory with cognitive triage and recursive summarization
+- Automatic project context switching based on cwd and repository fingerprint
+
+### Phase 6: Tool System
+
+**Goal**: Unified tool registry with MCP bridge, prompt tools, and extensibility.
+
+- Tool registry with install/remove/update/search CLI
+- MCP bridge: MCP servers appear as regular tools
+- Prompt tools (expertise without a binary), hooks, and slash command aliases
+
+### Phase 7: Advanced Safety + Audit
+
+**Goal**: Production-grade safety, full audit trail, and compliance alignment.
+
+- Complete audit trail of all commands, outputs, diffs, and decisions
+- Privacy settings for what gets sent to LLMs
+- OS-level sandboxing roadmap (Linux bubblewrap, macOS seatbelt)
+- Alignment with OWASP LLM Top 10 and NIST AI Risk Management Framework
+
+---
+
+## 6. Timeline
+
+| Phase | Duration (estimated) | Status |
 | --- | --- | --- |
-| **Orchestrator** | Claude Opus 4.6 | Highest reasoning capability. Owns session-level decisions, intent interpretation, project switching. Needs deep understanding of user goals and long-term context. Worth the cost since it runs infrequently. |
-| **Narrator** | Gemini 2.5 Flash | Fast, cheap, high-throughput. Memory compression and summarization is a well-defined task that doesn't require frontier reasoning. Runs frequently—cost and latency matter. |
-| **TeamLead** | GPT-5.2 Thinking High | Strong planning and decomposition. Needs to analyze tasks, design Work Item DAGs, set acceptance criteria, and decide which specialist roles to hire. Thinking mode gives it structured reasoning for upfront planning. |
+| Phase 1: Terminal Foundation | 6 weeks | **Complete** |
+| Phase 2: Single-Agent AI Loop | 6-8 weeks | Starting now |
+| Phase 3: Work Item DAG + Scheduler | 4-6 weeks | Planned |
+| Phase 4: Multi-Agent Roles + Multi-Model | 6-8 weeks | Planned |
+| Phase 5: Memory + Project Context | 4-6 weeks | Planned |
+| Phase 6: Tool System | 6-8 weeks | Planned |
+| Phase 7: Advanced Safety + Audit | 4-6 weeks | Planned |
 
-### Dynamic Model Selection for Workers
+**Total estimated timeline**: ~9-12 months from Phase 2 start to Phase 7 completion. Phases are sequential — each builds on the previous — but each phase produces a fully functional, testable deliverable.
 
-The TeamLead selects the model for each Work Item's assigned worker (Engineer, Reviewer, Researcher, Security, Perf) at planning time. The selection is guided by a **model catalog** defined in the config file. Each entry describes a model's strengths, weaknesses, cost tier, and the intelligence level it's suited for.
+---
 
-The TeamLead's system prompt includes the full model catalog and instructions to match Work Items to models based on:
+## 7. Team & Ownership
 
-- **Task complexity**: simple file operations vs. multi-file refactoring vs. architectural reasoning
-- **Required capability**: code generation, code review, security analysis, research synthesis
-- **Cost sensitivity**: routine tasks use cheaper models; critical-path tasks use stronger ones
-- **Latency requirements**: interactive feedback loops favor fast models; batch tasks can use slower ones
+**Developer**: Subhagato (solo developer)
 
-This means the same "Engineer" role might use a cheap fast model for a trivial file rename but a frontier model for a complex refactoring—decided per Work Item, not per role.
+Slate Agent is currently a solo project. All design, implementation, and testing across both the Rust client and C++ daemon are handled by a single developer.
 
-### Model Catalog (Config)
+**Future considerations**: As the project matures past Phase 4, specific phases may benefit from contributors — particularly Phase 6 (Tool System / MCP Bridge) and Phase 7 (Safety / Sandboxing), which involve well-scoped, relatively independent work that could be parallelized.
 
-```toml
-# ~/.config/slate-agent/config.toml
+---
 
-# --- Fixed role assignments ---
+## 8. Budget / Cost Breakdown
 
-[roles.orchestrator]
-provider = "anthropic"
-model = "claude-opus-4-6"
-api_key_env = "ANTHROPIC_API_KEY"
+### Development Costs (LLM API)
 
-[roles.narrator]
-provider = "google"
-model = "gemini-2.5-flash"
-api_key_env = "GOOGLE_API_KEY"
+LLM API usage is the primary ongoing cost during development. Testing requires exercising multiple providers and models.
 
-[roles.teamlead]
-provider = "openai"
-model = "gpt-5.2"
-reasoning_effort = "high"
-api_key_env = "OPENAI_API_KEY"
+| Phase | Estimated Monthly API Cost | Notes |
+| --- | --- | --- |
+| Phase 2 (Single-Agent) | $50-80/month | Single model, iterating on tool calling and prompt engineering |
+| Phase 3 (DAG + Scheduler) | $60-100/month | More complex task decomposition testing |
+| Phase 4 (Multi-Agent + Multi-Model) | $100-150/month | Testing multiple providers (Anthropic, OpenAI, Google) concurrently |
+| Phases 5-7 | $50-100/month | Lower LLM intensity; focus on memory, tools, and safety |
 
-# --- Model catalog for dynamic worker assignment ---
-# TeamLead reads this catalog via system prompt to select models per Work Item.
-# Each entry describes what the model is good/bad at so TeamLead can make
-# informed decisions.
+**Estimated total development API cost**: $500-1,000 over the full build.
 
-[[models]]
-id = "claude-opus-4-6"
-provider = "anthropic"
-cost_tier = "high"                     # "low", "medium", "high"
-intelligence = "frontier"              # "basic", "standard", "advanced", "frontier"
-strengths = "Deep reasoning, complex architecture, nuanced code review, multi-file refactoring, security analysis"
-weaknesses = "Slow, expensive—overkill for simple tasks"
-best_for = "Critical-path work items requiring highest accuracy"
+### Production Per-User Costs (Estimated)
 
-[[models]]
-id = "claude-sonnet-4-5"
-provider = "anthropic"
-cost_tier = "medium"
-intelligence = "advanced"
-strengths = "Strong code generation, good reasoning, fast for its capability level"
-weaknesses = "May miss subtle architectural issues that frontier models catch"
-best_for = "Standard engineering tasks: implement features, write tests, code review"
+End users pay their own LLM API costs (bring-your-own-key model). Typical usage estimates:
 
-[[models]]
-id = "claude-haiku-4-5"
-provider = "anthropic"
-cost_tier = "low"
-intelligence = "standard"
-strengths = "Very fast, cheap, good at well-defined tasks"
-weaknesses = "Limited reasoning on ambiguous or complex problems"
-best_for = "Simple file operations, formatting, linting, straightforward edits"
+| Usage Pattern | Estimated Monthly Cost | Model Mix |
+| --- | --- | --- |
+| Light (few AI queries/day, mostly shell) | $5-10/month | Mostly fast/cheap models |
+| Moderate (regular AI tasks, mixed complexity) | $15-25/month | Mix of standard and frontier models |
+| Heavy (complex multi-file refactoring, research) | $25-50/month | More frontier model usage |
 
-[[models]]
-id = "gemini-2.5-pro"
-provider = "google"
-cost_tier = "medium"
-intelligence = "advanced"
-strengths = "Large context window, strong at research synthesis, good code understanding"
-weaknesses = "Can be verbose, occasionally less precise on surgical edits"
-best_for = "Research tasks, large codebase analysis, documentation"
+### Compute & Infrastructure
 
-[[models]]
-id = "gpt-5.2"
-provider = "openai"
-cost_tier = "high"
-intelligence = "frontier"
-reasoning_effort = "high"
-strengths = "Excellent structured planning, strong reasoning chains, good at decomposition"
-weaknesses = "Expensive, slower with thinking enabled"
-best_for = "Complex planning, architectural decisions, difficult debugging"
+- **Compute**: Minimal. Both `slate` and `slated` run on the user's local machine. The daemon's memory footprint target is <50MB resident.
+- **Cloud backend**: None. Slate Agent has no cloud infrastructure — all processing is local. Users connect directly to LLM provider APIs.
+- **CI/CD**: Standard GitHub Actions for building Rust + C++ — negligible cost.
+- **No recurring infrastructure costs.**
 
-[[models]]
-id = "gpt-4o"
-provider = "openai"
-cost_tier = "medium"
-intelligence = "advanced"
-strengths = "Fast, multimodal, good general-purpose coding"
-weaknesses = "Less deep reasoning than thinking models"
-best_for = "General engineering, quick iterations, visual/UI tasks"
+---
 
-# --- Other settings ---
+## 9. Risks & Mitigations
 
-[tools]
-bash_timeout_ms = 120000
-read_line_limit = 2000
-write_require_read_first = true
+| Risk | Likelihood | Impact | Mitigation |
+| --- | --- | --- | --- |
+| **C++ LLM SDK maturity** — limited ecosystem for streaming + tool calling in C++ | Medium | High | Evaluate early in Phase 2; extend with direct HTTP for unsupported providers; local model fallback via llama.cpp |
+| **Multi-agent token costs** — multi-agent systems use ~15x more tokens than single-agent | High | High | Budget fields on every Work Item; cost-aware model selection by TeamLead; demand-driven decomposition to avoid unnecessary subtask explosion |
+| **Multi-agent coordination** — concurrent agents can corrupt shared state | Medium | High | Single-writer ownership pattern (no locks); role-based separation reduces contention; validated by Cursor's lessons |
+| **API cost overruns** for end users | Medium | Medium | Per-Work-Item budget caps; user-configurable spending limits; TeamLead considers cost tier in model selection |
+| **Solo developer risk** — bus factor of 1 | Medium | High | Clean architecture with well-defined boundaries; comprehensive documentation; each phase is self-contained |
+| **Security of agent-executed commands** | Low | Critical | Risk classification + confirmation prompts (Phase 2); allowlists; audit trail; OS-level sandboxing (Phase 7) |
+| **Dual-language build complexity** (Rust + C++) | Medium | Medium | Clean boundary at IPC layer — Cargo and CMake are fully independent; shared FlatBuffers schema with per-language code generation |
 
-[memory]
-global_max_size_kb = 64
-project_max_size_kb = 128
+---
 
-[privacy]
-send_command_output_to_llm = false
-send_file_contents_to_llm = true
-```
+## 10. Success Criteria
 
-### How TeamLead Selects Models
+| Criterion | Target | Measured By |
+| --- | --- | --- |
+| Command fast-pass latency | <10ms overhead vs raw shell | Benchmark recognized commands |
+| Time-to-first-token (AI response) | <500ms streaming | Measure from input to first token display |
+| Work Item throughput | 4+ parallel workers | Concurrent task execution benchmark |
+| Daemon memory footprint | <50MB resident | Runtime measurement |
+| Context persistence accuracy | >90% relevant recall across sessions | Manual evaluation of memory quality |
+| Multi-agent token overhead | <8x vs single agent (industry avg ~15x) | Token counting per task |
 
-The TeamLead receives the model catalog as part of its system prompt. When creating a Work Item, it assigns a `model_id` field based on its assessment of the task. Example decision flow:
+---
 
-1. **"Rename variable across 3 files"** → `claude-haiku-4-5` (simple, well-defined, cheap)
-2. **"Refactor auth module to use JWT"** → `claude-sonnet-4-5` (standard engineering, good balance)
-3. **"Audit this PR for security vulnerabilities"** → `claude-opus-4-6` (security-critical, needs deep reasoning)
-4. **"Research how this unfamiliar framework handles routing"** → `gemini-2.5-pro` (large context, research task)
-5. **"Debug a complex race condition"** → `gpt-5.2` thinking high (needs structured reasoning chains)
+## 11. Deferred Features
 
-The Work Item's `model_id` is respected by the scheduler when spawning the worker's LLM context. Users can override with a `[roles.default_worker]` setting to force a single model for all workers if preferred.
+The following are explicitly out of scope for the current roadmap:
 
-## MVP Definition
+- **Fish/Zsh native mode** — `slate` uses its own persistent bash co-process
+- **Voice agent integration** — text input only
+- **Multi-model forked work trees** — running the same task on multiple models in parallel and picking the best result
+- **Backpressure system** for tool output and Work Item spawning
+- **Scoped capability tokens** for fine-grained session/cwd/repo permissions
+- **Circuit breaker with automatic model tier fallback**
+- **MCP server hosting** — Slate Agent bridges MCP servers as tools (client), but does not expose its own MCP server
+- **Windows support** — Unix-only (macOS and Linux)
+- **Open-source release** — not initially; may open-source later
 
-- `slate` binary + `slated` daemon IPC with FlatBuffers + streaming
-- Work Item DAG + scheduler + 3-agent loop (Orchestrator, Executors, Narrator)
-- Fast-pass command cache + autocomplete
-- Global + project memory with strict size limits and Narrator summarization
-- File edits + git diffs + test runs end-to-end via tools
+These features can be revisited when real-world usage patterns emerge.
 
-## Deferred Features
+---
 
-The following are explicitly NOT in MVP:
+## 12. Competitive Comparison (Extended)
 
-- Fish/Zsh native mode — slate uses its own persistent bash; native shell integration not planned
-- Backpressure system (tool output, Work Item spawning)
-- Scoped capability tokens (session/cwd/repo permissions)
-- Circuit breaker with automatic tier fallback
-- Voice agent integration
-- MCP server support
-- **Multi-model forked work trees**: TeamLead assigns the same Work Item to multiple models in parallel, producing independent implementations. TeamLead then either judges which result is best or creates an auxiliary "merge" Work Item to combine the strongest parts of each into a final implementation. Useful for critical-path tasks where getting the best possible output justifies the extra cost.
+### Why Not Just Use Claude Code / Codex CLI / Cursor?
 
-These can be added when real-world usage patterns emerge.
+**Claude Code** is the closest competitor in capability. It has recursive subagents, hierarchical memory, and strong benchmarks (80.9% SWE-bench). However, it is locked to Anthropic models — no model selection per task, no cost optimization across providers. It also lacks a true terminal experience: every input goes through the AI, adding latency to simple commands.
+
+**Codex CLI** is open-source and supports OpenAI models plus local inference via Ollama, but has a flat agent architecture. Multi-agent workflows require external orchestration through the Agents SDK and MCP.
+
+**Cursor** pioneered multi-agent coding with its Planner/Worker/Judge pattern, but it is IDE-bound and learned hard lessons about coordination — reader-writer locks degraded 20 concurrent agents to the throughput of 2-3. Slate Agent avoids this with single-writer ownership and shared state coordination.
+
+**Aider** is the most model-agnostic tool (supports any LLM), but has a flat architecture with no task decomposition, no memory persistence, and no concurrent execution.
+
+Slate Agent combines the best ideas from each: terminal-native command execution (unique), recursive multi-agent hierarchy (Claude Code's strength), multi-model flexibility (Aider's strength), and shared-state coordination (Cursor's hard-won lesson).
+
+### Pricing Model
+
+Slate Agent uses a bring-your-own-key model. Users configure their own API keys for the LLM providers they want to use. There are no subscription fees, no cloud infrastructure costs, and no vendor lock-in. The software is free to use; users pay only for the LLM API calls their agent system makes.
+
+This aligns with tools like Aider and Cline, and contrasts with the subscription models of Claude Code ($20-200/month), Cursor ($60-200/month), and Devin ($500/month).
