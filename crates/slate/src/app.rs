@@ -49,11 +49,11 @@ fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<SlatedClient
     let mut client = SlatedClient::connect(&socket)?;
 
     // Send initial environment snapshot.
-    let session_id = format!("slate-{}", std::process::id());
     let env_pairs: Vec<(String, String)> = bash.capture_env();
 
-    let snapshot = messages::build_env_snapshot(&session_id, &env_pairs, "", cwd);
-    client.send(&snapshot);
+    if let Some(snapshot) = messages::build_env_snapshot(&env_pairs, "", cwd) {
+        client.send(&snapshot);
+    }
 
     Some(client)
 }

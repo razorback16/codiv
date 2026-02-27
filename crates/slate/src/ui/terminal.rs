@@ -164,8 +164,7 @@ fn event_loop(
     prompt_is_live: &mut bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_heartbeat_sent = Instant::now();
-    let mut last_daemon_timestamp: i64 = 0;
-    let session_id = format!("slate-{}", std::process::id());
+    let mut last_daemon_timestamp: u64 = 0;
     let mut pending_command: Option<PendingCommand> = None;
     let mut completion_engine = CompletionEngine::new();
     let mut completion_popup = CompletionPopup::new();
@@ -774,35 +773,47 @@ fn event_loop(
         if let Some(ref c) = client {
             while let Some(msg) = c.try_recv() {
                 match msg {
-                    ipc_messages::DaemonMessage::CommandOutput {
-                        data,
-                        is_stderr,
+                    ipc_messages::DaemonMessage::AgentStreamChunk {
+                        request_id: _,
+                        chunk,
                     } => {
-                        let text = String::from_utf8_lossy(&data).to_string();
-                        if is_stderr {
-                            parser_push_styled(parser, &text, "\x1b[31m");
-                        } else {
-                            // Feed daemon output through the parser as-is.
-                            parser.process(text.as_bytes());
-                            if !text.ends_with('\n') {
-                                parser.process(b"\r\n");
+                        let text = match chunk {
+                            ipc_messages::StreamChunk::Text(t) => t,
+                            ipc_messages::StreamChunk::Reasoning(t) => t,
+                            ipc_messages::StreamChunk::ToolCall { name, arguments } => {
+                                format!("[tool: {}] {}", name, arguments)
                             }
+                            ipc_messages::StreamChunk::ToolResult { name, result } => {
+                                format!("[result: {}] {}", name, result)
+                            }
+                        };
+                        parser.process(text.as_bytes());
+                        if !text.ends_with('\n') {
+                            parser.process(b"\r\n");
                         }
                     }
-                    ipc_messages::DaemonMessage::CommandComplete {
+                    ipc_messages::DaemonMessage::AgentComplete {
                         request_id,
-                        exit_code,
+                        summary,
                     } => {
-                        if exit_code != 0 {
+                        if !summary.is_empty() {
                             parser_push_styled(
                                 parser,
-                                &format!(
-                                    "[daemon] command {} exit code: {}",
-                                    request_id, exit_code
-                                ),
-                                "\x1b[31m",
+                                &format!("[daemon] {} complete: {}", request_id, summary),
+                                "\x1b[90m",
                             );
                         }
+                    }
+                    ipc_messages::DaemonMessage::ConfirmationRequest {
+                        request_id,
+                        description,
+                        risk: _,
+                    } => {
+                        parser_push_styled(
+                            parser,
+                            &format!("[daemon] confirm ({}): {}", request_id, description),
+                            "\x1b[33m",
+                        );
                     }
                     ipc_messages::DaemonMessage::Error {
                         request_id,
@@ -824,8 +835,9 @@ fn event_loop(
         // Periodic heartbeat every 10s.
         if let Some(ref mut c) = client {
             if c.is_connected() && last_heartbeat_sent.elapsed() > Duration::from_secs(10) {
-                let hb = ipc_messages::build_heartbeat(&session_id);
-                c.send(&hb);
+                if let Some(hb) = ipc_messages::build_heartbeat() {
+                    c.send(&hb);
+                }
                 last_heartbeat_sent = Instant::now();
             }
         }
@@ -841,7 +853,7 @@ fn render_frame(
     input: &InputLine,
     cwd: &str,
     daemon_connected: bool,
-    daemon_timestamp: i64,
+    daemon_timestamp: u64,
     scroll_offset: usize,
     prompt_is_live: &mut bool,
     is_executing: bool,
@@ -934,7 +946,7 @@ fn render_status_bar(
     frame: &mut Frame,
     cwd: &str,
     daemon_connected: bool,
-    daemon_timestamp: i64,
+    daemon_timestamp: u64,
     is_executing: bool,
     area: Rect,
 ) {
@@ -944,8 +956,8 @@ fn render_status_bar(
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as i64;
-        let age_s = (now_ms - daemon_timestamp) / 1000;
+            .as_millis() as u64;
+        let age_s = now_ms.saturating_sub(daemon_timestamp) / 1000;
         if age_s < 30 {
             "daemon: connected"
         } else {

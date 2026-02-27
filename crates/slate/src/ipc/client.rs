@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
-use super::messages::{self, DaemonMessage, FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE};
+use super::messages::{DaemonMessage, FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE, parse_frame_header};
 
 pub struct SlatedClient {
     stream: UnixStream,
@@ -76,7 +76,7 @@ fn reader_loop(
             break;
         }
 
-        let payload_size = messages::parse_frame_header(&header_buf) as usize;
+        let payload_size = parse_frame_header(&header_buf) as usize;
         if payload_size > MAX_MESSAGE_SIZE {
             break;
         }
@@ -87,10 +87,15 @@ fn reader_loop(
             break;
         }
 
-        // Parse and send to channel.
-        if let Some(msg) = messages::parse_message(&payload) {
-            if tx.send(msg).is_err() {
-                break; // Receiver dropped.
+        // Deserialize with bincode and send to channel.
+        match bincode::deserialize::<DaemonMessage>(&payload) {
+            Ok(msg) => {
+                if tx.send(msg).is_err() {
+                    break; // Receiver dropped.
+                }
+            }
+            Err(e) => {
+                log::warn!("failed to deserialize daemon message: {}", e);
             }
         }
     }

@@ -1,19 +1,8 @@
-use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Get the Unix socket path for the daemon.
-pub fn socket_path() -> String {
-    let uid = unsafe { libc::getuid() };
-    format!("/tmp/slated-{}.sock", uid)
-}
-
-/// Get the PID file path.
-pub fn pid_file_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".slate-agent").join("slated.pid")
-}
+pub use slate_common::config::{pid_file_path, socket_path};
 
 /// Check if the daemon is currently running.
 pub fn is_daemon_running() -> bool {
