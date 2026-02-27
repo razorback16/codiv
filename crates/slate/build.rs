@@ -2,7 +2,7 @@ use std::process::Command;
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    let schema = "../schemas/ipc.fbs";
+    let schema = "../../schemas/ipc.fbs";
 
     // Try to find flatc
     let flatc = find_flatc().unwrap_or_else(|| {
@@ -25,7 +25,7 @@ fn main() {
 
 fn find_flatc() -> Option<String> {
     // 1. Check slated build directory (built by cmake)
-    let slated_flatc = "../slated/build/_deps/flatbuffers-build/flatc";
+    let slated_flatc = "../../slated/build/_deps/flatbuffers-build/flatc";
     if std::path::Path::new(slated_flatc).exists() {
         return Some(slated_flatc.to_string());
     }
