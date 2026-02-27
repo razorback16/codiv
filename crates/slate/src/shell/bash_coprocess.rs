@@ -61,6 +61,10 @@ impl BashCoprocess {
 
         let mut cmd = CommandBuilder::new("bash");
         cmd.args(["--noediting", "--norc", "--noprofile", "-i"]);
+        // Start in the directory where the user launched slate.
+        if let Ok(cwd) = std::env::current_dir() {
+            cmd.cwd(cwd);
+        }
         cmd.env("PS1", "$ ");
         cmd.env("HISTFILE", "/dev/null");
         cmd.env("TERM", "xterm-256color");

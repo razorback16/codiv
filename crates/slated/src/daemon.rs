@@ -61,19 +61,31 @@ impl Daemon {
                     // Take the agent out of the session so we can move it into the task.
                     // If none exists yet, create one.
                     let session = self.sessions.get_mut(&client_id);
-                    let mut agent = session
-                        .and_then(|s| s.agent.take())
-                        .unwrap_or_else(|| {
-                            agent::agent::Agent::new(
-                                slate_common::types::AgentRole::Engineer,
-                                assignment,
-                                "You are a helpful coding assistant embedded in a terminal. \
-                                You can see the user's recent terminal commands and their output in the conversation history. \
-                                Use this context to give relevant, concise answers. \
-                                When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
-                            )
-                        });
+                    let (cwd, env_vars, taken_agent) = match session {
+                        Some(s) => {
+                            let cwd = s.cwd.clone();
+                            let env = s.env_vars.clone();
+                            let agent = s.agent.take();
+                            (cwd, env, agent)
+                        }
+                        None => (String::new(), Vec::new(), None),
+                    };
 
+                    let mut agent = taken_agent.unwrap_or_else(|| {
+                        agent::agent::Agent::new(
+                            slate_common::types::AgentRole::Engineer,
+                            assignment,
+                            "You are a helpful coding assistant embedded in a terminal. \
+                            You can see the user's recent terminal commands and their output in the conversation history. \
+                            Use this context to give relevant, concise answers. \
+                            When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
+                            cwd.clone(),
+                            env_vars,
+                        )
+                    });
+
+                    // Ensure agent uses the session's latest cwd.
+                    agent.cwd = cwd;
                     agent.add_user_message(&prompt);
 
                     // We need to put the agent back after the spawn completes.
@@ -84,6 +96,7 @@ impl Daemon {
                     tokio::spawn(async move {
                         match agent.run_streaming(&rid, &client_tx).await {
                             Ok(response) => {
+                                info!("agent completed request {}: {} bytes", rid, response.len());
                                 agent.add_assistant_message(&response);
                                 let msg = DaemonMessage::AgentComplete {
                                     request_id: rid,
@@ -94,6 +107,7 @@ impl Daemon {
                                 }
                             }
                             Err(e) => {
+                                info!("agent error for request {}: {}", rid, e);
                                 let msg = DaemonMessage::Error {
                                     request_id: rid,
                                     message: e,
@@ -158,6 +172,11 @@ impl Daemon {
                 cwd,
             } => {
                 if let Some(session) = self.sessions.get_mut(&client_id) {
+                    // Keep session cwd in sync with the client's actual cwd.
+                    session.cwd = cwd.clone();
+
+                    let session_cwd = session.cwd.clone();
+                    let session_env_vars = session.env_vars.clone();
                     let agent = session.agent.get_or_insert_with(|| {
                         let catalog = crate::agent::config::ModelCatalog::load();
                         let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
@@ -168,8 +187,12 @@ impl Daemon {
                             You can see the user's recent terminal commands and their output in the conversation history. \
                             Use this context to give relevant, concise answers. \
                             When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
+                            session_cwd,
+                            session_env_vars,
                         )
                     });
+                    // Update the agent's cwd so tools execute in the right directory.
+                    agent.cwd = cwd.clone();
                     agent.add_command_result(&command, &output, exit_code, &cwd);
                     info!("recorded command result from client {}: {}", client_id, command);
                 }

@@ -32,15 +32,19 @@ pub struct Agent {
     pub system_prompt: String,
     pub model_config: ModelAssignment,
     pub history: Vec<SessionEvent>,
+    pub cwd: String,
+    pub env_vars: Vec<(String, String)>,
 }
 
 impl Agent {
-    pub fn new(role: AgentRole, model_config: ModelAssignment, system_prompt: String) -> Self {
+    pub fn new(role: AgentRole, model_config: ModelAssignment, system_prompt: String, cwd: String, env_vars: Vec<(String, String)>) -> Self {
         Self {
             role,
             system_prompt,
             model_config,
             history: Vec::new(),
+            cwd,
+            env_vars,
         }
     }
 
@@ -133,8 +137,12 @@ impl Agent {
         );
 
         let messages = self.build_messages();
+        let tools = super::tools::build_tools(
+            self.cwd.clone(),
+            self.env_vars.clone(),
+        );
 
-        config::stream_from_config(&self.model_config, messages, request_id, client_tx)
+        config::stream_from_config(&self.model_config, messages, request_id, client_tx, tools)
             .await
             .map_err(|e| e.to_string())
     }

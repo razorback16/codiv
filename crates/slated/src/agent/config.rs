@@ -1,3 +1,4 @@
+use aisdk::core::tools::Tool;
 use aisdk::core::{LanguageModel, LanguageModelRequest, LanguageModelStreamChunkType};
 use aisdk::providers::{Anthropic, Google, OpenAI};
 use futures::StreamExt;
@@ -65,16 +66,17 @@ pub async fn stream_from_config(
     messages: aisdk::core::messages::Messages,
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
+    tools: Vec<Tool>,
 ) -> Result<String, DynError> {
     match assignment.provider.as_str() {
         "anthropic" => {
-            run_stream(Anthropic::model_name(&assignment.model), messages, request_id, tx, assignment).await
+            run_stream(Anthropic::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
         }
         "openai" => {
-            run_stream(OpenAI::model_name(&assignment.model), messages, request_id, tx, assignment).await
+            run_stream(OpenAI::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
         }
         "google" => {
-            run_stream(Google::model_name(&assignment.model), messages, request_id, tx, assignment).await
+            run_stream(Google::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
         }
         other => Err(format!("unsupported provider: {}", other).into()),
     }
@@ -86,9 +88,10 @@ async fn run_stream<M>(
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
     config: &ModelAssignment,
+    tools: Vec<Tool>,
 ) -> Result<String, DynError>
 where
-    M: LanguageModel + aisdk::core::capabilities::TextInputSupport + Send + Sync + 'static,
+    M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + Send + Sync + 'static,
 {
     let mut builder = LanguageModelRequest::builder()
         .model(model)
@@ -97,13 +100,22 @@ where
     if let Some(temp) = config.temperature {
         builder = builder.temperature(temp as u32);
     }
+
+    for tool in tools {
+        builder = builder.with_tool(tool);
+    }
     // Note: aisdk 0.5.x does not expose a max_output_tokens builder method;
     // the provider's default is used. config.max_tokens is reserved for future use.
 
     let mut response = builder.build().stream_text().await?;
     let mut full_text = String::new();
+    let mut chunk_count: u32 = 0;
+
+    tracing::debug!("stream started for request {}", request_id);
 
     while let Some(chunk) = response.stream.next().await {
+        chunk_count += 1;
+
         match chunk {
             LanguageModelStreamChunkType::Text(text) => {
                 full_text.push_str(&text);
@@ -126,12 +138,60 @@ where
                 )
                 .await?;
             }
+            LanguageModelStreamChunkType::ToolCallStart(info) => {
+                let args = serde_json::to_string(&info.input).unwrap_or_default();
+                send_ipc(
+                    tx,
+                    &DaemonMessage::AgentStreamChunk {
+                        request_id: request_id.to_string(),
+                        chunk: StreamChunk::ToolCall {
+                            name: info.tool.name,
+                            arguments: args,
+                        },
+                    },
+                )
+                .await?;
+            }
+            LanguageModelStreamChunkType::ToolResult(info) => {
+                let output = match &info.output {
+                    Ok(v) => match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => serde_json::to_string(other).unwrap_or_default(),
+                    },
+                    Err(e) => format!("Error: {e}"),
+                };
+                send_ipc(
+                    tx,
+                    &DaemonMessage::AgentStreamChunk {
+                        request_id: request_id.to_string(),
+                        chunk: StreamChunk::ToolResult {
+                            name: info.tool.name,
+                            result: output,
+                        },
+                    },
+                )
+                .await?;
+            }
             LanguageModelStreamChunkType::Failed(err) => {
+                tracing::error!("stream failed: {err}");
                 return Err(err.into());
+            }
+            LanguageModelStreamChunkType::Incomplete(reason) => {
+                tracing::warn!("stream incomplete: {reason}");
             }
             _ => {}
         }
     }
+
+    tracing::info!(
+        "stream ended for request {}: {} chunks, {} bytes of text",
+        request_id, chunk_count, full_text.len()
+    );
+
+    if let Some(reason) = response.stop_reason().await {
+        tracing::debug!("stop_reason: {:?}", reason);
+    }
+
     Ok(full_text)
 }
 

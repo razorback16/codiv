@@ -91,6 +91,17 @@ fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str)
     parser.process(line.as_bytes());
 }
 
+/// Truncate tool text for display, collapsing newlines and limiting length.
+fn truncate_tool_text(text: &str, max_len: usize) -> String {
+    // Collapse whitespace/newlines into single spaces for inline display.
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.len() <= max_len {
+        collapsed
+    } else {
+        format!("{}...", &collapsed[..max_len])
+    }
+}
+
 /// Run the main terminal UI.
 ///
 /// This function takes ownership of the terminal, enters the alternate screen
@@ -822,21 +833,46 @@ fn event_loop(
                         request_id: _,
                         chunk,
                     } => {
-                        let text = match chunk {
-                            ipc_messages::StreamChunk::Text(t) => t,
-                            ipc_messages::StreamChunk::Reasoning(t) => t,
+                        match chunk {
+                            ipc_messages::StreamChunk::Text(t) => {
+                                let t = t.replace('\n', "\r\n");
+                                parser.process(t.as_bytes());
+                            }
+                            ipc_messages::StreamChunk::Reasoning(t) => {
+                                let t = t.replace('\n', "\r\n");
+                                parser.process(t.as_bytes());
+                            }
                             ipc_messages::StreamChunk::ToolCall { name, arguments } => {
-                                format!("[tool: {}] {}", name, arguments)
+                                // Dim cyan for tool calls
+                                let summary = truncate_tool_text(&arguments, 120);
+                                parser_push_styled(
+                                    parser,
+                                    &format!("  {} {}", name, summary),
+                                    "\x1b[36m",
+                                );
                             }
                             ipc_messages::StreamChunk::ToolResult { name, result } => {
-                                format!("[result: {}] {}", name, result)
+                                // Dim green for results, preserving newlines
+                                let lines: Vec<&str> = result.lines().collect();
+                                let max_lines = 20;
+                                let max_line_len = 200;
+                                let truncated_lines = lines.len() > max_lines;
+                                let display_lines = &lines[..lines.len().min(max_lines)];
+                                let mut output = format!("  {} result:", name);
+                                for line in display_lines {
+                                    if line.len() > max_line_len {
+                                        output.push_str(&format!("\r\n    {}...", &line[..max_line_len]));
+                                    } else {
+                                        output.push_str(&format!("\r\n    {}", line));
+                                    }
+                                }
+                                if truncated_lines {
+                                    output.push_str(&format!("\r\n    ... ({} more lines)", lines.len() - max_lines));
+                                }
+                                let line = format!("\x1b[2;32m{}\x1b[0m\r\n", output);
+                                parser.process(line.as_bytes());
                             }
                         };
-                        // Terminal requires \r\n (CRLF) for proper line breaks.
-                        // LLM output contains bare \n which moves the cursor down
-                        // without returning to column 0, causing staircase rendering.
-                        let text = text.replace('\n', "\r\n");
-                        parser.process(text.as_bytes());
                     }
                     ipc_messages::DaemonMessage::AgentComplete {
                         request_id: _,

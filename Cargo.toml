@@ -1,3 +1,6 @@
 [workspace]
 members = ["crates/slate", "crates/slate-common", "crates/slated"]
 resolver = "2"
+
+[patch.crates-io]
+aisdk = { path = "references/aisdk" }
