@@ -1,18 +1,15 @@
-.PHONY: all slate slated clean test
+.PHONY: all build clean test
 
-all: slated slate
+all: build
 
-slate: slated
-	cd slate && cargo build
-
-slated:
-	mkdir -p slated/build
-	cd slated/build && cmake .. && cmake --build .
+build:
+	cargo build --workspace
 
 clean:
-	cd slate && cargo clean
-	rm -rf slated/build
+	cargo clean
 
-test: all
-	cd slate && cargo test
-	cd slated/build && ctest --output-on-failure
+test:
+	cargo test --workspace
+
+release:
+	cargo build --workspace --release
