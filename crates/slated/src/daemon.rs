@@ -67,7 +67,10 @@ impl Daemon {
                             agent::agent::Agent::new(
                                 slate_common::types::AgentRole::Engineer,
                                 assignment,
-                                "You are a helpful coding assistant. Answer concisely.".to_string(),
+                                "You are a helpful coding assistant embedded in a terminal. \
+                                You can see the user's recent terminal commands and their output in the conversation history. \
+                                Use this context to give relevant, concise answers. \
+                                When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
                             )
                         });
 
@@ -148,8 +151,28 @@ impl Daemon {
                 // Phase 2 step 2: safety confirmation (Task 7+)
             }
 
-            ClientMessage::CommandResult { .. } => {
-                // Will be implemented in Task 5
+            ClientMessage::CommandResult {
+                command,
+                output,
+                exit_code,
+                cwd,
+            } => {
+                if let Some(session) = self.sessions.get_mut(&client_id) {
+                    let agent = session.agent.get_or_insert_with(|| {
+                        let catalog = crate::agent::config::ModelCatalog::load();
+                        let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+                        crate::agent::agent::Agent::new(
+                            slate_common::types::AgentRole::Engineer,
+                            assignment,
+                            "You are a helpful coding assistant embedded in a terminal. \
+                            You can see the user's recent terminal commands and their output in the conversation history. \
+                            Use this context to give relevant, concise answers. \
+                            When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
+                        )
+                    });
+                    agent.add_command_result(&command, &output, exit_code, &cwd);
+                    info!("recorded command result from client {}: {}", client_id, command);
+                }
             }
         }
     }
