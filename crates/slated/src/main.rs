@@ -1,3 +1,4 @@
+mod agent;
 mod daemon;
 mod ipc;
 mod session;
