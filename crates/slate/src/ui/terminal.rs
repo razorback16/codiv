@@ -170,6 +170,7 @@ fn event_loop(
     let mut completion_popup = CompletionPopup::new();
     let mut selection = TextSelection::new();
     let mut clipboard = arboard::Clipboard::new().ok();
+    let mut agent_streaming = false;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -275,6 +276,9 @@ fn event_loop(
             parser.process(b"\x1b[?1049l");
             parser.process(b"\x1b[?25h");
 
+            let mut alt_cmd_output = String::new();
+            let mut alt_cmd_exit: i32 = 0;
+
             if let Some((acc, captured_screen)) = accumulated {
                 // Feed captured alt screen content (last page the user saw)
                 // into scrollback, like iTerm2's "save to scrollback" feature.
@@ -295,10 +299,23 @@ fn event_loop(
                             "\x1b[31m",
                         );
                     }
+                    alt_cmd_output = result.output;
+                    alt_cmd_exit = result.exit_code;
                 }
             }
 
             *cwd = bash.capture_cwd();
+            // Send alt-screen command result to daemon for session timeline.
+            if let Some(ref mut c) = client {
+                if let Some(frame) = ipc_messages::build_command_result(
+                    &pending.command,
+                    &alt_cmd_output,
+                    alt_cmd_exit,
+                    cwd,
+                ) {
+                    c.send(&frame);
+                }
+            }
             *scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
@@ -325,6 +342,17 @@ fn event_loop(
                     );
                 }
                 *cwd = bash.capture_cwd();
+                // Send command result to daemon for session timeline.
+                if let Some(ref mut c) = client {
+                    if let Some(frame) = ipc_messages::build_command_result(
+                        &pending.command,
+                        &result.output,
+                        result.exit_code,
+                        cwd,
+                    ) {
+                        c.send(&frame);
+                    }
+                }
                 pending_command = None;
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
@@ -346,7 +374,7 @@ fn event_loop(
             completion_engine.poll_init(bash);
         }
 
-        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, &completion_popup, &selection)?;
+        render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, agent_streaming, &completion_popup, &selection)?;
 
         // Poll for events with a short timeout (10ms when executing for
         // responsive output polling, 50ms otherwise).
@@ -548,11 +576,7 @@ fn event_loop(
                                     context,
                                 ) {
                                     c.send(&frame);
-                                    parser_push_styled(
-                                        parser,
-                                        &format!("[agent] request {} sent", request_id),
-                                        "\x1b[36m",
-                                    );
+                                    agent_streaming = true;
                                 }
                             } else {
                                 parser_push_styled(
@@ -808,21 +832,19 @@ fn event_loop(
                                 format!("[result: {}] {}", name, result)
                             }
                         };
+                        // Terminal requires \r\n (CRLF) for proper line breaks.
+                        // LLM output contains bare \n which moves the cursor down
+                        // without returning to column 0, causing staircase rendering.
+                        let text = text.replace('\n', "\r\n");
                         parser.process(text.as_bytes());
-                        if !text.ends_with('\n') {
-                            parser.process(b"\r\n");
-                        }
                     }
                     ipc_messages::DaemonMessage::AgentComplete {
-                        request_id,
-                        summary,
+                        request_id: _,
+                        summary: _,
                     } => {
-                        if !summary.is_empty() {
-                            parser_push_styled(
-                                parser,
-                                &format!("[daemon] {} complete: {}", request_id, summary),
-                                "\x1b[90m",
-                            );
+                        if agent_streaming {
+                            parser.process(b"\r\n");
+                            agent_streaming = false;
                         }
                     }
                     ipc_messages::DaemonMessage::ConfirmationRequest {
@@ -840,6 +862,7 @@ fn event_loop(
                         request_id,
                         message,
                     } => {
+                        agent_streaming = false;
                         parser_push_styled(
                             parser,
                             &format!("[daemon] error ({}): {}", request_id, message),
@@ -878,12 +901,13 @@ fn render_frame(
     scroll_offset: usize,
     prompt_is_live: &mut bool,
     is_executing: bool,
+    agent_streaming: bool,
     completion_popup: &CompletionPopup,
     selection: &TextSelection,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
-    // and no command is currently executing).
-    if scroll_offset == 0 && !is_executing {
+    // and no command is currently executing or agent streaming).
+    if scroll_offset == 0 && !is_executing && !agent_streaming {
         let prompt_text = format!("{}$ ", cwd);
         let input_text = input.content();
 

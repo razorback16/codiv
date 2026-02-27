@@ -1,6 +1,6 @@
 pub use slate_common::config::{FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE};
 pub use slate_common::messages::{
-    frame_message, parse_frame_header, ClientMessage, CommandRecord, DaemonMessage,
+    frame_message, parse_frame_header, ClientMessage, DaemonMessage,
     SessionContext, StreamChunk,
 };
 
@@ -44,7 +44,24 @@ pub fn build_agent_request(
     frame_message(&msg).ok()
 }
 
+/// Build a framed CommandResult message.
+pub fn build_command_result(
+    command: &str,
+    output: &str,
+    exit_code: i32,
+    cwd: &str,
+) -> Option<Vec<u8>> {
+    let msg = ClientMessage::CommandResult {
+        command: command.to_string(),
+        output: output.to_string(),
+        exit_code,
+        cwd: cwd.to_string(),
+    };
+    frame_message(&msg).ok()
+}
+
 /// Build a framed Shutdown message.
+#[allow(dead_code)] // will be used for graceful shutdown
 pub fn build_shutdown(reason: &str) -> Option<Vec<u8>> {
     let msg = ClientMessage::Shutdown {
         reason: reason.to_string(),
