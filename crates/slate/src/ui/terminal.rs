@@ -535,11 +535,32 @@ fn event_loop(
                         }
 
                         InputAction::AiQuery => {
-                            parser_push_styled(
-                                parser,
-                                "AI mode not yet available (Phase 2)",
-                                "\x1b[90m",
-                            );
+                            if let Some(ref mut c) = client {
+                                let request_id = format!("agent-{}", rand::random::<u64>());
+                                let context = ipc_messages::SessionContext {
+                                    cwd: cwd.clone(),
+                                    recent_commands: Vec::new(),
+                                    env_vars: Vec::new(),
+                                };
+                                if let Some(frame) = ipc_messages::build_agent_request(
+                                    &raw_input,
+                                    &request_id,
+                                    context,
+                                ) {
+                                    c.send(&frame);
+                                    parser_push_styled(
+                                        parser,
+                                        &format!("[agent] request {} sent", request_id),
+                                        "\x1b[36m",
+                                    );
+                                }
+                            } else {
+                                parser_push_styled(
+                                    parser,
+                                    "AI mode not available (daemon not connected)",
+                                    "\x1b[31m",
+                                );
+                            }
                         }
 
                         InputAction::Interactive => {

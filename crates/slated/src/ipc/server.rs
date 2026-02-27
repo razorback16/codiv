@@ -71,6 +71,12 @@ impl IpcServer {
         }
     }
 
+    /// Get a clone of the send channel for a specific client.
+    /// Used to send messages from spawned agent tasks.
+    pub fn client_sender(&self, client_id: ClientId) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.clients.get(&client_id).cloned()
+    }
+
     pub fn disconnect(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
         info!("client {} disconnected", client_id);

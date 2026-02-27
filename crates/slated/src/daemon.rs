@@ -43,20 +43,65 @@ impl Daemon {
     async fn dispatch(&mut self, client_id: ClientId, msg: ClientMessage) {
         match msg {
             ClientMessage::AgentRequest {
-                prompt: _,
+                prompt,
                 request_id,
                 context: _,
             } => {
-                // Phase 2 step 2: agent integration (Task 6+)
-                self.ipc
-                    .send(
-                        client_id,
-                        &DaemonMessage::Error {
-                            request_id,
-                            message: "agent not yet implemented".to_string(),
-                        },
-                    )
-                    .await;
+                use crate::agent;
+                use slate_common::messages::StreamChunk;
+
+                let model_catalog = agent::config::ModelCatalog::load();
+                let assignment =
+                    model_catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+
+                if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                    let rid = request_id.clone();
+
+                    tokio::spawn(async move {
+                        let mut agent = agent::agent::Agent::new(
+                            slate_common::types::AgentRole::Engineer,
+                            assignment,
+                            "You are a helpful coding assistant. Answer concisely.".to_string(),
+                        );
+                        agent.add_user_message(&prompt);
+
+                        match agent.run().await {
+                            Ok(response) => {
+                                // Stream the response text
+                                let chunk_msg = DaemonMessage::AgentStreamChunk {
+                                    request_id: rid.clone(),
+                                    chunk: StreamChunk::Text(response.clone()),
+                                };
+                                if let Ok(frame) =
+                                    slate_common::messages::frame_message(&chunk_msg)
+                                {
+                                    let _ = client_tx.send(frame).await;
+                                }
+
+                                let complete_msg = DaemonMessage::AgentComplete {
+                                    request_id: rid,
+                                    summary: response,
+                                };
+                                if let Ok(frame) =
+                                    slate_common::messages::frame_message(&complete_msg)
+                                {
+                                    let _ = client_tx.send(frame).await;
+                                }
+                            }
+                            Err(e) => {
+                                let err_msg = DaemonMessage::Error {
+                                    request_id: rid,
+                                    message: e,
+                                };
+                                if let Ok(frame) =
+                                    slate_common::messages::frame_message(&err_msg)
+                                {
+                                    let _ = client_tx.send(frame).await;
+                                }
+                            }
+                        }
+                    });
+                }
             }
 
             ClientMessage::EnvSnapshot {
