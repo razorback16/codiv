@@ -31,9 +31,11 @@ impl Daemon {
                     }
                 }
                 Some(msg) = self.ipc.msg_rx.recv() => {
+                    self.collect_returned_agents();
                     self.dispatch(msg.client_id, msg.message).await;
                 }
                 _ = cleanup_interval.tick() => {
+                    self.collect_returned_agents();
                     self.cleanup_stale_sessions().await;
                 }
             }
@@ -48,7 +50,6 @@ impl Daemon {
                 context: _,
             } => {
                 use crate::agent;
-                use slate_common::messages::StreamChunk;
 
                 let model_catalog = agent::config::ModelCatalog::load();
                 let assignment =
@@ -57,50 +58,58 @@ impl Daemon {
                 if let Some(client_tx) = self.ipc.client_sender(client_id) {
                     let rid = request_id.clone();
 
+                    // Take the agent out of the session so we can move it into the task.
+                    // If none exists yet, create one.
+                    let session = self.sessions.get_mut(&client_id);
+                    let mut agent = session
+                        .and_then(|s| s.agent.take())
+                        .unwrap_or_else(|| {
+                            agent::agent::Agent::new(
+                                slate_common::types::AgentRole::Engineer,
+                                assignment,
+                                "You are a helpful coding assistant. Answer concisely.".to_string(),
+                            )
+                        });
+
+                    agent.add_user_message(&prompt);
+
+                    // We need to put the agent back after the spawn completes.
+                    // Use a channel to return it.
+                    let (agent_return_tx, agent_return_rx) =
+                        tokio::sync::oneshot::channel::<agent::agent::Agent>();
+
                     tokio::spawn(async move {
-                        let mut agent = agent::agent::Agent::new(
-                            slate_common::types::AgentRole::Engineer,
-                            assignment,
-                            "You are a helpful coding assistant. Answer concisely.".to_string(),
-                        );
-                        agent.add_user_message(&prompt);
-
-                        match agent.run().await {
+                        match agent.run_streaming(&rid, &client_tx).await {
                             Ok(response) => {
-                                // Stream the response text
-                                let chunk_msg = DaemonMessage::AgentStreamChunk {
-                                    request_id: rid.clone(),
-                                    chunk: StreamChunk::Text(response.clone()),
-                                };
-                                if let Ok(frame) =
-                                    slate_common::messages::frame_message(&chunk_msg)
-                                {
-                                    let _ = client_tx.send(frame).await;
-                                }
-
-                                let complete_msg = DaemonMessage::AgentComplete {
+                                agent.add_assistant_message(&response);
+                                let msg = DaemonMessage::AgentComplete {
                                     request_id: rid,
                                     summary: response,
                                 };
-                                if let Ok(frame) =
-                                    slate_common::messages::frame_message(&complete_msg)
-                                {
+                                if let Ok(frame) = slate_common::messages::frame_message(&msg) {
                                     let _ = client_tx.send(frame).await;
                                 }
                             }
                             Err(e) => {
-                                let err_msg = DaemonMessage::Error {
+                                let msg = DaemonMessage::Error {
                                     request_id: rid,
                                     message: e,
                                 };
-                                if let Ok(frame) =
-                                    slate_common::messages::frame_message(&err_msg)
-                                {
+                                if let Ok(frame) = slate_common::messages::frame_message(&msg) {
                                     let _ = client_tx.send(frame).await;
                                 }
                             }
                         }
+                        let _ = agent_return_tx.send(agent);
                     });
+
+                    // Spawn a task to put the agent back into the session.
+                    // We can't await here since dispatch is sync w.r.t. the event loop.
+                    // Instead, we'll check the return channel in the next iteration.
+                    // For simplicity, store the receiver on the session.
+                    if let Some(session) = self.sessions.get_mut(&client_id) {
+                        session.agent_return_rx = Some(agent_return_rx);
+                    }
                 }
             }
 
@@ -137,6 +146,27 @@ impl Daemon {
 
             ClientMessage::Confirmation { .. } => {
                 // Phase 2 step 2: safety confirmation (Task 7+)
+            }
+
+            ClientMessage::CommandResult { .. } => {
+                // Will be implemented in Task 5
+            }
+        }
+    }
+
+    fn collect_returned_agents(&mut self) {
+        for session in self.sessions.values_mut() {
+            if let Some(ref mut rx) = session.agent_return_rx {
+                match rx.try_recv() {
+                    Ok(agent) => {
+                        session.agent = Some(agent);
+                        session.agent_return_rx = None;
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        session.agent_return_rx = None;
+                    }
+                }
             }
         }
     }

@@ -40,6 +40,12 @@ pub enum ClientMessage {
     Shutdown {
         reason: String,
     },
+    CommandResult {
+        command: String,
+        output: String,
+        exit_code: i32,
+        cwd: String,
+    },
 }
 
 /// Messages sent from the slated daemon to the slate client.
