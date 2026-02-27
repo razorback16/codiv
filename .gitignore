@@ -1,8 +1,8 @@
 build/
-slate/target/
-slated/build/
+target/
 *.rlib
 .worktrees/
 .DS_Store
 .claude-octopus/
 slated/.cache/
+references/
