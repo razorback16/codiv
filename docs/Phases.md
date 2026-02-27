@@ -16,8 +16,8 @@
 
 | Phase | Name                            | Goal                                                        | Status       | Key Deliverables                                                                                                                             |
 | ----- | ------------------------------- | ----------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1** | Terminal Foundation             | Working terminal client with daemon IPC                     | **COMPLETE** | Rust TUI, C++ daemon, FlatBuffers IPC (now replaced by serde+bincode in Phase 2), command fast-pass, tab completion, interactive passthrough |
-| **2** | Single-Agent AI Loop            | Natural language input routes to AI agent with tool calling | **NEXT**     | aisdk.rs integration, single agent loop, built-in tools, markdown rendering, basic safety                                                    |
+| **1** | Terminal Foundation             | Working terminal client with daemon IPC                     | **COMPLETE** | Rust TUI, Rust daemon (replaced original C++ daemon), serde+bincode IPC, command fast-pass, tab completion, interactive passthrough |
+| **2** | Single-Agent AI Loop            | Natural language input routes to AI agent with tool calling | **IN PROGRESS** | aisdk.rs integration, single agent loop, session timeline, built-in tools, markdown rendering, basic safety                                |
 | **3** | Work Item DAG + Scheduler       | Complex tasks decomposed into concurrent Work Items         | Planned      | Work Item schema, DAG construction, Tokio-based scheduler, budget enforcement                                                                |
 | **4** | Multi-Agent Roles + Multi-Model | Specialized agent roles with dynamic model selection        | Planned      | Role separation, model catalog, TeamLead model selection, Reviewer gating                                                                    |
 | **5** | Memory + Project Context        | Persistent bounded memory across sessions and projects      | Planned      | SQLite episodic store, semantic markdown, Narrator consolidation, project auto-switching                                                     |
@@ -32,7 +32,7 @@
 Phase 1: Terminal Foundation  [COMPLETE]
     |
     v
-Phase 2: Single-Agent AI Loop + Basic Safety  [NEXT]
+Phase 2: Single-Agent AI Loop + Basic Safety  [IN PROGRESS]
     |
     v
 Phase 3: Work Item DAG + Scheduler
@@ -58,14 +58,14 @@ Each phase is a **vertical slice** — fully functional and manually testable on
 
 ### Phase 1: Terminal Foundation — COMPLETE
 
-**Note**: The C++ daemon built in Phase 1 is being replaced by a Rust daemon in Phase 2. See the [Rust daemon design doc](plans/2026-02-26-rust-daemon-aisdk-design.md) for the current architecture.
+**Note**: The C++ daemon originally built in Phase 1 has been fully replaced by a Rust daemon (`slated`). See the [Rust daemon design doc](plans/2026-02-26-rust-daemon-aisdk-design.md) for the current architecture.
 
 The foundation layer provides a working terminal client that executes commands via daemon IPC with near-zero overhead.
 
 **What was built:**
 
 - `slate` binary (~4,300 lines of Rust) with ratatui 0.30 + crossterm 0.28 for linear scroll-down terminal flow
-- `slated` daemon (~1,240 lines of C++20) listening on Unix socket with FlatBuffers IPC protocol (now superseded by Rust daemon with serde+bincode)
+- `slated` daemon (Rust, Tokio async) listening on Unix socket with serde+bincode IPC protocol (replaced original C++20 daemon)
 - Persistent bash co-process via portable-pty with sentinel-based output boundary detection
 - Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
 - Command fast-pass: PATH scanning + 65 bash builtins in O(1) hash map with input classification (Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty)
@@ -75,30 +75,36 @@ The foundation layer provides a working terminal client that executes commands v
 - Worker bash sessions: spawn-on-demand per Work Item, initialized from env snapshot, killed on completion
 - Structured logging with `--debug` flag to `/tmp/slate-debug.log`
 
-**Tech stack**: Rust (Cargo) for `slate`, C++20 (CMake) for `slated`, FlatBuffers over Unix domain socket, portable-pty, tui-term + vt100, GoogleTest. (Phase 1 historical -- replaced in Phase 2 by unified Rust/Cargo build with serde+bincode IPC.) See the [PRD Appendix A](PRD.md#appendix-a-phase-1-module-details) for full module tables.
+**Tech stack**: Rust (Cargo workspace) for both `slate` and `slated`, serde+bincode over Unix domain socket, portable-pty, tui-term + vt100, aisdk 0.5.2. See the [PRD Appendix A](PRD.md#appendix-a-phase-1-module-details) for full module tables.
 
 ---
 
-### Phase 2: Single-Agent AI Loop — NEXT
+### Phase 2: Single-Agent AI Loop — IN PROGRESS
 
 **Goal**: Unknown/natural language input routes to a single AI agent that can reason and use tools.
 
-#### Sub-tasks
+#### Completed
 
-1. **Integrate aisdk.rs for streaming LLM access**
-   - Add aisdk.rs as a dependency in the Cargo workspace
-   - Configure streaming HTTP connections to OpenAI and Anthropic endpoints
-   - Implement SSE parsing for token-by-token streaming
-   - Handle tool calling protocol (function calls in the LLM response, tool results sent back)
+- **aisdk.rs integration with streaming LLM access** — aisdk 0.5.2 added as workspace dependency. Streaming works via `LanguageModelRequest::builder().model(model).messages(messages).build()` with SSE chunk forwarding over IPC. Supports Anthropic, OpenAI, and Google providers via `DynamicModel`.
 
-2. **Implement single agent (Orchestrator+Engineer combined) with tool calling loop**
+- **Unified session timeline** — Shell commands, user queries, and AI responses stored as `Vec<SessionEvent>` in the `Agent` struct. Commands are embedded as assistant/user message pairs so the AI has full terminal context. See [Session Timeline Design](plans/2026-02-27-session-timeline-design.md).
+
+- **Real-time CommandResult IPC** — Client sends `ClientMessage::CommandResult` to daemon after every shell command completes. Daemon stores in agent timeline. Output truncated to first/last 20 lines via `slate-common::truncate`.
+
+- **Agent persistence per session** — Agent stored in `ClientSession`, taken via `Option::take()` for async streaming, returned via `oneshot` channel, polled by `collect_returned_agents()`.
+
+- **Rust daemon replaced C++ daemon** — `slated` is now pure Rust with Tokio async runtime, serde+bincode IPC.
+
+#### Remaining Sub-tasks
+
+1. **Implement tool calling loop**
    - Agent receives user input classified as `AiQuery` from the `slate` client
    - System prompt defines the combined Orchestrator+Engineer role
    - Agent reasons, decides which tool to call, receives tool output, continues reasoning
    - Loop terminates when agent produces a final response (no more tool calls)
    - Agent state managed in `slated` daemon per session
 
-3. **Implement built-in tools: Bash, Read, Write, Edit, Glob, Grep**
+2. **Implement built-in tools: Bash, Read, Write, Edit, Glob, Grep**
    - `Bash`: execute commands via worker bash sessions (already built in Phase 1), capture stdout/stderr/exit code
    - `Read`: read file contents with optional line range (offset + limit)
    - `Write`: write file to disk (requires prior read for overwrite safety)
@@ -107,29 +113,29 @@ The foundation layer provides a working terminal client that executes commands v
    - `Grep`: content search using ripgrep-style regex
    - Each tool exposes `--help` for agent consumption
 
-4. **Add terminal markdown rendering (comrak + syntect)**
+3. **Add terminal markdown rendering (comrak + syntect)**
    - Use comrak for CommonMark+GFM parsing
    - Use syntect for syntax highlighting in code blocks (same engine as Sublime Text)
    - Walk AST to emit ANSI escape codes
    - For streaming: maintain growing buffer, re-parse on significant updates, diff rendered output
 
-5. **Basic risk classification + confirmation prompts for destructive commands**
+4. **Basic risk classification + confirmation prompts for destructive commands**
    - Classify commands as low/medium/high/critical risk
    - High/critical risk triggers confirmation prompt sent from `slated` → `slate` → user
    - Command allowlist/denylist configurable in TOML config
    - No agent auto-execution of critical-risk commands (e.g., `rm -rf /`, `git push --force`, `DROP TABLE`)
 
-6. **Env snapshot refresh on cd/source**
+5. **Env snapshot refresh on cd/source**
    - Detect `cd` and `source` commands in the `slate` bash co-process
    - Auto-capture fresh env snapshot and send to `slated`
    - Manual `slate sync-env` command for edge cases
 
-7. **Color-coded agent output streaming to slate**
+6. **Color-coded agent output streaming to slate**
    - Agent output streams from `slated` to `slate` via IPC
    - Rendered in color-bordered blocks (cyan for Engineer role)
    - Auto-collapse to single-line summary on completion; Enter to expand
 
-8. **TOML config for API keys and model selection**
+7. **TOML config for API keys and model selection**
    - Config file at `~/.slate-agent/config.toml`
    - `[models]` section with API key and model ID
    - `[safety]` section with allowlist/denylist
@@ -414,4 +420,4 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 
 ---
 
-*Slate Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Rust daemon replaces the original C++ daemon starting in Phase 2. Phase 1 complete. Phase 2 next.*
+*Slate Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Rust daemon has fully replaced the original C++ daemon. Phase 1 complete. Phase 2 in progress (session timeline implemented, tool calling loop next).*

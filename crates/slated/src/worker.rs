@@ -5,6 +5,7 @@ use tracing::error;
 
 /// Execute a shell command internally for the agent's Bash tool.
 /// Streams stdout/stderr through the channel. Each message is (data, is_stderr).
+#[allow(dead_code)] // will be used by agent tool execution
 pub async fn execute_command(
     command: &str,
     cwd: &str,

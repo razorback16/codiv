@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 /// Maximum number of events to keep in the session timeline.
-const MAX_HISTORY_EVENTS: usize = 50;
+const MAX_HISTORY_EVENTS: usize = 100;
 
 /// Default head/tail lines for output truncation.
 const TRUNCATE_HEAD: usize = 20;
