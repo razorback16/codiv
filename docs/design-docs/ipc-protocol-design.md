@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-The FlatBuffers schema (`schemas/ipc.fbs`) defines the wire format for communication between `slate` (TUI client) and `slated` (daemon). This document defines the protocol semantics — when messages are sent, what responses are expected, how errors are handled, and how the protocol evolves over time.
+The `slate-common` crate (`crates/slate-common/src/messages.rs`) defines the wire format using serde + bincode for communication between `slate` (TUI client) and `slated` (Rust daemon). This document defines the protocol semantics — when messages are sent, what responses are expected, how errors are handled, and how the protocol evolves over time.
 
 This is the authoritative reference for IPC behavior. The schema defines *what* can be sent; this document defines *when* and *why*.
 
@@ -44,13 +44,13 @@ Every message on the wire is framed as:
 
 ```
 ┌──────────────────┬─────────────────────────┐
-│ 4 bytes (u32 BE) │ N bytes (FlatBuffer)    │
+│ 4 bytes (u32 BE) │ N bytes (bincode)       │
 │ payload length   │ payload                 │
 └──────────────────┴─────────────────────────┘
 ```
 
 - Length prefix: 4-byte unsigned integer, big-endian byte order
-- Payload: FlatBuffer-encoded message as defined in `schemas/ipc.fbs`
+- Payload: bincode-encoded message as defined in `slate-common/src/messages.rs`
 - Maximum message size: 16 MB (configurable, but exceeding this indicates a bug)
 
 ### 3.3 Connection Lifecycle
@@ -59,7 +59,7 @@ Every message on the wire is framed as:
 slate                          slated
   |--- connect() -------------->|
   |--- EnvSnapshot ------------>|  (handshake: session_id, env, protocol_version)
-  |<-- (implicit ack) ---------|  (connection accepted)
+  |<-- (implicit ack) ----------|  (connection accepted)
   |                             |
   |  [session active]           |
   |                             |
@@ -82,25 +82,6 @@ slate                          slated
 - **Contains**: session_id, env_vars (HashMap), PATH, cwd
 - **Response**: none (fire-and-forget); daemon updates its internal session state
 - **Future extension**: protocol_version field for handshake negotiation
-
-#### ExecuteCommand
-- **Direction**: slate → slated
-- **When**: user submits a command for direct execution (non-agent mode)
-- **Contains**: session_id, command (string)
-- **Response**: one or more CommandOutput messages followed by exactly one CommandComplete
-
-#### CommandOutput
-- **Direction**: slated → slate
-- **When**: the executed command produces output
-- **Contains**: session_id, work_item_id (null for Phase 1 direct execution), data (bytes), stream_type (stdout or stderr)
-- **Delivery**: streaming — multiple CommandOutput messages per command, sent as output becomes available
-- **Ordering**: messages arrive in the order produced; stdout and stderr may be interleaved
-
-#### CommandComplete
-- **Direction**: slated → slate
-- **When**: the executed command has finished
-- **Contains**: session_id, exit_code (i32)
-- **Guarantees**: exactly one CommandComplete per ExecuteCommand; no further CommandOutput after this
 
 #### Heartbeat
 - **Direction**: slate → slated
@@ -126,8 +107,10 @@ slate                          slated
 #### AgentRequest
 - **Direction**: slate → slated
 - **When**: user submits natural language input for agent processing
-- **Contains**: session_id, input_text (string), context (cwd, last_exit_code, selected_files)
+- **Contains**: session_id, prompt, request_id, context (SessionContext with cwd, recent_commands, env_vars)
 - **Response**: one or more AgentStreamChunk messages followed by exactly one AgentComplete
+- **SessionContext**: provides the daemon with the client's current working directory, a list of recent CommandRecord entries (command, output, exit_code, timestamp), and relevant environment variables
+- **CommandRecord**: each entry captures a previously executed command with its output, exit code, and timestamp
 
 #### AgentStreamChunk
 - **Direction**: slated → slate
@@ -150,10 +133,10 @@ slate                          slated
 - **Direction**: slated → slate
 - **When**: the agent attempts a high or critical risk action (see Safety & Audit Design)
 - **Contains**: session_id, work_item_id, request_id, command, risk_level, description
-- **Response**: exactly one ConfirmationResponse with matching request_id
+- **Response**: exactly one Confirmation with matching request_id
 - **Timeout**: if no response within 60 seconds, daemon treats it as rejected
 
-#### ConfirmationResponse
+#### Confirmation
 - **Direction**: slate → slated
 - **When**: user responds to a safety confirmation prompt
 - **Contains**: session_id, request_id, approved (bool), add_to_allowlist (bool), add_to_denylist (bool)
@@ -175,22 +158,15 @@ slate                          slated
 
 ## 5. Message Flow Diagrams
 
-### 5.1 Command Execution (Phase 1)
+### 5.1 Command Execution
 
-```
-slate                          slated
-  |--- EnvSnapshot ------------>|  (on connect)
-  |--- ExecuteCommand --------->|
-  |<-- CommandOutput -----------|  (streaming, multiple)
-  |<-- CommandOutput -----------|
-  |<-- CommandComplete ---------|
-```
+**Note**: Direct command execution is handled locally by `slate`'s persistent bash co-process. The daemon is not involved in command execution — it only handles agent requests.
 
 ### 5.2 Agent Task (Phase 2)
 
 ```
 slate                          slated
-  |--- AgentRequest ----------->|
+  |--- AgentRequest ----------->|  (prompt, SessionContext: cwd, recent_commands, env_vars)
   |<-- AgentStreamChunk --------|  (text: "I'll create the file...")
   |<-- AgentStreamChunk --------|  (tool_start: "Bash: echo hello > hello.txt")
   |<-- AgentStreamChunk --------|  (tool_end: "exit code 0")
@@ -204,7 +180,7 @@ slate                          slated
 slate                          slated
   |<-- AgentStreamChunk --------|  (tool_start: "Bash: rm -rf ./build/")
   |<-- ConfirmationRequest -----|  (risk: high)
-  |--- ConfirmationResponse --->|  (approved: true)
+  |--- Confirmation ----------->|  (approved: true)
   |<-- AgentStreamChunk --------|  (tool_end: "exit code 0")
 ```
 
@@ -213,7 +189,7 @@ If the user rejects:
 ```
 slate                          slated
   |<-- ConfirmationRequest -----|  (risk: high)
-  |--- ConfirmationResponse --->|  (approved: false)
+  |--- Confirmation ----------->|  (approved: false)
   |<-- AgentStreamChunk --------|  (text: "Action rejected. Finding alternative...")
 ```
 
@@ -258,7 +234,7 @@ slate                          slated
 | 0    | SUCCESS               | No error (used in acknowledgments)                 |
 | 1    | UNKNOWN_ERROR         | Unclassified error                                 |
 | 2    | SESSION_NOT_FOUND     | The session_id does not match any active session   |
-| 3    | INVALID_MESSAGE       | FlatBuffer payload could not be deserialized       |
+| 3    | INVALID_MESSAGE       | bincode payload could not be deserialized           |
 | 4    | OVERLOADED            | Daemon is at capacity, cannot accept new work      |
 | 5    | TIMEOUT               | Operation timed out                                |
 | 6    | BUDGET_EXCEEDED       | Token or cost budget exhausted for this session    |
@@ -268,7 +244,7 @@ slate                          slated
 
 **Unknown message type**: Log a warning and ignore the message. This is the forward-compatibility rule — new message types added in future protocol versions are silently ignored by older clients/daemons.
 
-**Malformed FlatBuffer**: Send an Error message with code INVALID_MESSAGE. Close the connection. A malformed payload indicates a serious bug or version mismatch; continuing is unsafe.
+**Malformed payload**: Send an Error message with code INVALID_MESSAGE. Close the connection. A malformed payload indicates a serious bug or version mismatch; continuing is unsafe.
 
 **Session not found**: Send an Error message with code SESSION_NOT_FOUND. The client should re-send an EnvSnapshot to establish a new session.
 
@@ -327,7 +303,7 @@ protocol_version = 3   # Phase 3 (multi-agent, DAG updates)
 
 **Additive changes (non-breaking)**:
 - New message types: old clients ignore unknown types (Section 6.2)
-- New fields in existing messages: FlatBuffers supports adding fields with defaults; old clients read only the fields they know
+- New fields in existing messages: serde supports adding fields with `#[serde(default)]`; old clients read only the fields they know
 
 **Breaking changes**:
 - Removing a message type
@@ -336,14 +312,14 @@ protocol_version = 3   # Phase 3 (multi-agent, DAG updates)
 
 Breaking changes increment the protocol_version. The daemon rejects connections from clients with an incompatible version, returning an Error with a clear message indicating the version mismatch.
 
-### 8.3 FlatBuffers Schema Evolution
+### 8.3 serde + bincode Schema Evolution
 
-FlatBuffers natively supports schema evolution with these rules:
+serde + bincode support schema evolution with these rules:
 
-- New fields are appended to tables with default values
-- Existing fields are never removed or retyped
-- Deprecated fields are kept in the schema but ignored at runtime
-- Enum values are only appended, never reordered or removed
+- New fields are added to structs with `#[serde(default)]` so older payloads missing the field deserialize successfully with a default value
+- New enum variants can be appended to message enums; older clients that encounter an unknown variant treat it as an unrecognized message (see Section 6.2)
+- Existing fields are never removed or retyped in a non-breaking release; deprecated fields are kept with `#[serde(default)]` and ignored at runtime
+- For complex migrations, the `ClientMessage` and `DaemonMessage` enums can carry versioned variants (e.g., `AgentRequestV2`) while retaining the original variant for backward compatibility
 
 This aligns naturally with the additive compatibility model.
 
@@ -351,13 +327,13 @@ This aligns naturally with the additive compatibility model.
 
 ### 9.1 Streaming Chunk Size
 
-Streaming chunks (CommandOutput, AgentStreamChunk) should be at least 64 bytes to avoid excessive IPC overhead from per-message framing and syscall costs.
+Streaming chunks (AgentStreamChunk) should be at least 64 bytes to avoid excessive IPC overhead from per-message framing and syscall costs.
 
 **Batching strategy**: buffer output for 10ms or until 64 bytes accumulate, whichever comes first. This balances latency (user sees output within 10ms) against throughput (avoids sending one-byte messages for slow-dripping output).
 
-### 9.2 FlatBuffer Builder Reuse
+### 9.2 bincode Serialization
 
-Allocating a new FlatBuffer builder per message is wasteful. Keep a thread-local builder instance and reset it between messages to avoid heap allocation per message.
+bincode serialization is allocation-light and does not require builder reuse patterns. Each `bincode::serialize` call writes directly into a `Vec<u8>` with minimal overhead. No thread-local builder or reset logic is needed.
 
 ### 9.3 Socket Buffer Size
 
@@ -369,8 +345,8 @@ All messages on a single socket connection are ordered (Unix domain sockets are 
 
 ## 10. Open Questions
 
-1. **Message acknowledgment**: Should we add request-response IDs (correlation IDs) to all messages for reliability? Currently only ConfirmationRequest/Response use a request_id. Adding correlation IDs to ExecuteCommand/CommandComplete and AgentRequest/AgentComplete would enable tracking in-flight requests and detecting lost responses.
+1. **Message acknowledgment**: Should we add request-response IDs (correlation IDs) to all messages for reliability? Currently only ConfirmationRequest/Confirmation use a request_id. Adding correlation IDs to AgentRequest/AgentComplete would enable tracking in-flight requests and detecting lost responses.
 
-2. **Separate streaming channel**: Should streaming output (CommandOutput, AgentStreamChunk) use a separate socket or channel from control messages (Heartbeat, Shutdown, Error)? This would prevent a flood of output from blocking control messages, at the cost of managing two connections.
+2. **Separate streaming channel**: Should streaming output (AgentStreamChunk) use a separate socket or channel from control messages (Heartbeat, Shutdown, Error)? This would prevent a flood of output from blocking control messages, at the cost of managing two connections.
 
 3. **Cross-version graceful handling**: How should slate handle connecting to a daemon running a different (but not explicitly incompatible) protocol version? For example, protocol_version=2 client connecting to protocol_version=3 daemon — the daemon supports features the client does not know about. Current strategy is for the daemon to downgrade its message set, but this needs concrete specification.

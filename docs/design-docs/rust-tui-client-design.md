@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Replace the FTXUI-based C++ terminal client (`slate`) with a Rust binary built on **ratatui + crossterm**. The C++ daemon (`slated`) remains unchanged. The two processes communicate over a Unix domain socket using the existing FlatBuffers IPC protocol.
+Replace the FTXUI-based C++ terminal client (`slate`) with a Rust binary built on **ratatui + crossterm**. The daemon (`slated`) has been rewritten to Rust (see [Rust Daemon Design](../plans/2026-02-26-rust-daemon-aisdk-design.md)). The two processes communicate over a Unix domain socket using serde+bincode IPC.
 
 ```
 slate (Rust binary)
@@ -16,15 +16,15 @@ slate (Rust binary)
   - PTY management for shell passthrough
   - Markdown/syntax highlighting renderer
   - Multi-agent inline block rendering
-  - FlatBuffers IPC client
-          ↕ Unix socket + FlatBuffers
-slated (C++ daemon) — unchanged
+  - serde+bincode IPC client
+          ↕ Unix socket + serde+bincode
+slated (Rust daemon)
   - Agent orchestration, memory, scheduler
   - Worker bash sessions, tool execution
-  - LLM access (ai-sdk-cpp)
+  - LLM access (aisdk.rs)
 ```
 
-The language boundary is clean: a Unix socket carrying length-prefixed FlatBuffer messages. The Rust side is a thin client — all intelligence stays in the C++ daemon.
+Both client and daemon are Rust, sharing types via the `slate-common` crate. IPC uses serde+bincode over Unix socket.
 
 ---
 
@@ -159,7 +159,7 @@ For interactive commands: ratatui suspends, terminal goes raw, child process own
 
 ## 5. IPC Protocol
 
-Unchanged from existing design. Unix domain socket with 4-byte length prefix + FlatBuffer payload. The Rust client uses the `flatbuffers` crate to serialize/deserialize the same `.fbs` schema the C++ daemon uses.
+Unix domain socket with 4-byte length prefix + bincode payload. Both client and daemon use the `slate-common` crate for shared IPC types (serde + bincode serialization).
 
 ---
 
@@ -171,7 +171,9 @@ Unchanged from existing design. Unix domain socket with 4-byte length prefix + F
 | `crossterm` | Cross-platform terminal manipulation |
 | `syntect` | Syntax highlighting for code blocks |
 | `comrak` | CommonMark markdown parsing |
-| `flatbuffers` | FlatBuffers IPC serialization |
+| `slate-common` | Shared IPC types (serde + bincode) |
+| `serde` | Serialization framework |
+| `bincode` | Binary serialization format |
 | `tokio` | Async runtime for IPC + PTY I/O |
 | `nix` | Unix system calls (PTY, signals) |
 | `portable-pty` | PTY management |
@@ -191,8 +193,8 @@ Unchanged from existing design. Unix domain socket with 4-byte length prefix + F
 
 ### Unchanged
 
-- `slated` daemon — all C++.
-- FlatBuffers IPC protocol — same schema.
+- `slated` daemon — rewritten to Rust (see daemon design doc).
+- serde+bincode IPC protocol — shared via `slate-common` crate.
 - Unix domain socket transport.
 - Persistent bash co-process model.
 - Command fast-pass logic.

@@ -6,7 +6,7 @@
 
 ## 1. Executive Summary
 
-**Slate Agent** is a terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. Built as a dual-language system — a Rust TUI client (`slate`) and a C++ daemon (`slated`) — it looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
+**Slate Agent** is a terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. Built as a Rust system — a TUI client (`slate`) and a daemon (`slated`) — it looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
 The core insight is that most terminal interactions are simple commands that should execute instantly, while complex tasks benefit from a structured multi-agent system with specialized roles. Slate Agent bridges both: recognized commands run with near-zero latency through a command fast-pass, while natural language requests are decomposed and executed by a hierarchy of AI agents — each assigned a purpose-fit model based on the task at hand.
 
@@ -49,7 +49,7 @@ Existing tools that attempt to solve this fall short in several ways:
 | **Gemini CLI** | Node.js CLI | Gemini family | ReAct loop + MCP | Session-based | No |
 | **Warp AI** | Rust terminal | Multi-model | Agent with terminal control | Session-based | No |
 | **Devin** | Cloud VM | Proprietary | Full autonomous environment | Cloud-persistent | N/A |
-| **Slate Agent** | **Rust+C++ CLI** | **Any provider** | **Recursive tree** | **Bounded + Narrator-curated** | **Yes (<10ms)** |
+| **Slate Agent** | **Rust CLI** | **Any provider** | **Recursive tree** | **Bounded + Narrator-curated** | **Yes (<10ms)** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to one provider. Aider and Cline offer the broadest model support but have flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound.
 
@@ -63,7 +63,7 @@ Slate Agent is a shell replacement that functions as both a high-performance ter
 
 - **`slate`** (Rust binary, per-terminal): The user-facing TUI client. Owns the terminal experience — rendering, input, tab completion, command execution via a persistent bash co-process, and interactive program passthrough (vim, ssh, python REPL). Communicates with the daemon over IPC.
 
-- **`slated`** (C++ daemon, singleton): The backend intelligence. Manages client sessions, spawns worker bash processes for agent tool calls, and hosts the agent system — orchestration, memory, task scheduling, and LLM access.
+- **`slated`** (Rust daemon, singleton): The backend intelligence. Manages client sessions, spawns worker bash processes for agent tool calls, and hosts the agent system — orchestration, memory, task scheduling, and LLM access.
 
 ### Core Concepts
 
@@ -105,10 +105,10 @@ Slate Agent is a shell replacement that functions as both a high-performance ter
 │  │  Tab Completion   Interactive        Clipboard    │  │
 │  │  (3-tier)         Passthrough                     │  │
 │  └──────────────────────┬────────────────────────────┘  │
-│                         │ FlatBuffers IPC               │
+│                         │ serde+bincode IPC             │
 │                         │ (Unix domain socket)          │
 │  ┌──────────────────────▼────────────────────────────┐  │
-│  │  slated (C++20, singleton daemon)                 │  │
+│  │  slated (Rust, singleton daemon)                  │  │
 │  │                                                   │  │
 │  │  Session Manager         Worker Bash Sessions     │  │
 │  │  (env snapshots,         (spawn per Work Item,    │  │
@@ -127,7 +127,7 @@ Slate Agent is a shell replacement that functions as both a high-performance ter
 └─────────────────────────────────────────────────────────┘
 ```
 
-The architecture enforces a clean separation: `slate` owns everything the user touches (rendering, input, command execution), while `slated` owns everything the agent does (orchestration, memory, scheduling, LLM access). They communicate over a binary IPC protocol on a Unix domain socket. This separation enables independent development, deployment, and language-appropriate optimizations for each component.
+The architecture enforces a clean separation: `slate` owns everything the user touches (rendering, input, command execution), while `slated` owns everything the agent does (orchestration, memory, scheduling, LLM access). They communicate over a binary IPC protocol (serde+bincode) on a Unix domain socket. This separation enables independent development, deployment, and crate-level optimizations for each component.
 
 ---
 
@@ -140,6 +140,8 @@ The architecture enforces a clean separation: `slate` owns everything the user t
 - `slate` Rust binary: TUI with persistent bash co-process, command index classifier, 3-tier tab completion, interactive program passthrough, VT100 terminal emulation, clipboard support
 - `slated` C++ daemon: Unix socket server, IPC protocol, session management with env snapshots, worker bash process spawning, heartbeat detection
 - Binary IPC protocol between `slate` and `slated`
+
+**Note**: The C++ daemon from Phase 1 has been replaced by a Rust daemon in Phase 2.
 
 ### Phase 2: Single-Agent AI Loop
 
@@ -216,7 +218,7 @@ The architecture enforces a clean separation: `slate` owns everything the user t
 
 **Developer**: Subhagato (solo developer)
 
-Slate Agent is currently a solo project. All design, implementation, and testing across both the Rust client and C++ daemon are handled by a single developer.
+Slate Agent is currently a solo project. All design, implementation, and testing across the Rust client and Rust daemon are handled by a single developer.
 
 **Future considerations**: As the project matures past Phase 4, specific phases may benefit from contributors — particularly Phase 6 (Tool System / MCP Bridge) and Phase 7 (Safety / Sandboxing), which involve well-scoped, relatively independent work that could be parallelized.
 
@@ -251,7 +253,7 @@ End users pay their own LLM API costs (bring-your-own-key model). Typical usage 
 
 - **Compute**: Minimal. Both `slate` and `slated` run on the user's local machine. The daemon's memory footprint target is <50MB resident.
 - **Cloud backend**: None. Slate Agent has no cloud infrastructure — all processing is local. Users connect directly to LLM provider APIs.
-- **CI/CD**: Standard GitHub Actions for building Rust + C++ — negligible cost.
+- **CI/CD**: Standard GitHub Actions for building Rust workspace — negligible cost.
 - **No recurring infrastructure costs.**
 
 ---
@@ -260,13 +262,13 @@ End users pay their own LLM API costs (bring-your-own-key model). Typical usage 
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| **C++ LLM SDK maturity** — limited ecosystem for streaming + tool calling in C++ | Medium | High | Evaluate early in Phase 2; extend with direct HTTP for unsupported providers; local model fallback via llama.cpp |
+| **aisdk.rs maturity** — newer Rust SDK, may have gaps in provider coverage | Low | Medium | Active development; Rust ecosystem has strong HTTP/async primitives as fallback. Direct HTTP client as backup for unsupported providers. |
 | **Multi-agent token costs** — multi-agent systems use ~15x more tokens than single-agent | High | High | Budget fields on every Work Item; cost-aware model selection by TeamLead; demand-driven decomposition to avoid unnecessary subtask explosion |
 | **Multi-agent coordination** — concurrent agents can corrupt shared state | Medium | High | Single-writer ownership pattern (no locks); role-based separation reduces contention; validated by Cursor's lessons |
 | **API cost overruns** for end users | Medium | Medium | Per-Work-Item budget caps; user-configurable spending limits; TeamLead considers cost tier in model selection |
 | **Solo developer risk** — bus factor of 1 | Medium | High | Clean architecture with well-defined boundaries; comprehensive documentation; each phase is self-contained |
 | **Security of agent-executed commands** | Low | Critical | Risk classification + confirmation prompts (Phase 2); allowlists; audit trail; OS-level sandboxing (Phase 7) |
-| **Dual-language build complexity** (Rust + C++) | Medium | Medium | Clean boundary at IPC layer — Cargo and CMake are fully independent; shared FlatBuffers schema with per-language code generation |
+| **Unified Rust build** — single language simplifies CI/CD and contributor onboarding | -- | -- | Risk eliminated by rewrite from dual-language to single-language build. |
 
 ---
 

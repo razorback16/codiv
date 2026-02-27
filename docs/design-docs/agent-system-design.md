@@ -17,11 +17,11 @@ The PRD defines agent roles (Orchestrator, TeamLead, Engineer, Reviewer, Narrato
 
 The PRD (FR-004, Phases 2 and 4) establishes agent roles, the Orchestrator-Worker coordination pattern, and single-writer ownership semantics. It does not specify:
 
-- How the LLM is called — the integration surface between the daemon and ai-sdk-cpp
+- How the LLM is called — the integration surface between the daemon and aisdk.rs
 - How tool calling works in a loop — the full cycle from LLM generating a tool call to result injection and continuation
 - How system prompts are structured — what information each role receives and in what format
 - How context is managed — token budget allocation, compaction strategy, tool output truncation
-- How streaming output reaches the terminal — the path from ai-sdk-cpp token callbacks through IPC to rendered agent blocks in slate
+- How streaming output reaches the terminal — the path from aisdk.rs streaming through IPC to rendered agent blocks in slate
 - How single-agent (Phase 2) evolves to multi-agent (Phase 4) — the concrete transition path
 
 This design fills those gaps.
@@ -30,23 +30,23 @@ This design fills those gaps.
 
 Phase 2 delivers a combined Orchestrator+Engineer agent — a single LLM session that receives user input classified as `AiQuery` by the command fast-pass, reasons about it, calls tools, and produces output.
 
-### 3.1 ai-sdk-cpp Integration
+### 3.1 aisdk.rs Integration
 
-The daemon (`slated`) integrates with ai-sdk-cpp (ClickHouse) for streaming LLM access with tool calling. The integration surface:
+The daemon (`slated`) integrates with aisdk.rs for streaming LLM access with tool calling. The integration surface:
 
 ```
 slated
   └── AgentSession
-        ├── ai_sdk::Client              // HTTP client to LLM provider
-        ├── ai_sdk::ChatCompletion      // streaming completion with tool definitions
-        ├── system_prompt: string        // assembled at session start
-        ├── messages: vector<Message>    // growing conversation history
+        ├── aisdk::Client               // HTTP client to LLM provider
+        ├── aisdk::LanguageModelRequest  // streaming completion with tool definitions
+        ├── system_prompt: String        // assembled at session start
+        ├── messages: Vec<Message>       // growing conversation history
         └── tool_registry: ToolRegistry  // available tools and their schemas
 ```
 
-- **Provider abstraction**: ai-sdk-cpp handles OpenAI and Anthropic API formats. For unsupported providers, the daemon falls back to direct HTTP via libcurl + cpr with a custom SSE parser.
-- **Streaming**: ai-sdk-cpp provides a callback interface — each token or tool call chunk fires a callback that the daemon processes.
-- **Tool definitions**: Built-in tools (Bash, Read, Write, Edit, Glob, Grep) are registered as tool schemas (JSON Schema format) that ai-sdk-cpp includes in the completion request.
+- **Provider abstraction**: aisdk.rs handles OpenAI, Anthropic, and Google API formats. For unsupported providers, the daemon falls back to direct HTTP via reqwest with a custom SSE parser.
+- **Streaming**: aisdk.rs provides an async Stream interface — each token or tool call chunk is yielded as a stream item that the daemon processes.
+- **Tool definitions**: Built-in tools (Bash, Read, Write, Edit, Glob, Grep) are registered as tool schemas (JSON Schema format) that aisdk.rs includes in the completion request.
 
 ### 3.2 Tool Calling Loop
 
@@ -55,9 +55,9 @@ The core agent loop is a synchronous cycle within a single LLM turn:
 ```
 1. User input arrives at daemon (via IPC from slate)
 2. Daemon constructs messages array: [system_prompt, ...history, user_message]
-3. Daemon calls ai-sdk-cpp streaming completion with tool definitions
+3. Daemon calls aisdk.rs streaming completion with tool definitions
 4. For each streamed chunk:
-   a. If text token → forward to slate via IPC (CommandOutput message)
+   a. If text token → forward to slate via IPC (AgentStreamChunk message)
    b. If tool_call → pause streaming, execute the tool:
       i.   Parse tool name + arguments from the LLM's structured output
       ii.  Dispatch to tool implementation (built-in or external via SLATE_TOOLS_PATH)
@@ -66,13 +66,13 @@ The core agent loop is a synchronous cycle within a single LLM turn:
       v.   Resume streaming completion with updated messages (LLM sees the result)
 5. LLM continues generating — may produce more text or more tool calls
 6. Loop terminates when LLM produces a final text response with no tool calls
-7. Daemon sends CommandComplete to slate
+7. Daemon sends AgentComplete to slate
 ```
 
 Key behaviors:
 
 - **Multi-step tool use**: The LLM can chain multiple tool calls in a single turn. Each tool result is injected back, and the LLM decides whether to call another tool or produce a final response.
-- **Tool call accumulation**: ai-sdk-cpp streams tool call arguments incrementally (JSON tokens). The daemon accumulates until the tool call is complete before executing.
+- **Tool call accumulation**: aisdk.rs streams tool call arguments incrementally (JSON tokens). The daemon accumulates until the tool call is complete before executing.
 - **Parallel tool calls**: If the LLM generates multiple tool calls in a single response (supported by OpenAI and Anthropic APIs), the daemon executes them concurrently and returns all results together.
 
 ### 3.3 System Prompt Structure
@@ -154,17 +154,17 @@ Compaction preserves:
 The path from LLM to terminal:
 
 ```
-ai-sdk-cpp token callback
-  → AgentSession::on_token(string_view chunk)
-    → IPC: CommandOutput { session_id, work_item_id, data: chunk, stream: stdout }
+aisdk.rs stream item
+  → AgentSession::on_token(chunk: &str)
+    → IPC: AgentStreamChunk { request_id, chunk: StreamChunk::Text(chunk) }
       → Unix socket write to slate client
-        → slate receives CommandOutput
+        → slate receives AgentStreamChunk
           → Appends to agent output block widget
             → ratatui re-renders the block with new content
               → User sees streaming text in a color-bordered agent block
 ```
 
-- **Chunking**: The daemon forwards tokens as they arrive from ai-sdk-cpp. No batching — latency-sensitive path.
+- **Chunking**: The daemon forwards tokens as they arrive from aisdk.rs. No batching — latency-sensitive path.
 - **Tool call visibility**: When a tool call is detected, the daemon sends a status message to slate: `[Calling: Bash("make test")]`. The tool's output streams separately. When the tool completes, the daemon sends `[Tool result: exit code 0]` and resumes LLM streaming.
 - **Markdown rendering**: slate uses comrak + syntect to render the agent's markdown output with syntax highlighting in code blocks. For streaming, slate maintains a growing buffer and re-parses on significant updates (every ~500 characters or on newline).
 
@@ -174,7 +174,7 @@ ai-sdk-cpp token callback
 |-------|-----------|--------|
 | Tool execution fails (non-zero exit) | Exit code from subprocess | Inject error result into context; LLM sees the failure and can retry or report |
 | Tool execution times out | Configurable timeout (default: 120s) | Kill the subprocess; inject timeout error into context |
-| LLM API error (rate limit, auth, server) | HTTP status code from ai-sdk-cpp | Retry with exponential backoff (3 attempts: 2s, 4s, 8s); on final failure, report to user |
+| LLM API error (rate limit, auth, server) | HTTP status code from aisdk.rs | Retry with exponential backoff (3 attempts: 2s, 4s, 8s); on final failure, report to user |
 | LLM produces invalid tool call | JSON parse failure on tool arguments | Inject parse error into context; LLM typically self-corrects |
 | Context window exceeded | Token count check before API call | Trigger compaction; if still over, truncate oldest tool results |
 
@@ -354,12 +354,12 @@ Agents are ephemeral except for the Orchestrator. This keeps memory usage bounde
 
 Multiple Engineers can run simultaneously on independent Work Items (independent branches of the DAG). Each concurrent agent gets:
 
-- Its own LLM session (separate ai-sdk-cpp completion stream)
+- Its own LLM session (separate aisdk.rs completion stream)
 - Its own worker bash process (spawned by slated from env snapshot)
 - Its own artifact directory (`~/.slate-agent/state/<session_id>/artifacts/<work_item_id>/`)
 - No shared mutable state with other concurrent agents
 
-Maximum concurrent agents is configurable (default: 4, matching the default Taskflow executor thread pool size).
+Maximum concurrent agents is configurable (default: 4, matching the default Tokio concurrent task limit).
 
 ## 5. Context Management
 
@@ -420,19 +420,19 @@ LLM Provider (HTTP/SSE)
   │
   │ SSE event: data: {"choices":[{"delta":{"content":"Hello"}}]}
   ▼
-ai-sdk-cpp
+aisdk.rs
   │
-  │ callback: on_content("Hello")
+  │ stream item: StreamChunk::Text("Hello")
   ▼
 AgentSession::on_token("Hello")
   │
   │ Accumulate in response_buffer
-  │ Build IPC message: CommandOutput { session_id, work_item_id, data: "Hello", stream: stdout }
+  │ Build IPC message: AgentStreamChunk { request_id, chunk: StreamChunk::Text("Hello") }
   ▼
-Unix socket write (framed: 4-byte BE length + FlatBuffer payload)
+Unix socket write (framed: 4-byte BE length + bincode payload)
   │
   ▼
-slate IPC client receives CommandOutput
+slate IPC client receives AgentStreamChunk
   │
   │ Route to correct agent output block by work_item_id
   │ Append text to block's content buffer
@@ -449,8 +449,8 @@ Terminal output (user sees streaming text in color-bordered block)
 
 Tool calls are detected during streaming:
 
-1. ai-sdk-cpp detects a `tool_calls` field in the streamed response (OpenAI format) or a `tool_use` content block (Anthropic format)
-2. ai-sdk-cpp fires a `on_tool_call(name, arguments_json)` callback
+1. aisdk.rs detects a `tool_calls` field in the streamed response (OpenAI format) or a `tool_use` content block (Anthropic format)
+2. aisdk.rs yields a ToolCall stream item with name and arguments_json
 3. The daemon:
    a. Sends a status message to slate: `[Calling: {tool_name}({brief_args})]`
    b. Executes the tool (may take seconds — Bash commands, file operations)
@@ -650,7 +650,7 @@ CONSTRAINTS:
 
 2. **Orchestrator fast path**: Should the Orchestrator have a "fast path" for simple tasks that skips the TeamLead entirely? The current design allows this (Orchestrator delegates directly to Engineer for single-file tasks), but the threshold for "simple" vs "complex" is heuristic. Should the user be able to configure this threshold?
 
-3. **Model-specific tool calling formats**: OpenAI and Anthropic use different tool calling formats. ai-sdk-cpp abstracts this, but edge cases exist (e.g., Anthropic's tool_use blocks vs OpenAI's function_call). How should the daemon handle models that don't support native tool calling (e.g., some local models via llama.cpp)?
+3. **Model-specific tool calling formats**: OpenAI and Anthropic use different tool calling formats. aisdk.rs abstracts this, but edge cases exist (e.g., Anthropic's tool_use blocks vs OpenAI's function_call). How should the daemon handle models that don't support native tool calling (e.g., some local models via llama.cpp)?
 
 4. **Dynamic context budget allocation**: Context window sizes vary by model (32K to 200K+). The current design uses percentage-based allocation, but this may under-allocate for small-context models where 1% is only 320 tokens. Should there be minimum absolute allocations that override percentages?
 

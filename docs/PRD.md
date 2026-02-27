@@ -6,7 +6,7 @@
 
 ## 1. Executive Summary
 
-**Slate Agent** is a Rust/C++ terminal-native coding agent (Rust client, C++ daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
+**Slate Agent** is a Rust terminal-native coding agent (Rust client, Rust daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
 **Key differentiators:**
 
@@ -14,7 +14,7 @@
 - **Multi-model orchestration**: different AI models assigned to different roles (planning, coding, review, research) based on task complexity — not locked to a single provider
 - **Recursive agent hierarchy**: TeamLead can deploy sub-TeamLeads, enabling arbitrarily deep task decomposition for complex work — validated by Anthropic's research showing orchestrator+subagent patterns outperform single agents by 90.2%
 - **Shared state over agent chat**: agents coordinate through explicit artifacts and task state, not implicit message passing; single-writer ownership ensures no two agents can corrupt shared state — a pattern validated by Cursor's failure with reader-writer locks (agents held locks too long, 20 agents degraded to throughput of 2-3)
-- **Rust + C++ performance**: Rust client with ratatui TUI for memory-safe terminal handling; C++ daemon with worker process pool for true concurrent execution
+- **Rust performance**: Rust client with ratatui TUI for memory-safe terminal handling; Rust daemon with Tokio for async concurrent execution
 
 **Vision**: The terminal becomes the IDE — developers think in natural language, and Slate Agent decomposes, executes, reviews, and summarizes the work end-to-end.
 
@@ -46,7 +46,7 @@
 | **Amp** (Sourcegraph) | CLI + IDE | Multi-model | "Deep mode" extended reasoning; built-in code review agent | Session-based | No | Free ad-supported tier | N/A |
 | **Warp AI** | Rust GPU-rendered terminal | Multi-model (OpenAI, Anthropic, Google) | "Full Terminal Control" — agent interacts with live processes | Session-based | No (terminal replacement, not agent) | Free tier + paid | N/A |
 | **Devin** (Cognition) | Cloud VM (terminal+editor+browser) | Proprietary | Full autonomous environment | Cloud-persistent | N/A | $500/mo | N/A |
-| **Slate Agent** | **Rust+C++ CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
+| **Slate Agent** | **Rust CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
 
@@ -218,15 +218,15 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - **Tab completion**: 3-tier system — programmable completions (bash-completion integration) → command completions → file completions
 - **Structured logging**: `--debug` flag enables structured logging via log + env_logger to `/tmp/slate-debug.log`
 
-### FR-002: Daemon (Persistent C++ Process — `slated`)
+### FR-002: Daemon (Persistent Rust Process — `slated`)
 
-- C++20 singleton daemon process
+- Rust singleton daemon process (Tokio async runtime)
 - Listen on Unix domain socket (`/tmp/slated-{uid}.sock`) for slate client connections
 - PID file at `~/.slate-agent/slated.pid`
 - Manage lifecycle: start on first slate client connection, stay resident, graceful shutdown
 - Handle multiple concurrent slate client sessions
 - Provide streaming responses (token-by-token for AI, chunked for command output)
-- **FlatBuffers IPC protocol**: 4-byte big-endian length prefix + FlatBuffer payload; message types include ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error
+- **serde+bincode IPC protocol**: 4-byte big-endian length prefix + bincode payload; ClientMessage variants: AgentRequest (with SessionContext), EnvSnapshot, Confirmation, Heartbeat, Shutdown. DaemonMessage variants: AgentStreamChunk, AgentComplete, ConfirmationRequest, TaskTreeUpdate, Heartbeat, Error
 - **Env snapshot protocol**: `slate` captures an env snapshot on connect to `slated` — session_id, env_vars, PATH, cwd. Stored per-session in `slated` (each slate client has its own snapshot).
 - **Heartbeat mechanism**: 5-second interval from client, 30-second stale timeout in daemon for detecting disconnected clients
 - **Worker bash sessions**: `slated` spawns a **fresh bash process** per Work Item that needs shell execution. Each worker initialized from the latest env snapshot: env vars injected, cwd set. Worker killed when Work Item completes — no reuse, no stale state. Workers are non-interactive (pipe stdin/stdout/stderr). Bash startup is ~5-10ms — negligible vs LLM latency, no need for a warm pool. Multiple Work Items run their own bash processes concurrently (true parallelism).
@@ -235,7 +235,7 @@ The following are **not** in scope for the MVP or near-term roadmap:
   - **Agent Bash tool calls** → `slated`'s worker bash sessions (parallel, env-snapshot-initialized)
   - **Bidirectional IPC** carries: env snapshots (slate→slated), streaming output from worker sessions + confirmation requests (slated→slate)
 - **Daemon logging**: logs to `~/.slate-agent/slated.log`
-- **I/O multiplexing**: kqueue (macOS) / epoll (Linux) for non-blocking I/O
+- **Async I/O**: Tokio runtime with async/await
 
 ### FR-003: Command Fast-Pass
 
@@ -437,7 +437,7 @@ The Narrator should implement MemGPT-style bounded memory management:
   url = "https://api.github.com/mcp"
   env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
   ```
-- **C++ implementation**: cpp-mcp library or minimal custom client (nlohmann/json + subprocess management)
+- **Rust implementation**: custom client (serde_json + tokio subprocess management)
 
 ---
 
@@ -451,7 +451,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Goal**: A working terminal client that can execute commands via daemon IPC.
 
-**Status**: Complete. The `slate` binary (~4,300 lines of Rust) and `slated` daemon (~1,240 lines of C++20) are fully implemented and functional.
+**Status**: Complete. The `slate` binary (~4,300 lines of Rust) and `slated` daemon (~1,240 lines of C++20) are fully implemented and functional. *Note: The C++ daemon from Phase 1 is being replaced by a Rust daemon in Phase 2. See the [Rust Daemon Design Doc](design-docs/rust-daemon-rewrite-design.md) for the current architecture.*
 
 **Delivered summary**:
 
@@ -480,7 +480,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 
 **Deliverables**:
 
-- Integration with ai-sdk-cpp (ClickHouse) for streaming LLM access + tool calling
+- Integration with aisdk.rs for streaming LLM access + tool calling
 - Single agent (combined Orchestrator+Engineer role) that receives user input, reasons, calls tools
 - Tool implementations: Bash, Read, Write, Edit, Glob, Grep
 - Streaming token output back to terminal via slate binary
@@ -499,11 +499,11 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 
 **Dependencies**: Phase 1
 
-**Backwards compatibility**: IPC protocol extends with new message types (AgentOutput, ConfirmationRequest, ConfirmationResponse); existing Phase 1 messages (ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error) remain unchanged.
+**Backwards compatibility**: IPC protocol is rewritten from FlatBuffers to serde+bincode. ClientMessage variants: AgentRequest (with SessionContext), EnvSnapshot, Confirmation, Heartbeat, Shutdown. DaemonMessage variants: AgentStreamChunk, AgentComplete, ConfirmationRequest, TaskTreeUpdate, Heartbeat, Error. Phase 1 FlatBuffers protocol is fully replaced.
 
 **Tech**:
 
-- ai-sdk-cpp (streaming + tool calling for OpenAI + Anthropic endpoints)
+- aisdk.rs (streaming + tool calling for OpenAI + Anthropic endpoints)
 - Single model (e.g., Claude Sonnet 4.5 for cost-effective development)
 - comrak + syntect for terminal rendering
 
@@ -517,7 +517,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 
 - Work Item data structure (goal, acceptance criteria, dependencies, outputs, state, token/cost budgets)
 - DAG construction: agent produces a plan as a set of Work Items with dependency edges
-- Scheduler: Taskflow-based concurrent execution respecting dependencies
+- Scheduler: Tokio-based concurrent execution respecting dependencies
 - Worker bash sessions serve as the execution substrate — each scheduled Work Item gets its own bash process via `slated`
 - Work Item state machine: pending → running → completed | failed
 - Artifact storage: each Work Item's output stored in Shared Project State
@@ -532,7 +532,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 
 **Tech**:
 
-- **Taskflow** library: header-only C++20, work-stealing scheduler, conditional tasking, composable sub-taskflows, built-in profiler. Use `tf::Executor` + `tf::Taskflow` with `precede()`/`succeed()` for dependency edges. Up to 29% faster than industrial schedulers on ML workloads.
+- **Tokio tasks**: async task spawning with `tokio::spawn`, `futures::future::join_all` for concurrent Work Item execution. Dependency edges enforced via async/await sequencing and channel-based coordination.
 
 ---
 
@@ -563,7 +563,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 
 **Tech**:
 
-- Multiple concurrent ai-sdk-cpp sessions with different models
+- Multiple concurrent aisdk.rs sessions with different models
 - Role-based system prompts
 - Single-writer resource ownership (no reader-writer locks — learned from Cursor)
 
@@ -666,16 +666,16 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| **ai-sdk-cpp maturity** — ClickHouse SDK exists (~134 stars) and works for OpenAI + Anthropic with streaming + tool calling, but Google/Cohere not yet supported. C++20 with patched nlohmann/json. | Medium | High | Evaluate SDK early in Phase 2. It is the most complete C++ LLM SDK available. For unsupported providers, extend with direct HTTP (libcurl + cpr + custom SSE parser). llama.cpp server also supports OpenAI-compatible + Anthropic Messages API as a local fallback. |
+| **aisdk.rs maturity** — Rust LLM SDK from lazy-hq; supports streaming + tool calling for OpenAI + Anthropic. Provider coverage may lag behind the rapidly evolving LLM API landscape. | Medium | Medium | Evaluate SDK early in Phase 2. Rust ecosystem has strong HTTP and async primitives (reqwest, tokio) for extending provider support. For unsupported providers, extend with direct HTTP (reqwest + custom SSE parser). |
 | **Multi-agent token costs** — multi-agent systems use ~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
 | **Lock contention in multi-agent coordination** — Cursor's reader-writer locks failed; agents held locks too long, 20 agents degraded to throughput of 2-3 | Medium | High | Use single-writer ownership pattern instead of reader-writer locks. One agent owns writes to a resource; others read. Role-based separation (Planner/Worker/Judge) reduces contention by design. |
 | **Multi-model latency** — orchestrating multiple LLM calls adds overhead | Medium | Medium | Keep fast-pass path completely AI-free; pipeline model calls where possible; cache model selections |
 | **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; ~70% eviction rate for conversational messages |
-| **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Taskflow library (battle-tested, header-only C++20) instead of hand-rolling scheduler; composable sub-taskflows for recursive decomposition |
+| **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Tokio task spawning with async/await and `futures::future::join_all` instead of hand-rolling scheduler; channel-based coordination for dependency edges |
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
 | **Security of executed commands** — agent could run destructive commands | Low | Critical | Basic risk classification + confirmation prompts (Phase 2); allowlists; audit trail (Phase 7); never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt, Phase 7) |
 | **Env snapshot drift** — snapshot captured at connect may diverge from slate's actual environment if user modifies env outside of tracked operations (e.g., manual `export` in a subshell) | Low | Medium | Auto-refresh on `cd`/`source`; manual `slate sync-env` command; snapshot includes timestamp for staleness detection |
-| **Rust/C++ build complexity** — two languages, two build systems (Cargo + CMake), increases CI/CD and contributor onboarding overhead | Medium | Medium | Clean boundary at Unix socket IPC — Cargo and CMake are fully independent builds with no cross-compilation. CI builds both in parallel. FlatBuffers schema shared, code generated separately for each language. Makefile orchestrates both builds. |
+| **Unified Rust build** — single language and build system simplifies CI/CD and contributor onboarding | Low | Low | Cargo workspace builds all crates with `cargo build --workspace`. Shared types via `slate-common` crate eliminate schema generation. No cross-language complexity. |
 
 ---
 
@@ -684,17 +684,17 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | Decision | Choice | Rationale |
 | --- | --- | --- |
 | Client language | Rust (`slate` binary) | ratatui ecosystem, memory safety for UI handling untrusted input, excellent cross-platform PTY support via portable-pty. |
-| Daemon language | C++20 (`slated` daemon) | ai-sdk-cpp compatibility, direct system call access, Taskflow scheduler for concurrent Work Item execution. |
+| Daemon language | Rust (`slated` daemon) | aisdk.rs compatibility, Tokio async runtime for concurrent execution, unified language with client. |
 | Terminal UI framework | ratatui 0.30 + crossterm 0.28 | Most mature terminal UI ecosystem in Rust, proven by Zellij. Linear scroll-down flow with inline agent blocks — everything scrolls down like a normal terminal. |
 | PTY management | portable-pty 0.9 | Cross-platform PTY abstraction (macOS + Linux), clean API for spawning and managing pseudo-terminal pairs, avoids platform-specific `forkpty()` calls. |
 | VT100 emulation | tui-term 0.3 + vt100 0.16 | ANSI escape sequence parsing and rendering within ratatui's widget tree, preserving colors and formatting from command output. |
-| Build system | Cargo (`slate`) + CMake 3.20+ (`slated`), Makefile orchestrator | Independent builds connected at Unix socket IPC. Cargo for Rust ecosystem; CMake for C++ ecosystem. Makefile for unified build commands. |
-| IPC serialization | FlatBuffers (24.12.23 Rust, v24.3.25 C++) over Unix domain socket with 4-byte BE length prefix | Zero-copy field access, schema evolution, type-safe, language-neutral schema shared between Rust and C++. |
-| IPC schema | `schemas/ipc.fbs` with MessageTypes: ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error | Single schema file generates bindings for both Rust and C++. |
-| Config format | TOML | Human-readable, well-supported in both Rust and C++, good for nested config (model catalog). |
-| LLM SDK | ai-sdk-cpp (ClickHouse) | ~134 stars, C++20, streaming + multi-step tool calling working for OpenAI + Anthropic. Google/Cohere planned. Most complete C++ LLM SDK available. |
-| LLM SDK fallback | Direct HTTP via libcurl + cpr + custom SSE parser | For providers not yet in ai-sdk-cpp. cpr ("C++ Requests") is a modern libcurl wrapper. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
-| DAG scheduler | Taskflow | Header-only C++20, work-stealing scheduler, conditional tasking, composable sub-taskflows, built-in profiler. `tf::Executor` + `tf::Taskflow` with `precede()`/`succeed()`. Up to 29% faster than industrial systems. |
+| Build system | Cargo workspace (all crates) | Unified build system — single `cargo build --workspace` for all crates. |
+| IPC serialization | serde + bincode over Unix domain socket with 4-byte BE length prefix | Both sides are Rust — no need for cross-language serialization. Zero schema compiler, compile-time checked. |
+| IPC schema | `slate-common/src/messages.rs` with ClientMessage/DaemonMessage enums | Shared Rust crate — types checked at compile time across client and daemon. |
+| Config format | TOML | Human-readable, well-supported in Rust, good for nested config (model catalog). |
+| LLM SDK | aisdk.rs (lazy-hq) | Rust LLM SDK with streaming + multi-step tool calling for OpenAI + Anthropic. Native async/await integration with Tokio runtime. |
+| LLM SDK fallback | Direct HTTP via reqwest + custom SSE parser | For providers not yet in aisdk.rs. reqwest is the standard Rust HTTP client with async support. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
+| DAG scheduler | Tokio tasks | Tokio task spawning with async/await. `futures::future::join_all` for concurrent Work Item execution. |
 | Terminal markdown rendering | comrak + syntect (planned) | comrak for CommonMark+GFM parsing, syntect for syntax highlighting (same engine as Sublime Text). Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. |
 | Command execution (user) | Persistent bash co-process via portable-pty | Maintains shell state (env, aliases, cwd) across commands. Sentinel-based output boundary detection. Interactive passthrough via dedicated PTY with raw terminal mode. |
 | Command execution (agent) | Spawn-on-demand bash in `slated` | Fresh bash process per Work Item, initialized from env snapshot (env vars, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
@@ -703,9 +703,9 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | Agent coordination | Single-writer ownership (no reader-writer locks) | Cursor's lock-based approach failed at scale. One writer per resource, concurrent readers. Role separation reduces contention. |
 | Memory architecture | Bounded text with Narrator curation (MemGPT-informed) | 64KB global + 128KB per project caps. Cognitive triage + recursive summarization. No vector DB for MVP (add later if needed). |
 | Tool package format | `tool.toml` manifest + binary or `guide.md` + bundled resources | Single primitive for both binary and prompt tools; TOML consistent with rest of config. |
-| MCP bridge | cpp-mcp or custom (nlohmann/json + subprocess) | JSON-RPC 2.0 over stdio; thin wrapper makes MCP servers appear as regular tools. |
+| MCP bridge | Custom Rust client (serde_json + tokio subprocess) | JSON-RPC 2.0 over stdio; thin wrapper makes MCP servers appear as regular tools. |
 | Tool discovery | `SLATE_TOOLS_PATH` (project > user > system) | First-match-wins, mirrors Unix `PATH` semantics; built-in tools always available regardless. |
-| Testing (C++) | GoogleTest v1.14.0 | Industry-standard C++ testing framework for `slated` daemon unit and integration tests. |
+| Testing | cargo test (built-in) | Unified testing across all crates. |
 
 ---
 
@@ -841,8 +841,10 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 - ADAPT (ACL 2024). Demand-driven task decomposition for LLM agents.
 - Hayes-Roth (1985). Blackboard architecture for AI systems.
 - AWS Arbiter pattern. Shared semantic blackboard for multi-agent coordination.
-- ai-sdk-cpp (ClickHouse). github.com/ClickHouse/ai-sdk-cpp. C++20 LLM SDK.
-- Taskflow (Huang et al.). github.com/taskflow/taskflow. Header-only C++20 parallel task programming.
+- aisdk.rs (lazy-hq). github.com/lazy-hq/aisdk. Rust LLM SDK.
+- tokio. github.com/tokio-rs/tokio. Async runtime for Rust.
+- serde. github.com/serde-rs/serde. Serialization framework for Rust.
+- bincode. github.com/bincode-org/bincode. Binary serialization for Rust.
 - ratatui. github.com/ratatui/ratatui. Rust terminal UI framework.
 - crossterm. github.com/crossterm-rs/crossterm. Cross-platform terminal manipulation for Rust.
 - portable-pty. github.com/wez/wezterm/tree/main/pty. Cross-platform PTY abstraction from wezterm.
@@ -855,14 +857,15 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 - Claude Code documentation (Anthropic, 2025). Sandboxing, compaction, subagent architecture.
 - Claude Code skill architecture (Anthropic, 2025-2026). Skill format, command hierarchy, hook lifecycle — informed unified tool model design.
 - Model Context Protocol specification (Anthropic, 2024-2025). JSON-RPC 2.0 based tool integration protocol.
-- cpp-mcp library. github.com/hkr04/cpp-mcp. C++ MCP client/server implementation.
-- cpr library. github.com/libcpr/cpr. C++ HTTP requests library.
+- reqwest. github.com/seanmonstar/reqwest. Async HTTP client for Rust.
 
 ---
 
 ---
 
 ## Appendix A: Phase 1 Module Details
+
+> **Note**: The C++ daemon described below has been replaced by a Rust daemon in Phase 2. See the [Rust Daemon Design Doc](design-docs/rust-daemon-rewrite-design.md) for current architecture.
 
 ### Module structure (`slate` binary, ~4,300 lines)
 
@@ -918,13 +921,14 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 
 ### Tech stack
 
-- **Rust** (Cargo) for `slate`: ratatui 0.30, crossterm 0.28, portable-pty 0.9, vt100 0.16, tui-term 0.3, flatbuffers 24.12.23, nix 0.29, arboard 3, log + env_logger
-- **C++20** (CMake 3.20+) for `slated`: FlatBuffers v24.3.25, GoogleTest v1.14.0
-- **IPC**: FlatBuffers over Unix domain socket (4-byte BE length prefix)
-- **Schema**: `schemas/ipc.fbs`
-- **Build**: Makefile orchestrates both (cargo build for slate, cmake for slated)
+- **Rust** (Cargo) for `slate`: ratatui 0.30, crossterm 0.28, portable-pty 0.9, vt100 0.16, tui-term 0.3, nix 0.29, arboard 3, log + env_logger
+- **C++20** (CMake 3.20+) for `slated` *(Phase 1 historical — replaced by Rust daemon in Phase 2)*: FlatBuffers v24.3.25, GoogleTest v1.14.0
+- **IPC (Phase 1 historical)**: FlatBuffers over Unix domain socket (4-byte BE length prefix) — *replaced by serde+bincode in Phase 2*
+- **IPC (current)**: serde + bincode over Unix domain socket (4-byte BE length prefix)
+- **Schema (current)**: `slate-common/src/messages.rs` (shared Rust crate)
+- **Build (current)**: Cargo workspace (`cargo build --workspace`)
 - No AI/LLM needed yet
 
 ---
 
-*PRD v2.0 for Slate Agent — a Rust/C++ terminal-native multi-model coding agent. Rust client (`slate`) using ratatui + crossterm with portable-pty for PTY management, tui-term + vt100 for terminal emulation, 3-tier tab completion, and linear scroll-down terminal flow. C++ daemon (`slated`) with FlatBuffers IPC, worker bash sessions for parallel agent command execution, heartbeat-based session management, and env snapshot protocol. Phase 1 (Terminal Foundation) complete. Future phases: agent system, Work Item DAG, multi-model orchestration, memory, unified tool system, and safety/audit.*
+*PRD v2.0 for Slate Agent — a Rust terminal-native multi-model coding agent. Rust client (`slate`) using ratatui + crossterm with portable-pty for PTY management, tui-term + vt100 for terminal emulation, 3-tier tab completion, and linear scroll-down terminal flow. Rust daemon (`slated`) with serde+bincode IPC, Tokio async runtime, worker bash sessions for parallel agent command execution, heartbeat-based session management, and env snapshot protocol. Phase 1 (Terminal Foundation) complete. Future phases: agent system, Work Item DAG, multi-model orchestration, memory, unified tool system, and safety/audit.*

@@ -70,20 +70,31 @@ Same as before: Unix domain socket at `/tmp/slated-{uid}.sock`, 4-byte big-endia
 // slate-common/src/messages.rs
 
 #[derive(Serialize, Deserialize)]
+pub struct CommandRecord {
+    pub command: String,
+    pub output: String,
+    pub exit_code: i32,
+    pub timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SessionContext {
+    pub cwd: String,
+    pub recent_commands: Vec<CommandRecord>,
+    pub env_vars: Vec<(String, String)>,
+}
+
+#[derive(Serialize, Deserialize)]
 pub enum ClientMessage {
-    ExecuteCommand {
-        command: String,
-        cwd: String,
+    AgentRequest {
+        prompt: String,
         request_id: String,
+        context: SessionContext,
     },
     EnvSnapshot {
         env_vars: Vec<(String, String)>,
         path: String,
         cwd: String,
-    },
-    AgentRequest {
-        prompt: String,
-        request_id: String,
     },
     Confirmation {
         request_id: String,
@@ -99,15 +110,6 @@ pub enum ClientMessage {
 
 #[derive(Serialize, Deserialize)]
 pub enum DaemonMessage {
-    CommandOutput {
-        request_id: String,
-        data: Vec<u8>,
-        is_stderr: bool,
-    },
-    CommandComplete {
-        request_id: String,
-        exit_code: i32,
-    },
     AgentStreamChunk {
         request_id: String,
         chunk: StreamChunk,
@@ -298,12 +300,12 @@ The shell is the protocol. CLI tools already have a universal interface: stdin, 
 
 ### Progressive Loading (Tier System)
 
-| Tier | When Loaded | Tools |
-|------|-------------|-------|
-| **Tier 0** (always) | Every LLM call | Read, Edit, Write, Bash, Glob, Grep, AskUser, Todo, WebFetch, WebSearch, ToolSearch, ToolLoad |
-| **Tier 1** (project) | Auto-loaded from `.slate/tools/` | Project-specific tools |
-| **Tier 2** (on-demand) | After `ToolSearch` + `ToolLoad` | Global tools from `~/.slate-agent/tools/` |
-| **Tier 3** (deep context) | When agent calls `--agent-guide` | Reference docs, detailed guides |
+| Tier                      | When Loaded                      | Tools                                                                                         |
+| ------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
+| **Tier 0** (always)       | Every LLM call                   | Read, Edit, Write, Bash, Glob, Grep, AskUser, Todo, WebFetch, WebSearch, ToolSearch, ToolLoad |
+| **Tier 1** (project)      | Auto-loaded from `.slate/tools/` | Project-specific tools                                                                        |
+| **Tier 2** (on-demand)    | After `ToolSearch` + `ToolLoad`  | Global tools from `~/.slate-agent/tools/`                                                     |
+| **Tier 3** (deep context) | When agent calls `--agent-guide` | Reference docs, detailed guides                                                               |
 
 ### Tier 0 Built-in Tools
 
@@ -416,7 +418,9 @@ impl Daemon {
 - **Worker processes**: `tokio::process::Command` for shell execution with async stdout/stderr streaming
 - **LLM calls**: aisdk.rs is async/await on Tokio — fits naturally
 
-### Worker Process (Bash Tool)
+### Worker Process (Used Internally by Agent's Bash Tool)
+
+The worker module is used internally by the agent's Bash tool — it is NOT triggered by IPC messages from the client. The client never sends commands for the daemon to execute. Instead, the agent invokes shell commands as part of its tool execution loop, and results flow back to the client as `AgentStreamChunk` messages (ToolCall/ToolResult variants).
 
 ```rust
 pub async fn execute_command(
@@ -435,7 +439,8 @@ pub async fn execute_command(
         .stdin(Stdio::null())
         .spawn()?;
 
-    // Stream stdout/stderr to client in real-time via IPC
+    // Stream stdout/stderr captured by the agent's Bash tool
+    // Results sent to client as AgentStreamChunk::ToolResult
     // ...
 
     let status = child.wait().await?;

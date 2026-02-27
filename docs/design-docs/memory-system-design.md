@@ -94,7 +94,7 @@ CREATE INDEX idx_episodes_session ON episodes(session_id);
 | `file_modified` | After Write/Edit tool use | "Modified auth.cpp: added JWT validation" |
 | `decision_made` | When agent makes an architectural/design choice | "Chose single-writer over mutex for shared state" |
 | `error_encountered` | On tool failure or unexpected result | "Compilation failed: missing <jwt.h> header" |
-| `error_resolved` | When a previously logged error is fixed | "Fixed missing header by adding jwt-cpp to CMakeLists.txt" |
+| `error_resolved` | When a previously logged error is fixed | "Fixed missing dependency by adding jwt crate to Cargo.toml" |
 | `pattern_observed` | When agent notices a recurring pattern | "User always runs tests after editing auth module" |
 | `user_preference` | Explicit user instruction about preferences | "User prefers pytest over unittest" |
 | `task_completed` | Work Item finished | "Refactored auth module to use JWT — 5 files changed, all tests pass" |
@@ -121,9 +121,9 @@ Each semantic file follows a consistent format:
 _Last updated: 2026-02-19 by Narrator_
 
 ## Conventions
-- This project uses CMake with C++20
-- Test framework: Google Test
-- Code style: Google C++ Style Guide with 4-space indent
+- This project uses Cargo with Rust
+- Test framework: cargo test
+- Code style: rustfmt (default), clippy pedantic
 
 ## Architecture Decisions
 - **Shared state coordination**: single-writer ownership, no reader-writer locks

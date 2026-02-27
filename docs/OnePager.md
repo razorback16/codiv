@@ -42,11 +42,7 @@ The building blocks have converged: fast frontier models make real-time agent or
 
 ### MVP Scope
 
-**Phase 1 — Terminal Foundation (complete):**
-Full terminal client with instant command execution, tab completion, interactive program passthrough (vim, ssh, REPLs), and a background daemon with IPC, session management, and parallel worker processes.
-
-**Phase 2 — Single-Agent AI Loop (next):**
-Integrate LLM access into the daemon, implement the first agent role (single planning + execution loop), tool system (file read/write/edit, shell execution, search), and project-scoped memory.
+TODO:
 
 ### Architecture (one sentence)
 

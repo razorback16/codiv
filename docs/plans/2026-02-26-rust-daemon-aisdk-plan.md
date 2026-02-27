@@ -155,22 +155,37 @@ Add `libc = "0.2"` to `crates/slate-common/Cargo.toml` dependencies.
 ```rust
 use serde::{Deserialize, Serialize};
 
+/// A record of a recently executed command, provided by the client as context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandRecord {
+    pub command: String,
+    pub output: String,
+    pub exit_code: i32,
+    pub timestamp: u64,
+}
+
+/// Session context sent by the client with each AgentRequest.
+/// The client manages command execution locally and provides
+/// recent history to the daemon for agent context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionContext {
+    pub cwd: String,
+    pub recent_commands: Vec<CommandRecord>,
+    pub env_vars: Vec<(String, String)>,
+}
+
 /// Messages sent from the slate client to the slated daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
-    ExecuteCommand {
-        command: String,
-        cwd: String,
+    AgentRequest {
+        prompt: String,
         request_id: String,
+        context: SessionContext,
     },
     EnvSnapshot {
         env_vars: Vec<(String, String)>,
         path: String,
         cwd: String,
-    },
-    AgentRequest {
-        prompt: String,
-        request_id: String,
     },
     Confirmation {
         request_id: String,
@@ -187,15 +202,6 @@ pub enum ClientMessage {
 /// Messages sent from the slated daemon to the slate client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonMessage {
-    CommandOutput {
-        request_id: String,
-        data: Vec<u8>,
-        is_stderr: bool,
-    },
-    CommandComplete {
-        request_id: String,
-        exit_code: i32,
-    },
     AgentStreamChunk {
         request_id: String,
         chunk: StreamChunk,
@@ -614,37 +620,27 @@ impl Daemon {
 
     async fn dispatch(&mut self, client_id: ClientId, msg: ClientMessage) {
         match msg {
-            ClientMessage::ExecuteCommand {
-                command,
-                cwd,
+            // Note: The client never sends commands for the daemon to execute.
+            // The worker module (worker.rs) is used internally by the agent's
+            // Bash tool, not triggered by IPC messages.
+
+            ClientMessage::AgentRequest {
+                prompt,
                 request_id,
+                context,
             } => {
-                let session = self.sessions.get(&client_id);
-                let env = session
-                    .map(|s| s.env_vars.clone())
-                    .unwrap_or_default();
-                let cwd = if cwd.is_empty() {
-                    session.map(|s| s.cwd.clone()).unwrap_or_default()
-                } else {
-                    cwd
-                };
-
-                let ipc = &self.ipc;
-                let rid = request_id.clone();
-                // Spawn worker as a background task
-                let (exit_tx, mut exit_rx) = mpsc::channel::<(Vec<u8>, bool)>(64);
-
-                let env_clone = env.clone();
-                let cwd_clone = cwd.clone();
-                let rid_clone = rid.clone();
-                tokio::spawn(async move {
-                    worker::execute_command(&command, &cwd_clone, &env_clone, exit_tx).await;
-                });
-
-                // Forward worker output to client
-                let ipc_ref = &self.ipc;
-                // Note: In production, this would be tracked per-worker.
-                // For now, we forward output inline.
+                // Phase 2 step 2: agent integration (Task 5+)
+                // The SessionContext provides cwd, recent command history,
+                // and environment variables from the client.
+                self.ipc
+                    .send(
+                        client_id,
+                        &DaemonMessage::Error {
+                            request_id,
+                            message: "agent not yet implemented".to_string(),
+                        },
+                    )
+                    .await;
             }
 
             ClientMessage::EnvSnapshot {
@@ -678,19 +674,6 @@ impl Daemon {
                 std::process::exit(0);
             }
 
-            ClientMessage::AgentRequest { .. } => {
-                // Phase 2 step 2: agent integration (Task 5+)
-                self.ipc
-                    .send(
-                        client_id,
-                        &DaemonMessage::Error {
-                            request_id: String::new(),
-                            message: "agent not yet implemented".to_string(),
-                        },
-                    )
-                    .await;
-            }
-
             ClientMessage::Confirmation { .. } => {
                 // Phase 2 step 2: safety confirmation (Task 7+)
             }
@@ -714,7 +697,9 @@ impl Daemon {
 }
 ```
 
-**Step 5: Write worker.rs — async command execution**
+**Step 5: Write worker.rs — async command execution (used internally by agent tools)**
+
+The worker module is used internally by the agent's Bash tool for executing shell commands as part of the agent's tool loop. It is NOT triggered by IPC messages from the client. Command results flow back to the client as `AgentStreamChunk` messages (ToolCall/ToolResult variants).
 
 `crates/slated/src/worker.rs`:
 ```rust
@@ -723,8 +708,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::error;
 
-/// Execute a shell command, streaming stdout/stderr through the channel.
-/// Each message is (data, is_stderr).
+/// Execute a shell command internally for the agent's Bash tool.
+/// Streams stdout/stderr through the channel. Each message is (data, is_stderr).
 pub async fn execute_command(
     command: &str,
     cwd: &str,
@@ -840,7 +825,8 @@ Replace the entire file with a thin wrapper that re-exports slate-common types a
 ```rust
 pub use slate_common::config::{FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE};
 pub use slate_common::messages::{
-    frame_message, parse_frame_header, ClientMessage, DaemonMessage, StreamChunk,
+    frame_message, parse_frame_header, ClientMessage, DaemonMessage, SessionContext,
+    CommandRecord, StreamChunk,
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -869,12 +855,18 @@ pub fn build_heartbeat() -> Option<Vec<u8>> {
     frame_message(&msg).ok()
 }
 
-/// Build a framed ExecuteCommand message.
-pub fn build_execute_command(command: &str, cwd: &str, request_id: &str) -> Option<Vec<u8>> {
-    let msg = ClientMessage::ExecuteCommand {
-        command: command.to_string(),
-        cwd: cwd.to_string(),
+/// Build a framed AgentRequest message with session context.
+/// The client attaches recent command history, cwd, and environment
+/// so the agent has full context without needing to execute commands itself.
+pub fn build_agent_request(
+    prompt: &str,
+    request_id: &str,
+    context: SessionContext,
+) -> Option<Vec<u8>> {
+    let msg = ClientMessage::AgentRequest {
+        prompt: prompt.to_string(),
         request_id: request_id.to_string(),
+        context,
     };
     frame_message(&msg).ok()
 }
@@ -907,7 +899,7 @@ match bincode::deserialize::<DaemonMessage>(&payload_buf) {
 }
 ```
 
-The `DaemonMessage` enum already has variants matching the old parsed types (CommandOutput, CommandComplete, Heartbeat, Error).
+The `DaemonMessage` enum has variants for agent streaming (AgentStreamChunk, AgentComplete), confirmations, heartbeats, and errors.
 
 **Step 5: Update daemon_launcher.rs — use slate-common paths**
 
@@ -1212,19 +1204,22 @@ git commit -m "Add agent module with model catalog config and single-agent loop 
 In `daemon.rs`, replace the `ClientMessage::AgentRequest { .. }` placeholder:
 
 ```rust
-ClientMessage::AgentRequest { prompt, request_id } => {
+ClientMessage::AgentRequest { prompt, request_id, context } => {
     let model_catalog = agent::config::ModelCatalog::load();
     let assignment = model_catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
 
     let ipc = /* clone sender for client_id */;
     let rid = request_id.clone();
 
+    // The SessionContext provides the agent with cwd, recent command
+    // history, and environment variables from the client session.
     tokio::spawn(async move {
         let mut agent = agent::agent::Agent::new(
             slate_common::types::AgentRole::Engineer,
             assignment,
             "You are a helpful coding assistant. Answer concisely.".to_string(),
         );
+        agent.set_session_context(&context);
         agent.add_user_message(&prompt);
 
         match agent.run().await {
@@ -1234,6 +1229,10 @@ ClientMessage::AgentRequest { prompt, request_id } => {
                     request_id: rid.clone(),
                     chunk: StreamChunk::Text(response.clone()),
                 }).await;
+
+                // Agent tool output (e.g. Bash tool results) streams via
+                // AgentStreamChunk with ToolCall/ToolResult variants, NOT
+                // through separate CommandOutput messages.
 
                 ipc.send(client_id, &DaemonMessage::AgentComplete {
                     request_id: rid,
@@ -1259,9 +1258,16 @@ In `crates/slate/src/ui/terminal.rs`, find the `InputAction::AiQuery` handler (t
 InputAction::AiQuery => {
     if let Some(ref mut client) = daemon_client {
         let request_id = format!("agent-{}", rand::random::<u64>());
+        // Build SessionContext with recent command history, cwd, and env
+        let context = SessionContext {
+            cwd: current_cwd.clone(),
+            recent_commands: recent_command_history.clone(),
+            env_vars: current_env_vars.clone(),
+        };
         let msg = ClientMessage::AgentRequest {
             prompt: raw_input.clone(),
             request_id,
+            context,
         };
         if let Ok(frame) = frame_message(&msg) {
             client.send(&frame);

@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-**Slate Agent** is a Rust/C++ terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`slate`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the C++ daemon (`slated`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands that execute instantly (zero-latency fast-pass), or natural language that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
+**Slate Agent** is a Rust terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`slate`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the Rust daemon (`slated`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands that execute instantly (zero-latency fast-pass), or natural language that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
 
 **Current status**: Phase 1 (Terminal Foundation) is complete. Phase 2 (Single-Agent AI Loop) is next.
 
@@ -14,15 +14,15 @@
 
 ## 2. Phase Summary
 
-| Phase | Name | Goal | Status | Key Deliverables |
-| --- | --- | --- | --- | --- |
-| **1** | Terminal Foundation | Working terminal client with daemon IPC | **COMPLETE** | Rust TUI, C++ daemon, FlatBuffers IPC, command fast-pass, tab completion, interactive passthrough |
-| **2** | Single-Agent AI Loop | Natural language input routes to AI agent with tool calling | **NEXT** | ai-sdk-cpp integration, single agent loop, built-in tools, markdown rendering, basic safety |
-| **3** | Work Item DAG + Scheduler | Complex tasks decomposed into concurrent Work Items | Planned | Work Item schema, DAG construction, Taskflow scheduler, budget enforcement |
-| **4** | Multi-Agent Roles + Multi-Model | Specialized agent roles with dynamic model selection | Planned | Role separation, model catalog, TeamLead model selection, Reviewer gating |
-| **5** | Memory + Project Context | Persistent bounded memory across sessions and projects | Planned | SQLite episodic store, semantic markdown, Narrator consolidation, project auto-switching |
-| **6** | Tool System | Unified tool registry with MCP bridge and prompt tools | Planned | Tool registry, MCP bridge, prompt tool runtime, progressive loading, hooks, aliases |
-| **7** | Advanced Safety & Audit | Production-grade safety, audit trail, compliance | Planned | Full audit trail, privacy config, OS-level sandboxing roadmap, OWASP/NIST alignment |
+| Phase | Name                            | Goal                                                        | Status       | Key Deliverables                                                                                                                             |
+| ----- | ------------------------------- | ----------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1** | Terminal Foundation             | Working terminal client with daemon IPC                     | **COMPLETE** | Rust TUI, C++ daemon, FlatBuffers IPC (now replaced by serde+bincode in Phase 2), command fast-pass, tab completion, interactive passthrough |
+| **2** | Single-Agent AI Loop            | Natural language input routes to AI agent with tool calling | **NEXT**     | aisdk.rs integration, single agent loop, built-in tools, markdown rendering, basic safety                                                    |
+| **3** | Work Item DAG + Scheduler       | Complex tasks decomposed into concurrent Work Items         | Planned      | Work Item schema, DAG construction, Tokio-based scheduler, budget enforcement                                                                |
+| **4** | Multi-Agent Roles + Multi-Model | Specialized agent roles with dynamic model selection        | Planned      | Role separation, model catalog, TeamLead model selection, Reviewer gating                                                                    |
+| **5** | Memory + Project Context        | Persistent bounded memory across sessions and projects      | Planned      | SQLite episodic store, semantic markdown, Narrator consolidation, project auto-switching                                                     |
+| **6** | Tool System                     | Unified tool registry with MCP bridge and prompt tools      | Planned      | Tool registry, MCP bridge, prompt tool runtime, progressive loading, hooks, aliases                                                          |
+| **7** | Advanced Safety & Audit         | Production-grade safety, audit trail, compliance            | Planned      | Full audit trail, privacy config, OS-level sandboxing roadmap, OWASP/NIST alignment                                                          |
 
 ---
 
@@ -58,12 +58,14 @@ Each phase is a **vertical slice** — fully functional and manually testable on
 
 ### Phase 1: Terminal Foundation — COMPLETE
 
+**Note**: The C++ daemon built in Phase 1 is being replaced by a Rust daemon in Phase 2. See the [Rust daemon design doc](plans/2026-02-26-rust-daemon-aisdk-design.md) for the current architecture.
+
 The foundation layer provides a working terminal client that executes commands via daemon IPC with near-zero overhead.
 
 **What was built:**
 
 - `slate` binary (~4,300 lines of Rust) with ratatui 0.30 + crossterm 0.28 for linear scroll-down terminal flow
-- `slated` daemon (~1,240 lines of C++20) listening on Unix socket with FlatBuffers IPC protocol
+- `slated` daemon (~1,240 lines of C++20) listening on Unix socket with FlatBuffers IPC protocol (now superseded by Rust daemon with serde+bincode)
 - Persistent bash co-process via portable-pty with sentinel-based output boundary detection
 - Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
 - Command fast-pass: PATH scanning + 65 bash builtins in O(1) hash map with input classification (Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty)
@@ -73,7 +75,7 @@ The foundation layer provides a working terminal client that executes commands v
 - Worker bash sessions: spawn-on-demand per Work Item, initialized from env snapshot, killed on completion
 - Structured logging with `--debug` flag to `/tmp/slate-debug.log`
 
-**Tech stack**: Rust (Cargo) for `slate`, C++20 (CMake) for `slated`, FlatBuffers over Unix domain socket, portable-pty, tui-term + vt100, GoogleTest. See the [PRD Appendix A](PRD.md#appendix-a-phase-1-module-details) for full module tables.
+**Tech stack**: Rust (Cargo) for `slate`, C++20 (CMake) for `slated`, FlatBuffers over Unix domain socket, portable-pty, tui-term + vt100, GoogleTest. (Phase 1 historical -- replaced in Phase 2 by unified Rust/Cargo build with serde+bincode IPC.) See the [PRD Appendix A](PRD.md#appendix-a-phase-1-module-details) for full module tables.
 
 ---
 
@@ -83,8 +85,8 @@ The foundation layer provides a working terminal client that executes commands v
 
 #### Sub-tasks
 
-1. **Integrate ai-sdk-cpp for streaming LLM access**
-   - Add ai-sdk-cpp (ClickHouse) as a dependency in the CMake build
+1. **Integrate aisdk.rs for streaming LLM access**
+   - Add aisdk.rs as a dependency in the Cargo workspace
    - Configure streaming HTTP connections to OpenAI and Anthropic endpoints
    - Implement SSE parsing for token-by-token streaming
    - Handle tool calling protocol (function calls in the LLM response, tool results sent back)
@@ -134,7 +136,7 @@ The foundation layer provides a working terminal client that executes commands v
 
 **Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
-**Tech**: ai-sdk-cpp (streaming + tool calling), Claude Sonnet 4.5 as initial model, comrak + syntect for rendering.
+**Tech**: aisdk.rs (streaming + tool calling), Claude Sonnet 4.5 as initial model, comrak + syntect for rendering.
 
 ---
 
@@ -154,10 +156,10 @@ The foundation layer provides a working terminal client that executes commands v
    - Dependencies expressed as edges between Work Item IDs
    - Validation: no cycles, all referenced IDs exist, at least one root node
 
-3. **Taskflow-based concurrent execution**
-   - Integrate Taskflow library (header-only C++20) into `slated`
-   - Map Work Item DAG to `tf::Taskflow` with `precede()`/`succeed()` for dependency edges
-   - `tf::Executor` manages the worker thread pool
+3. **Tokio-based concurrent execution**
+   - Use Tokio task spawning in `slated`
+   - Map Work Item DAG to Tokio tasks with dependency tracking
+   - Tokio runtime manages concurrent task execution
    - Each scheduled Work Item gets its own worker bash session
 
 4. **State machine (pending → running → completed/failed)**
@@ -177,7 +179,7 @@ The foundation layer provides a working terminal client that executes commands v
 
 **Testable outcome**: User types "add input validation to the user registration form, write tests, and update the README" — agent creates 3+ Work Items with correct dependencies, runs independent ones in parallel, then tests after validation is done.
 
-**Tech**: Taskflow (header-only C++20, work-stealing scheduler, composable sub-taskflows).
+**Tech**: Tokio tasks (async/await, concurrent Work Item execution via `futures::future::join_all`).
 
 ---
 
@@ -224,7 +226,7 @@ The foundation layer provides a working terminal client that executes commands v
 
 **Testable outcome**: User types "refactor the auth module to use JWT and audit it for security issues" — Orchestrator delegates to TeamLead, TeamLead assigns Engineer (Sonnet) for refactoring + Security (Opus) for audit. Reviewer validates. User sees which model handled which part.
 
-**Tech**: Multiple concurrent ai-sdk-cpp sessions, role-based system prompts, single-writer ownership (no reader-writer locks).
+**Tech**: Multiple concurrent aisdk.rs sessions, role-based system prompts, single-writer ownership (no reader-writer locks).
 
 ---
 
@@ -269,7 +271,7 @@ Architecture is defined in the [Memory System Design](design-docs/memory-system-
 
 **Testable outcome**: User completes a task in repo A ("always use pytest, not unittest"). User starts a new session in repo A — agent remembers the preference. User cd's to repo B — agent switches to repo B's context automatically.
 
-**Tech**: SQLite (C++ integration), semantic markdown, Narrator LLM agent, project fingerprinting.
+**Tech**: SQLite (rusqlite), semantic markdown, Narrator LLM agent, project fingerprinting.
 
 ---
 
@@ -318,7 +320,7 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 
 **Testable outcome**: `/commit` works. `slate install ./my-tool` works. `slate install mcp:@modelcontextprotocol/server-filesystem` makes the MCP server appear as a regular tool.
 
-**Tech**: Tool registry, MCP bridge (cpp-mcp or custom), prompt tool synthesis, SLATE_TOOLS_PATH discovery.
+**Tech**: Tool registry, Rust MCP client (serde_json + tokio subprocess management), prompt tool synthesis, SLATE_TOOLS_PATH discovery.
 
 ---
 
@@ -368,7 +370,7 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 
 | Layer | Framework | Scope |
 | --- | --- | --- |
-| C++ daemon unit tests | GoogleTest v1.14.0 | Worker process management, IPC protocol, Work Item state machine, tool implementations, scheduler |
+| Rust daemon unit tests | `cargo test` (built-in) | IPC protocol, session management, worker execution, agent loop |
 | Rust client unit tests | `cargo test` (built-in) | Input classification, command index, completion engine, IPC message building |
 | Rust integration tests | `cargo test` (integration test modules) | End-to-end command execution, daemon connection, env snapshot round-trip |
 | End-to-end tests | expect-style scripting (e.g., rexpect or custom) | Full user scenarios: launch `slate`, type commands, verify output, test agent interactions |
@@ -377,10 +379,8 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 ### CI/CD
 
 - **GitHub Actions** with parallel jobs:
-  - `cargo build` + `cargo test` + `cargo clippy` + `cargo fmt --check` for `slate`
-  - `cmake --build` + `ctest` + `clang-tidy` + `clang-format --dry-run` for `slated`
+  - `cargo build --workspace` + `cargo test --workspace` + `cargo clippy --workspace` + `cargo fmt --check`
 - Matrix: macOS (primary), Linux (secondary)
-- FlatBuffers schema compilation verified in both Rust and C++ builds
 - LLM tests use recorded responses (no live API calls in CI)
 
 ### Documentation
@@ -388,20 +388,19 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 - Design docs per phase in `docs/design-docs/`
 - PRD kept up-to-date as phases complete
 - Plan.md (this document) updated with status changes
-- In-code documentation: Rustdoc for `slate`, Doxygen-style comments for `slated`
+- In-code documentation: Rustdoc for all crates (`slate`, `slated`)
 
 ### Code Quality
 
 | Language | Linting | Formatting | Static Analysis |
 | --- | --- | --- | --- |
-| Rust | `clippy` (deny warnings) | `rustfmt` | Built-in borrow checker + `clippy::pedantic` |
-| C++ | `clang-tidy` | `clang-format` (Google style, 4-space indent) | `-Wall -Wextra -Werror` + AddressSanitizer in debug |
+| Rust (all crates) | `clippy` (deny warnings) | `rustfmt` | Built-in borrow checker + `clippy::pedantic` |
 
 ---
 
 ## 6. Open Questions / Decisions Needed
 
-1. **ai-sdk-cpp evaluation**: Is the ClickHouse SDK (~134 stars) mature enough for production use, or do we need a custom HTTP client (libcurl + cpr + custom SSE parser)? Evaluate early in Phase 2. Key risks: Google/Cohere not yet supported, unknown edge cases in tool calling protocol.
+1. **aisdk.rs maturity and provider coverage**: Is the Rust AI SDK mature enough for production use across all target providers (Anthropic, OpenAI, Google)? Key risks: newer SDK with potential gaps in provider support. Mitigation: Rust ecosystem has strong HTTP/async primitives (reqwest + tokio) as fallback for direct HTTP client implementation for unsupported providers.
 
 2. **Narrator model**: Is Gemini 2.5 Flash sufficient for the memory consolidation algorithm (topic matching, semantic merging, compression decisions), or does topic management need a more capable model?
 
@@ -411,10 +410,8 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 
 5. **Vector DB trigger**: When should we evaluate adding a vector DB for memory retrieval? Proposed trigger: if keyword-based `memory_search` recall accuracy falls below 80% on a representative query set, investigate vector embeddings (e.g., SQLite + sqlite-vec extension).
 
-6. **ai-sdk-cpp provider coverage**: If Google and Cohere support is needed before ai-sdk-cpp adds it, what is the fallback strategy? Options: contribute upstream, maintain a fork, or build a minimal custom client for those providers only.
-
-7. **Recursive decomposition depth**: What is the practical limit for sub-TeamLead deployment? ADAPT research suggests 2-3 levels for most coding tasks. Should we enforce a hard limit or rely on budget caps to naturally bound depth?
+6. **Recursive decomposition depth**: What is the practical limit for sub-TeamLead deployment? ADAPT research suggests 2-3 levels for most coding tasks. Should we enforce a hard limit or rely on budget caps to naturally bound depth?
 
 ---
 
-*Slate Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Phase 1 complete. Phase 2 next.*
+*Slate Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Rust daemon replaces the original C++ daemon starting in Phase 2. Phase 1 complete. Phase 2 next.*
