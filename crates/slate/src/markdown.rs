@@ -1,16 +1,55 @@
+use std::io::Write;
+use std::rc::Rc;
+use std::cell::RefCell;
+
 use streamdown_parser::Parser;
 use streamdown_render::{Renderer, RenderFeatures, RenderStyle};
 
+/// A shared byte buffer that implements `Write` so we can hand it to
+/// `Renderer` while still being able to drain the contents between pushes.
+#[derive(Clone)]
+struct SharedBuf(Rc<RefCell<Vec<u8>>>);
+
+impl SharedBuf {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+
+    fn drain(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+}
+
+impl Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub struct MarkdownStream {
     parser: Parser,
+    renderer: Renderer<SharedBuf>,
+    buf: SharedBuf,
     line_buffer: String,
     terminal_width: u16,
 }
 
 impl MarkdownStream {
     pub fn new(terminal_width: u16) -> Self {
+        let buf = SharedBuf::new();
+        let renderer = Self::build_renderer(buf.clone(), terminal_width);
         Self {
             parser: Parser::new(),
+            renderer,
+            buf,
             line_buffer: String::new(),
             terminal_width,
         }
@@ -30,38 +69,32 @@ impl MarkdownStream {
         let remainder = self.line_buffer[last_newline + 1..].to_string();
         self.line_buffer = remainder;
 
-        let mut buf = Vec::new();
-        {
-            let mut renderer = self.make_renderer(&mut buf);
-            for line in complete.lines() {
-                let events = self.parser.parse_line(line);
-                renderer.render(&events).ok();
-            }
+        for line in complete.lines() {
+            let events = self.parser.parse_line(line);
+            self.renderer.render(&events).ok();
         }
 
-        if buf.is_empty() {
+        if self.buf.is_empty() {
             None
         } else {
-            let output = String::from_utf8_lossy(&buf).replace('\n', "\r\n");
+            let raw = self.buf.drain();
+            let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n");
             Some(output.into_bytes())
         }
     }
 
     /// Flush remaining line buffer and close open blocks.
     pub fn finish(&mut self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        {
-            let mut renderer = self.make_renderer(&mut buf);
-            if !self.line_buffer.is_empty() {
-                let line = std::mem::take(&mut self.line_buffer);
-                let events = self.parser.parse_line(&line);
-                renderer.render(&events).ok();
-            }
-            let final_events = self.parser.finalize();
-            renderer.render(&final_events).ok();
+        if !self.line_buffer.is_empty() {
+            let line = std::mem::take(&mut self.line_buffer);
+            let events = self.parser.parse_line(&line);
+            self.renderer.render(&events).ok();
         }
+        let final_events = self.parser.finalize();
+        self.renderer.render(&final_events).ok();
 
-        let output = String::from_utf8_lossy(&buf).replace('\n', "\r\n");
+        let raw = self.buf.drain();
+        let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n");
         output.into_bytes()
     }
 
@@ -69,13 +102,15 @@ impl MarkdownStream {
     pub fn reset(&mut self) {
         self.parser.reset();
         self.line_buffer.clear();
+        self.buf.drain();
+        self.renderer = Self::build_renderer(self.buf.clone(), self.terminal_width);
     }
 
     pub fn set_width(&mut self, width: u16) {
         self.terminal_width = width;
     }
 
-    fn make_renderer<'a>(&self, buf: &'a mut Vec<u8>) -> Renderer<&'a mut Vec<u8>> {
+    fn build_renderer(buf: SharedBuf, width: u16) -> Renderer<SharedBuf> {
         let style = RenderStyle {
             h1: "0;255;128".to_string(),
             h2: "0;220;128".to_string(),
@@ -96,14 +131,14 @@ impl MarkdownStream {
             footnote: "180;160;220".to_string(),
             heading_centered: false,
         };
-        let mut renderer = Renderer::with_style(buf, self.terminal_width as usize, style);
+        let mut renderer = Renderer::with_style(buf, width as usize, style);
         renderer.set_features(RenderFeatures {
             pretty_pad: false,
             pretty_broken: false,
             clipboard: false,
             savebrace: false,
             margin: 0,
-            fixed_width: Some(self.terminal_width as usize),
+            fixed_width: Some(width as usize),
             ..Default::default()
         });
         renderer.set_theme("base16-eighties.dark");
