@@ -1,5 +1,5 @@
 use streamdown_parser::Parser;
-use streamdown_render::{Renderer, RenderFeatures};
+use streamdown_render::{Renderer, RenderFeatures, RenderStyle};
 
 pub struct MarkdownStream {
     parser: Parser,
@@ -76,7 +76,28 @@ impl MarkdownStream {
     }
 
     fn make_renderer<'a>(&self, buf: &'a mut Vec<u8>) -> Renderer<&'a mut Vec<u8>> {
-        let features = RenderFeatures {
+        let style = RenderStyle {
+            h1: "0;255;128".to_string(),
+            h2: "0;220;128".to_string(),
+            h3: "0;200;128".to_string(),
+            h4: "0;180;128".to_string(),
+            h5: "0;160;128".to_string(),
+            h6: "0;140;128".to_string(),
+            code_bg: "20;20;60".to_string(),
+            code_label: "0;255;255".to_string(),
+            bullet: "255;255;0".to_string(),
+            table_header_bg: "80;60;120".to_string(),
+            table_border: "180;160;220".to_string(),
+            blockquote_border: "0;255;255".to_string(),
+            think_border: "128;128;128".to_string(),
+            hr: "128;128;128".to_string(),
+            link_url: "0;255;255".to_string(),
+            image_marker: "255;255;0".to_string(),
+            footnote: "180;160;220".to_string(),
+            heading_centered: false,
+        };
+        let mut renderer = Renderer::with_style(buf, self.terminal_width as usize, style);
+        renderer.set_features(RenderFeatures {
             pretty_pad: false,
             pretty_broken: false,
             clipboard: false,
@@ -84,8 +105,7 @@ impl MarkdownStream {
             margin: 0,
             fixed_width: Some(self.terminal_width as usize),
             ..Default::default()
-        };
-        let mut renderer = Renderer::with_features(buf, self.terminal_width as usize, features);
+        });
         renderer.set_theme("base16-eighties.dark");
         renderer
     }

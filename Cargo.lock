@@ -2985,8 +2985,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "streamdown-ansi"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b531065f2b41df7eec21d4d883613108937aacad539827730bc7a58a552b8f7"
+source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
 dependencies = [
  "crossterm 0.28.1",
  "regex",
@@ -2996,8 +2995,7 @@ dependencies = [
 [[package]]
 name = "streamdown-config"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37c580c9a4155f2ba6b49f371c7d7a9796d2ca428b1b3166884a97dca90127b1"
+source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
 dependencies = [
  "crossterm 0.28.1",
  "directories",
@@ -3010,8 +3008,7 @@ dependencies = [
 [[package]]
 name = "streamdown-core"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4b0eaa964712369925867b0f17b0a27e54625df4c79bbc4d6a38390d523d863"
+source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
 dependencies = [
  "regex",
  "serde",
@@ -3021,8 +3018,7 @@ dependencies = [
 [[package]]
 name = "streamdown-parser"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e3b0878c68d83203d3bad30483ba82843889d037334a4911289e6f5c623caaf"
+source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
 dependencies = [
  "regex",
  "streamdown-ansi",
@@ -3033,11 +3029,11 @@ dependencies = [
 [[package]]
 name = "streamdown-render"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3942fdad6853e4fa84d1ee3de9a6fd7439f39b9827b1fa676ae0d43c866d6ea"
+source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
 dependencies = [
  "base64",
  "crossterm 0.28.1",
+ "serde",
  "streamdown-ansi",
  "streamdown-config",
  "streamdown-core",
@@ -3049,8 +3045,7 @@ dependencies = [
 [[package]]
 name = "streamdown-syntax"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba552198fe459c0ef2d47be5bf7270770ddc6e6119cf54b67f6897c3cf1cea1e"
+source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
 dependencies = [
  "streamdown-core",
  "syntect",
