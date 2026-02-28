@@ -100,7 +100,8 @@ fn exec_bash(
 
     tracing::debug!(command = %input.command, timeout_ms = input.timeout_ms, "bash");
 
-    let mut child = Command::new("bash")
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
+    let mut child = Command::new(&shell)
         .arg("-c")
         .arg(&input.command)
         .current_dir(cwd)

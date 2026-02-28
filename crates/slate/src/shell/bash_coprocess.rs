@@ -2,6 +2,12 @@
 //!
 //! Spawns a bash shell via `portable-pty`, executes commands using a sentinel
 //! protocol, and provides helpers for capturing cwd and environment variables.
+//!
+//! Note: This intentionally uses bash regardless of the user's `$SHELL` because
+//! the completion engine (`completion_engine.rs`) depends on bash-specific
+//! features (programmable completions, `compgen`, `COMP_WORDS`, etc.).
+//! User commands are still executed through this bash instance, but interactive
+//! and daemon-side command execution respect `$SHELL`.
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use rand::Rng;

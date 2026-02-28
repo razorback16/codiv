@@ -69,9 +69,10 @@ impl CommandIndex {
         self.index.contains(name)
     }
 
-    /// Insert bash builtin names into the index so they appear in tab completion.
+    /// Insert shell builtin names into the index so they appear in tab completion.
+    /// Detects the user's shell from `$SHELL` and adds the appropriate builtins.
     pub fn add_builtins(&mut self) {
-        for name in bash_builtins() {
+        for name in shell_builtins() {
             self.index.insert(name.to_string());
         }
     }
@@ -108,6 +109,17 @@ pub enum InputAction {
     Empty,
 }
 
+/// Return builtins for the user's shell (detected from `$SHELL`).
+/// Falls back to bash builtins if detection fails.
+fn shell_builtins() -> HashSet<&'static str> {
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    if shell.ends_with("/zsh") {
+        zsh_builtins()
+    } else {
+        bash_builtins()
+    }
+}
+
 /// Complete set of bash builtins from bash-builtins(7).
 /// `exit`/`logout` excluded (handled as `InputAction::Exit`).
 fn bash_builtins() -> HashSet<&'static str> {
@@ -118,6 +130,25 @@ fn bash_builtins() -> HashSet<&'static str> {
         "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray",
         "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test", "times",
         "trap", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait", "caller",
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Common ZSH builtins from zshbuiltins(1).
+/// `exit`/`logout` excluded (handled as `InputAction::Exit`).
+fn zsh_builtins() -> HashSet<&'static str> {
+    [
+        ":", ".", "[", "alias", "autoload", "bg", "bindkey", "break", "builtin", "cd", "chdir",
+        "command", "compctl", "compadd", "compdef", "continue", "declare", "dirs", "disable",
+        "disown", "echo", "echotc", "emulate", "enable", "eval", "exec", "export", "false", "fc",
+        "fg", "float", "functions", "getln", "getopts", "hash", "history", "integer", "jobs",
+        "kill", "let", "limit", "local", "log", "noglob", "popd", "print", "printf", "pushd",
+        "pushln", "pwd", "read", "readonly", "rehash", "return", "sched", "set", "setopt", "shift",
+        "source", "suspend", "test", "times", "trap", "true", "ttyctl", "type", "typeset",
+        "ulimit", "umask", "unalias", "unfunction", "unhash", "unlimit", "unset", "unsetopt",
+        "vared", "wait", "whence", "where", "which", "zcompile", "zle", "zmodload", "zparseopts",
+        "zstyle",
     ]
     .into_iter()
     .collect()
@@ -186,7 +217,7 @@ pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
         return InputAction::Interactive;
     }
 
-    if bash_builtins().contains(first_word) {
+    if shell_builtins().contains(first_word) {
         return InputAction::Execute;
     }
 

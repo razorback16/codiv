@@ -59,7 +59,8 @@ impl InteractiveSession {
             Err(_) => return,
         };
 
-        let mut cmd = CommandBuilder::new("bash");
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
+        let mut cmd = CommandBuilder::new(&shell);
         cmd.args(["-c", command]);
         cmd.cwd(cwd);
         for (k, v) in env {

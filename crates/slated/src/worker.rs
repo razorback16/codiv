@@ -12,7 +12,8 @@ pub async fn execute_command(
     env: &[(String, String)],
     tx: mpsc::Sender<(Vec<u8>, bool)>,
 ) -> i32 {
-    let mut child = match Command::new("bash")
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
+    let mut child = match Command::new(&shell)
         .args(["-c", command])
         .current_dir(cwd)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
