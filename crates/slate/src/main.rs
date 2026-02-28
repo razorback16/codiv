@@ -2,6 +2,7 @@ mod app;
 mod shell;
 mod ui;
 mod ipc;
+mod markdown;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
