@@ -20,6 +20,7 @@ dependencies = [
 [[package]]
 name = "aisdk"
 version = "0.5.2"
+source = "git+https://github.com/razorback16/aisdk?branch=fix%2Fstream-text-tool-loop#a51d3aad861608c4321edd364e88462a50a282fc"
 dependencies = [
  "aisdk-macros",
  "async-trait",
@@ -40,6 +41,7 @@ dependencies = [
 [[package]]
 name = "aisdk-macros"
 version = "0.3.0"
+source = "git+https://github.com/razorback16/aisdk?branch=fix%2Fstream-text-tool-loop#a51d3aad861608c4321edd364e88462a50a282fc"
 dependencies = [
  "proc-macro2",
  "quote",

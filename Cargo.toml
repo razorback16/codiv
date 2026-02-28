@@ -3,4 +3,4 @@ members = ["crates/slate", "crates/slate-common", "crates/slated"]
 resolver = "2"
 
 [patch.crates-io]
-aisdk = { path = "references/aisdk" }
+aisdk = { git = "https://github.com/razorback16/aisdk", branch = "fix/stream-text-tool-loop" }
