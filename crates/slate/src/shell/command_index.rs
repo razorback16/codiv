@@ -97,7 +97,7 @@ pub enum InputAction {
     Interactive,
     /// AI query (prefixed with `?`).
     AiQuery,
-    /// Unknown command — first word returned.
+    /// Unknown command — first word returned. Routed to agent when daemon is connected.
     NotFound(String),
     /// Clear screen and scrollback.
     Clear,
@@ -149,6 +149,9 @@ fn zsh_builtins() -> HashSet<&'static str> {
         "ulimit", "umask", "unalias", "unfunction", "unhash", "unlimit", "unset", "unsetopt",
         "vared", "wait", "whence", "where", "which", "zcompile", "zle", "zmodload", "zparseopts",
         "zstyle",
+        "bye", "comparguments", "compcall", "compdescribe", "compfiles", "compgroups",
+        "compquote", "compset", "comptags", "comptry", "compvalues", "echoti",
+        "private", "r", "zformat", "zregexparse",
     ]
     .into_iter()
     .collect()
@@ -180,8 +183,11 @@ fn is_variable_assignment(first_word: &str) -> bool {
 fn interactive_commands() -> HashSet<&'static str> {
     [
         "ssh", "tmux", "screen", "python", "python3", "node", "irb", "ghci",
-        "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3", "docker",
-        "sudo",
+        "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3",
+        "docker", "sudo", "gdb", "lldb", "sftp", "bc", "bash", "zsh", "fish",
+        "bun", "deno", "ts-node", "perl", "php", "julia", "scala", "erl", "iex",
+        "elixir", "mongosh", "redis-cli", "mosh", "telnet", "ftp", "nix-shell",
+        "bpython",
     ]
     .into_iter()
     .collect()
@@ -213,7 +219,7 @@ pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
 
     let first_word = trimmed.split_whitespace().next().unwrap_or("");
 
-    if interactive_commands().contains(first_word) {
+    if interactive_commands().contains(first_word) && index.is_known(first_word) {
         return InputAction::Interactive;
     }
 
@@ -285,11 +291,9 @@ mod tests {
 
     #[test]
     fn classify_interactive() {
-        let idx = CommandIndex::new();
-        // REPLs and remote sessions are still explicitly Interactive.
+        let idx = path_only_index();
+        // ssh is virtually always installed and should be classified as Interactive.
         assert_eq!(classify_input("ssh user@host", &idx), InputAction::Interactive);
-        assert_eq!(classify_input("python3", &idx), InputAction::Interactive);
-        assert_eq!(classify_input("node", &idx), InputAction::Interactive);
     }
 
     #[test]

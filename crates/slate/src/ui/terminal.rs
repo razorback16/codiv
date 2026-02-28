@@ -30,6 +30,26 @@ use super::input::InputLine;
 use super::selection::TextSelection;
 use crate::VERSION;
 
+/// Send an agent request to the daemon. Returns `true` if the request was sent.
+fn send_agent_request(
+    client: &mut SlatedClient,
+    query: &str,
+    cwd: &str,
+) -> bool {
+    let request_id = format!("agent-{}", rand::random::<u64>());
+    let context = ipc_messages::SessionContext {
+        cwd: cwd.to_string(),
+        recent_commands: Vec::new(),
+        env_vars: Vec::new(),
+    };
+    if let Some(frame) = ipc_messages::build_agent_request(query, &request_id, context) {
+        client.send(&frame);
+        true
+    } else {
+        false
+    }
+}
+
 /// Tracks a command that has been submitted to bash but hasn't completed yet.
 struct PendingCommand {
     sentinel: String,
@@ -575,18 +595,8 @@ fn event_loop(
 
                         InputAction::AiQuery => {
                             if let Some(ref mut c) = client {
-                                let request_id = format!("agent-{}", rand::random::<u64>());
-                                let context = ipc_messages::SessionContext {
-                                    cwd: cwd.clone(),
-                                    recent_commands: Vec::new(),
-                                    env_vars: Vec::new(),
-                                };
-                                if let Some(frame) = ipc_messages::build_agent_request(
-                                    &raw_input,
-                                    &request_id,
-                                    context,
-                                ) {
-                                    c.send(&frame);
+                                let query = raw_input.trim_start().strip_prefix('?').unwrap_or(&raw_input);
+                                if send_agent_request(c, query, &cwd) {
                                     agent_streaming = true;
                                 }
                             } else {
@@ -710,12 +720,18 @@ fn event_loop(
                             }
                         }
 
-                        InputAction::NotFound(word) => {
-                            parser_push_styled(
-                                parser,
-                                &format!("command not found: {}", word),
-                                "\x1b[31m",
-                            );
+                        InputAction::NotFound(ref word) => {
+                            if let Some(ref mut c) = client {
+                                if send_agent_request(c, &raw_input, &cwd) {
+                                    agent_streaming = true;
+                                }
+                            } else {
+                                parser_push_styled(
+                                    parser,
+                                    &format!("command not found: {}", word),
+                                    "\x1b[31m",
+                                );
+                            }
                         }
                     }
 
