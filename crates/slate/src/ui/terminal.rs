@@ -29,6 +29,7 @@ use super::completion_popup::CompletionPopup;
 use super::input::InputLine;
 use super::selection::TextSelection;
 use crate::VERSION;
+use crate::markdown::MarkdownStream;
 
 /// Send an agent request to the daemon. Returns `true` if the request was sent.
 fn send_agent_request(
@@ -202,6 +203,7 @@ fn event_loop(
     let mut selection = TextSelection::new();
     let mut clipboard = arboard::Clipboard::new().ok();
     let mut agent_streaming = false;
+    let mut md_stream = MarkdownStream::new(term.size().map(|s| s.width).unwrap_or(80));
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -458,6 +460,7 @@ fn event_loop(
                     let parser_cols = (*cols).max(1);
                     parser.screen_mut().set_size(parser_rows, parser_cols);
                     bash.resize(parser_rows);
+                    md_stream.set_width(*cols);
                     continue;
                 }
                 _ => {}
@@ -851,8 +854,9 @@ fn event_loop(
                     } => {
                         match chunk {
                             ipc_messages::StreamChunk::Text(t) => {
-                                let t = t.replace('\n', "\r\n");
-                                parser.process(t.as_bytes());
+                                if let Some(ansi) = md_stream.push(&t) {
+                                    parser.process(&ansi);
+                                }
                             }
                             ipc_messages::StreamChunk::Reasoning(t) => {
                                 let t = t.replace('\n', "\r\n");
@@ -895,7 +899,12 @@ fn event_loop(
                         summary: _,
                     } => {
                         if agent_streaming {
+                            let final_bytes = md_stream.finish();
+                            if !final_bytes.is_empty() {
+                                parser.process(&final_bytes);
+                            }
                             parser.process(b"\r\n");
+                            md_stream.reset();
                             agent_streaming = false;
                         }
                     }
@@ -915,6 +924,7 @@ fn event_loop(
                         message,
                     } => {
                         agent_streaming = false;
+                        md_stream.reset();
                         parser_push_styled(
                             parser,
                             &format!("[daemon] error ({}): {}", request_id, message),
