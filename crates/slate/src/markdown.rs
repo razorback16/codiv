@@ -110,27 +110,69 @@ impl MarkdownStream {
         self.terminal_width = width;
     }
 
+    /// Detect whether the terminal has a light background.
+    /// Checks COLORFGBG env var (set by xterm, iTerm2, etc.).
+    /// Format: "foreground;background" — higher background values mean lighter.
+    fn detect_terminal_colorscheme() -> bool {
+        if let Ok(val) = std::env::var("COLORFGBG") {
+            if let Some(bg) = val.rsplit(';').next() {
+                if let Ok(n) = bg.parse::<u32>() {
+                    return n >= 8;
+                }
+            }
+        }
+        false
+    }
+
     fn build_renderer(buf: SharedBuf, width: u16) -> Renderer<SharedBuf> {
-        let style = RenderStyle {
-            h1: "0;255;128".to_string(),
-            h2: "0;220;128".to_string(),
-            h3: "0;200;128".to_string(),
-            h4: "0;180;128".to_string(),
-            h5: "0;160;128".to_string(),
-            h6: "0;140;128".to_string(),
-            code_bg: "20;20;60".to_string(),
-            code_label: "0;255;255".to_string(),
-            bullet: "255;255;0".to_string(),
-            table_header_bg: "80;60;120".to_string(),
-            table_border: "180;160;220".to_string(),
-            blockquote_border: "0;255;255".to_string(),
-            think_border: "128;128;128".to_string(),
-            hr: "128;128;128".to_string(),
-            link_url: "0;255;255".to_string(),
-            image_marker: "255;255;0".to_string(),
-            footnote: "180;160;220".to_string(),
-            heading_centered: false,
+        let light = Self::detect_terminal_colorscheme();
+
+        let style = if light {
+            RenderStyle {
+                h1: "0;120;60".to_string(),
+                h2: "0;100;60".to_string(),
+                h3: "0;90;60".to_string(),
+                h4: "0;80;60".to_string(),
+                h5: "0;70;60".to_string(),
+                h6: "0;60;60".to_string(),
+                code_bg: "235;235;245".to_string(),
+                code_label: "0;128;160".to_string(),
+                bullet: "160;120;0".to_string(),
+                table_header_bg: "200;200;220".to_string(),
+                table_border: "120;110;140".to_string(),
+                blockquote_border: "0;128;160".to_string(),
+                think_border: "140;140;140".to_string(),
+                hr: "180;180;180".to_string(),
+                link_url: "0;128;160".to_string(),
+                image_marker: "160;120;0".to_string(),
+                footnote: "120;110;140".to_string(),
+                heading_centered: false,
+            }
+        } else {
+            RenderStyle {
+                h1: "0;255;128".to_string(),
+                h2: "0;220;128".to_string(),
+                h3: "0;200;128".to_string(),
+                h4: "0;180;128".to_string(),
+                h5: "0;160;128".to_string(),
+                h6: "0;140;128".to_string(),
+                code_bg: "20;20;60".to_string(),
+                code_label: "0;255;255".to_string(),
+                bullet: "255;255;0".to_string(),
+                table_header_bg: "80;60;120".to_string(),
+                table_border: "180;160;220".to_string(),
+                blockquote_border: "0;255;255".to_string(),
+                think_border: "128;128;128".to_string(),
+                hr: "128;128;128".to_string(),
+                link_url: "0;255;255".to_string(),
+                image_marker: "255;255;0".to_string(),
+                footnote: "180;160;220".to_string(),
+                heading_centered: false,
+            }
         };
+
+        let theme = if light { "InspiredGitHub" } else { "base16-eighties.dark" };
+
         let mut renderer = Renderer::with_style(buf, width as usize, style);
         renderer.set_features(RenderFeatures {
             pretty_pad: false,
@@ -141,7 +183,7 @@ impl MarkdownStream {
             fixed_width: Some(width as usize),
             ..Default::default()
         });
-        renderer.set_theme("base16-eighties.dark");
+        renderer.set_theme(theme);
         renderer
     }
 }
