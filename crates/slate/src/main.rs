@@ -1,4 +1,5 @@
 mod app;
+mod cli;
 mod shell;
 mod ui;
 mod ipc;
@@ -7,18 +8,45 @@ mod markdown;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use clap::Parser;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Parser)]
+#[command(name = "slate", version = VERSION, about = "AI-powered terminal agent")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<cli::Commands>,
+
+    /// Enable debug logging (optionally set level: error, warn, info, debug, trace)
+    #[arg(long, value_name = "LEVEL", num_args = 0..=1, default_missing_value = "debug")]
+    debug: Option<String>,
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && (args[1] == "--version" || args[1] == "-V") {
-        println!("slate {}", VERSION);
+    let cli = Cli::parse();
+
+    // Handle tool subcommands immediately (no TUI setup needed)
+    if let Some(cmd) = cli.command {
+        cli::dispatch(cmd);
         return;
     }
 
-    if let Some(level) = parse_debug_flag(&args) {
+    // Initialize debug logging if requested
+    if let Some(ref level_str) = cli.debug {
+        let level = match level_str.to_lowercase().as_str() {
+            "error" => log::LevelFilter::Error,
+            "warn" => log::LevelFilter::Warn,
+            "info" => log::LevelFilter::Info,
+            "debug" => log::LevelFilter::Debug,
+            "trace" => log::LevelFilter::Trace,
+            _ => {
+                eprintln!("slate: unknown log level '{}', using 'debug'", level_str);
+                log::LevelFilter::Debug
+            }
+        };
         init_logging(level);
-        log::info!("slate {} starting (args: {:?})", VERSION, args);
+        log::info!("slate {} starting", VERSION);
     }
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -45,33 +73,6 @@ fn main() {
     }
 }
 
-/// Parse `--debug` or `--debug=<level>` from args.
-/// Returns `Some(level)` if present, `None` otherwise.
-/// Supported levels: error, warn, info, debug, trace.
-/// `--debug` without a value defaults to `debug`.
-fn parse_debug_flag(args: &[String]) -> Option<log::LevelFilter> {
-    for arg in args {
-        if arg == "--debug" {
-            return Some(log::LevelFilter::Debug);
-        }
-        if let Some(level_str) = arg.strip_prefix("--debug=") {
-            return Some(match level_str.to_lowercase().as_str() {
-                "error" => log::LevelFilter::Error,
-                "warn" => log::LevelFilter::Warn,
-                "info" => log::LevelFilter::Info,
-                "debug" => log::LevelFilter::Debug,
-                "trace" => log::LevelFilter::Trace,
-                _ => {
-                    eprintln!("slate: unknown log level '{}', using 'debug'", level_str);
-                    log::LevelFilter::Debug
-                }
-            });
-        }
-    }
-    None
-}
-
-/// Initialize logging to `/tmp/slate-debug.log` at the given level.
 fn init_logging(level: log::LevelFilter) {
     use std::fs::OpenOptions;
     use std::io::Write;
