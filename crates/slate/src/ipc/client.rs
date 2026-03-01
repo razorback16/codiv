@@ -1,7 +1,6 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
@@ -9,7 +8,7 @@ use super::messages::{DaemonMessage, FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE, parse_
 
 pub struct SlatedClient {
     stream: UnixStream,
-    rx: mpsc::Receiver<DaemonMessage>,
+    rx: crossbeam_channel::Receiver<DaemonMessage>,
     connected: Arc<AtomicBool>,
     _reader_handle: Option<thread::JoinHandle<()>>,
 }
@@ -20,7 +19,7 @@ impl SlatedClient {
         let stream = UnixStream::connect(socket_path).ok()?;
         let reader_stream = stream.try_clone().ok()?;
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
         let connected = Arc::new(AtomicBool::new(true));
         let connected_clone = connected.clone();
 
@@ -44,8 +43,9 @@ impl SlatedClient {
         self.stream.write_all(framed_data).is_ok()
     }
 
-    pub fn try_recv(&self) -> Option<DaemonMessage> {
-        self.rx.try_recv().ok()
+    /// Expose the daemon message channel for use in `select!`-based event loops.
+    pub fn daemon_receiver(&self) -> &crossbeam_channel::Receiver<DaemonMessage> {
+        &self.rx
     }
 
     pub fn is_connected(&self) -> bool {
@@ -65,7 +65,7 @@ impl Drop for SlatedClient {
 
 fn reader_loop(
     mut stream: UnixStream,
-    tx: mpsc::Sender<DaemonMessage>,
+    tx: crossbeam_channel::Sender<DaemonMessage>,
     connected: Arc<AtomicBool>,
 ) {
     let mut header_buf = [0u8; FRAME_HEADER_SIZE];

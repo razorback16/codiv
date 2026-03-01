@@ -90,7 +90,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -101,7 +101,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -414,6 +414,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -693,7 +702,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -798,7 +807,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1847,7 +1856,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2624,7 +2633,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2637,7 +2646,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2947,6 +2956,7 @@ dependencies = [
  "arboard",
  "bincode",
  "clap",
+ "crossbeam-channel",
  "crossterm 0.28.1",
  "dirs",
  "env_logger",
@@ -3043,7 +3053,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "streamdown-ansi"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
+source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
 dependencies = [
  "crossterm 0.28.1",
  "regex",
@@ -3053,7 +3063,7 @@ dependencies = [
 [[package]]
 name = "streamdown-config"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
+source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
 dependencies = [
  "crossterm 0.28.1",
  "directories",
@@ -3066,7 +3076,7 @@ dependencies = [
 [[package]]
 name = "streamdown-core"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
+source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
 dependencies = [
  "regex",
  "serde",
@@ -3076,7 +3086,7 @@ dependencies = [
 [[package]]
 name = "streamdown-parser"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
+source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
 dependencies = [
  "regex",
  "streamdown-ansi",
@@ -3087,7 +3097,7 @@ dependencies = [
 [[package]]
 name = "streamdown-render"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
+source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
 dependencies = [
  "base64",
  "crossterm 0.28.1",
@@ -3103,7 +3113,7 @@ dependencies = [
 [[package]]
 name = "streamdown-syntax"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#58bb42d307f4f1ab0ec982cc9cfc0bee0ba6bb68"
+source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
 dependencies = [
  "streamdown-core",
  "syntect",
@@ -3236,7 +3246,7 @@ dependencies = [
  "getrandom 0.4.1",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4029,7 +4039,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4087,15 +4097,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

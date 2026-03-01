@@ -126,6 +126,16 @@ pub struct BashArgs {
     pub agent_guide: bool,
 }
 
+fn require<T>(opt: Option<T>, name: &str) -> T {
+    match opt {
+        Some(v) => v,
+        None => {
+            eprintln!("error: --{name} is required (or use --json-in)");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn cwd() -> String {
     std::env::current_dir()
         .expect("failed to get current directory")
@@ -167,7 +177,7 @@ pub fn handle(cmd: Commands) {
             let value = if args.json_in {
                 read_json_stdin()
             } else {
-                let path = args.path.expect("--path is required");
+                let path = require(args.path, "path");
                 let mut map = serde_json::Map::new();
                 map.insert("file_path".into(), path.into());
                 if let Some(o) = args.offset {
@@ -188,8 +198,8 @@ pub fn handle(cmd: Commands) {
             let value = if args.json_in {
                 read_json_stdin()
             } else {
-                let path = args.path.expect("--path is required");
-                let content = args.content.expect("--content is required");
+                let path = require(args.path, "path");
+                let content = require(args.content, "content");
                 let mut map = serde_json::Map::new();
                 map.insert("file_path".into(), path.into());
                 map.insert("content".into(), content.into());
@@ -205,9 +215,9 @@ pub fn handle(cmd: Commands) {
             let value = if args.json_in {
                 read_json_stdin()
             } else {
-                let path = args.path.expect("--path is required");
-                let old = args.old_string.expect("--old-string is required");
-                let new = args.new_string.expect("--new-string is required");
+                let path = require(args.path, "path");
+                let old = require(args.old_string, "old-string");
+                let new = require(args.new_string, "new-string");
                 let mut map = serde_json::Map::new();
                 map.insert("file_path".into(), path.into());
                 map.insert("old_string".into(), old.into());
@@ -224,7 +234,7 @@ pub fn handle(cmd: Commands) {
             let value = if args.json_in {
                 read_json_stdin()
             } else {
-                let pattern = args.pattern.expect("--pattern is required");
+                let pattern = require(args.pattern, "pattern");
                 let mut map = serde_json::Map::new();
                 map.insert("pattern".into(), pattern.into());
                 if let Some(p) = args.path {
@@ -245,7 +255,7 @@ pub fn handle(cmd: Commands) {
             let value = if args.json_in {
                 read_json_stdin()
             } else {
-                let pattern = args.pattern.expect("--pattern is required");
+                let pattern = require(args.pattern, "pattern");
                 let mut map = serde_json::Map::new();
                 map.insert("pattern".into(), pattern.into());
                 if let Some(p) = args.path {
@@ -269,7 +279,7 @@ pub fn handle(cmd: Commands) {
             let value = if args.json_in {
                 read_json_stdin()
             } else {
-                let command = args.command.expect("--command is required");
+                let command = require(args.command, "command");
                 let mut map = serde_json::Map::new();
                 map.insert("command".into(), command.into());
                 if let Some(t) = args.timeout {

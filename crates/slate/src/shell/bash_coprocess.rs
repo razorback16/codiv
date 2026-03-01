@@ -12,7 +12,7 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use rand::Rng;
 use std::io::{Read, Write};
-use std::sync::mpsc::{self, Receiver};
+use crossbeam_channel::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,7 @@ pub struct BashCoprocess {
     reader_handle: Option<JoinHandle<()>>,
 }
 
-fn reader_thread(mut reader: Box<dyn Read + Send>, tx: mpsc::Sender<Vec<u8>>) {
+fn reader_thread(mut reader: Box<dyn Read + Send>, tx: crossbeam_channel::Sender<Vec<u8>>) {
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
@@ -94,7 +94,7 @@ impl BashCoprocess {
             .take_writer()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
         let handle = std::thread::Builder::new()
             .name("pty-reader".into())
             .spawn(move || reader_thread(reader, tx))
@@ -135,6 +135,11 @@ impl BashCoprocess {
     /// overlapping immutable + mutable borrows on `self`).
     pub fn reader_and_writer(&mut self) -> (&Receiver<Vec<u8>>, &mut dyn Write) {
         (&self.reader_rx, &mut *self.writer)
+    }
+
+    /// Expose the PTY reader channel for use in `select!`-based event loops.
+    pub fn pty_receiver(&self) -> &crossbeam_channel::Receiver<Vec<u8>> {
+        &self.reader_rx
     }
 
     /// Update the PTY window size. Called on terminal resize so that
@@ -272,8 +277,8 @@ impl BashCoprocess {
                 Ok(_) => {
                     // Data received and discarded; keep draining.
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => break, // silence — done draining
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => break, // silence — done draining
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
         }
     }
@@ -365,10 +370,10 @@ impl BashCoprocess {
                         break;
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     // Loop back so deadline check can fire
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
         }
 

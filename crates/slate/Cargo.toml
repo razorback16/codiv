@@ -12,6 +12,7 @@ bincode = "1"
 nix = { version = "0.29", features = ["term", "signal", "poll", "fs"] }
 portable-pty = "0.9"
 libc = "0.2"
+crossbeam-channel = "0.5"
 dirs = "6"
 rand = "0.8"
 tui-term = "0.3"

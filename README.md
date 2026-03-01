@@ -109,28 +109,28 @@ Each built-in tool is available as a `slate` subcommand with these common flags:
 
 Working terminal client with daemon IPC, command fast-pass, and zero-overhead shell experience.
 
-- Ratatui TUI with persistent bash co-process (portable-pty)
-- Command index: PATH scanning + bash/zsh builtins in O(1) hash map
-- Input classification: Execute, Interactive, AiQuery, NotFound, Clear, Exit
-- 3-tier tab completion: programmable bash-completion, command, file
-- Interactive passthrough for full-screen programs (vim, ssh, python REPL)
-- Serde+bincode IPC over Unix domain socket with heartbeat
-- Env snapshot protocol and worker bash sessions
+1. Ratatui TUI with persistent bash co-process (portable-pty)
+2. Command index: PATH scanning + bash/zsh builtins in O(1) hash map
+3. Input classification: Execute, Interactive, AiQuery, NotFound, Clear, Exit
+4. 3-tier tab completion: programmable bash-completion, command, file
+5. Interactive passthrough for full-screen programs (vim, ssh, python REPL)
+6. Serde+bincode IPC over Unix domain socket with heartbeat
+7. Env snapshot protocol and worker bash sessions
 
 ### Phase 2: Single-Agent AI Loop — In Progress
 
 Natural language routes to an AI agent that reasons and uses tools.
 
-- [x] aisdk integration with streaming LLM access (Anthropic, OpenAI, Google)
-- [x] Unified session timeline (shell commands + queries + responses)
-- [x] Real-time CommandResult IPC
-- [x] Streamdown markdown rendering with syntax highlighting
-- [x] Terminal colorscheme detection
-- [x] Native tools extracted to shared crate with CLI subcommands
-- [ ] Tool calling loop (agent reasons, calls tools, continues)
-- [ ] Risk classification + confirmation prompts for destructive commands
-- [ ] Env snapshot refresh on `cd` and `source`
-- [ ] TOML config for API keys and model selection
+1. [x] aisdk integration with streaming LLM access (Anthropic, OpenAI, Google)
+2. [x] Unified session timeline (shell commands + queries + responses)
+3. [x] Real-time CommandResult IPC
+4. [x] Streamdown markdown rendering with syntax highlighting
+5. [x] Terminal colorscheme detection
+6. [x] Native tools extracted to shared crate with CLI subcommands
+7. [ ] Tool calling loop (agent reasons, calls tools, continues)
+8. [ ] Risk classification + confirmation prompts for destructive commands
+9. [ ] Env snapshot refresh on `cd` and `source`
+10. [ ] TOML config for API keys and model selection
 
 ### Phase 3: Work Item DAG + Scheduler
 

@@ -6,7 +6,7 @@
 
 use std::io::Write;
 use std::os::fd::{BorrowedFd, RawFd};
-use std::sync::mpsc::Receiver;
+use crossbeam_channel::Receiver;
 
 use super::bash_coprocess::BashCoprocess;
 
