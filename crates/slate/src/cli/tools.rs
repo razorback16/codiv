@@ -96,6 +96,9 @@ pub struct GrepArgs {
     /// Glob pattern to filter files
     #[arg(long)]
     pub include: Option<String>,
+    /// Maximum number of matches (default 500, -1 for unlimited)
+    #[arg(long, allow_negative_numbers = true)]
+    pub max_matches: Option<i64>,
     /// Read JSON input from stdin
     #[arg(long)]
     pub json_in: bool,
@@ -263,6 +266,9 @@ pub fn handle(cmd: Commands) {
                 }
                 if let Some(i) = args.include {
                     map.insert("include".into(), i.into());
+                }
+                if let Some(m) = args.max_matches {
+                    map.insert("max_matches".into(), m.into());
                 }
                 serde_json::Value::Object(map)
             };
