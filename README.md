@@ -189,4 +189,4 @@ make clean    # cargo clean
 
 ## License
 
-All rights reserved.
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
