@@ -21,7 +21,7 @@ use tui_term::widget::{Cursor as PtCursor, PseudoTerminal};
 
 use crate::ipc::client::SlatedClient;
 use crate::ipc::messages as ipc_messages;
-use crate::shell::bash_coprocess::BashCoprocess;
+use crate::shell::bash_coprocess::{BashCoprocess, GitInfo};
 use crate::shell::command_index::{classify_input, CommandIndex, InputAction};
 use crate::shell::completion_engine::CompletionEngine;
 use crate::shell::interactive::InteractiveSession;
@@ -111,6 +111,19 @@ fn is_sentinel_noise(line: &str, command: &str, sentinel: &str) -> bool {
 fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str) {
     let line = format!("{}{}\x1b[0m\r\n", ansi_prefix, text);
     parser.process(line.as_bytes());
+}
+
+/// Format a token count for compact display: 0, 512, 1.2k, 200k, 1.0M.
+fn format_tokens(n: usize) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    let s = human_format::Formatter::new()
+        .with_decimals(1)
+        .with_separator("")
+        .format(n as f64);
+    // "200.0k" -> "200k", "1.2k" unchanged
+    s.trim().replace(".0", "")
 }
 
 /// Truncate tool text for display, collapsing newlines and limiting length.
@@ -305,6 +318,8 @@ fn handle_daemon_message(
     md_stream: &mut MarkdownStream,
     agent_streaming: &mut bool,
     last_daemon_timestamp: &mut u64,
+    model_alias: &mut String,
+    context_usage: &mut (usize, usize),
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -322,6 +337,13 @@ fn handle_daemon_message(
                     parser.process(t.as_bytes());
                 }
                 ipc_messages::StreamChunk::ToolCall { name, arguments } => {
+                    // Flush any buffered markdown text so it appears before the tool call.
+                    let pending = md_stream.finish();
+                    if !pending.is_empty() {
+                        parser.process(&pending);
+                        parser.process(b"\r\n");
+                    }
+                    md_stream.reset();
                     let summary = truncate_tool_text(&arguments, 120);
                     parser_push_styled(
                         parser,
@@ -391,6 +413,14 @@ fn handle_daemon_message(
                 "\x1b[31m",
             );
         }
+        ipc_messages::DaemonMessage::AgentMeta {
+            model_alias: alias,
+            total_tokens,
+            context_window,
+        } => {
+            *model_alias = alias;
+            *context_usage = (total_tokens, context_window);
+        }
         ipc_messages::DaemonMessage::Heartbeat { timestamp } => {
             *last_daemon_timestamp = timestamp;
         }
@@ -419,6 +449,9 @@ fn event_loop(
     let mut selection = TextSelection::new();
     let mut clipboard = arboard::Clipboard::new().ok();
     let mut agent_streaming = false;
+    let mut git_info: Option<GitInfo> = bash.capture_git_info();
+    let mut model_alias = String::new();
+    let mut context_usage: (usize, usize) = (0, 0);
     let mut md_stream = MarkdownStream::new(term.size().map(|s| s.width).unwrap_or(80));
 
     // Start background initialization (non-blocking) so the first Tab
@@ -453,7 +486,7 @@ fn event_loop(
         // --- Render only when needed ---
         if needs_render {
             let is_executing = pending_command.is_some();
-            render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, agent_streaming, &completion_popup, &selection)?;
+            render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, agent_streaming, &completion_popup, &selection, git_info.as_ref(), &model_alias, context_usage)?;
             needs_render = false;
         }
 
@@ -696,6 +729,7 @@ fn event_loop(
                                                         parser.process(b"\x1b[2J\x1b[H");
                                                     }
                                                     *cwd = bash.capture_cwd();
+                                                    git_info = bash.capture_git_info();
                                                     parser_push_styled(
                                                         parser,
                                                         "(interactive session ended)",
@@ -855,10 +889,10 @@ fn event_loop(
             }
             recv(daemon_rx) -> msg => {
                 if let Ok(msg) = msg {
-                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp);
+                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage);
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
-                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp);
+                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage);
                     }
                     needs_render = true;
                 }
@@ -937,6 +971,7 @@ fn event_loop(
                 }
             }
             *cwd = bash.capture_cwd();
+            git_info = bash.capture_git_info();
             if let Some(ref mut c) = client {
                 if let Some(frame) = ipc_messages::build_command_result(
                     &pending.command,
@@ -984,6 +1019,7 @@ fn event_loop(
                     );
                 }
                 *cwd = bash.capture_cwd();
+                git_info = bash.capture_git_info();
                 if let Some(ref mut c) = client {
                     if let Some(frame) = ipc_messages::build_command_result(
                         &pending.command,
@@ -1037,16 +1073,23 @@ fn render_frame(
     agent_streaming: bool,
     completion_popup: &CompletionPopup,
     selection: &TextSelection,
+    git_info: Option<&GitInfo>,
+    model_alias: &str,
+    context_usage: (usize, usize),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming).
     if scroll_offset == 0 && !is_executing && !agent_streaming {
-        let prompt_text = format!("{}$ ", cwd);
+        let prompt_text = if !model_alias.is_empty() {
+            format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1))
+        } else {
+            "> ".to_string()
+        };
         let input_text = input.content();
 
         // Clear current line, write prompt + input with styling.
         parser.process(
-            format!("\r\x1b[K\x1b[1;32m{}\x1b[0m{}", prompt_text, input_text).as_bytes(),
+            format!("\r\x1b[K\x1b[36m{}\x1b[0m{}", prompt_text, input_text).as_bytes(),
         );
 
         // Position cursor: move back from end if cursor isn't at end of input.
@@ -1104,12 +1147,16 @@ fn render_frame(
         }
 
         // --- Render status bar ---
-        render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area);
+        render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area, git_info);
 
         // --- Render completion popup ---
         if completion_popup.is_visible() {
             let (cursor_row, _cursor_col) = parser.screen().cursor_position();
-            let prompt_len = cwd.len() + 2; // "{cwd}$ "
+            let prompt_len = if !model_alias.is_empty() {
+                format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1)).len()
+            } else {
+                2 // "> "
+            };
             let anchor_x = (prompt_len + input.cursor_position()) as u16;
             let anchor_y = term_area.top() + cursor_row;
             completion_popup.render(frame, anchor_x, anchor_y);
@@ -1127,6 +1174,7 @@ fn render_status_bar(
     daemon_timestamp: u64,
     is_executing: bool,
     area: Rect,
+    git_info: Option<&GitInfo>,
 ) {
     let width = area.width as usize;
 
@@ -1149,7 +1197,18 @@ fn render_status_bar(
 
     let running_indicator = if is_executing { " [running]" } else { "" };
     let right = format!(" {} | slate v{} ", daemon_status, VERSION);
-    let left = format!(" {}{} ", cwd, running_indicator);
+    let left = match git_info {
+        Some(info) => {
+            let branch_part = format!("({})", info.branch);
+            let stats_part = if info.files_changed > 0 {
+                format!(" ~{} +{} -{}", info.files_changed, info.insertions, info.deletions)
+            } else {
+                String::new()
+            };
+            format!(" {} {}{}{} ", cwd, branch_part, stats_part, running_indicator)
+        }
+        None => format!(" {}{} ", cwd, running_indicator),
+    };
 
     // Pad the middle so right-side text is right-aligned.
     let pad = width.saturating_sub(left.len() + right.len());
@@ -1158,9 +1217,7 @@ fn render_status_bar(
     let paragraph = Paragraph::new(Line::from(Span::styled(
         bar,
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::White)
-            .add_modifier(Modifier::BOLD),
+            .add_modifier(Modifier::REVERSED | Modifier::BOLD),
     )));
 
     frame.render_widget(paragraph, area);

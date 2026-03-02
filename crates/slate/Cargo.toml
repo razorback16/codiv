@@ -18,6 +18,7 @@ rand = "0.8"
 tui-term = "0.3"
 vt100 = "0.16"
 arboard = "3"
+human_format = "1"
 clap = { version = "4", features = ["derive"] }
 slate-tools = { path = "../slate-tools" }
 serde_json = "1"

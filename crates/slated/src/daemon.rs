@@ -94,10 +94,28 @@ impl Daemon {
                         tokio::sync::oneshot::channel::<agent::agent::Agent>();
 
                     tokio::spawn(async move {
+                        // Send model alias before streaming starts (tokens unknown yet).
+                        let meta_msg = DaemonMessage::AgentMeta {
+                            model_alias: agent.model_config.model_alias(),
+                            total_tokens: 0,
+                            context_window: agent.model_config.context_window(),
+                        };
+                        if let Ok(frame) = slate_common::messages::frame_message(&meta_msg) {
+                            let _ = client_tx.send(frame).await;
+                        }
                         match agent.run_streaming(&rid, &client_tx).await {
-                            Ok(response) => {
+                            Ok((response, input_tokens, output_tokens)) => {
                                 info!("agent completed request {}: {} bytes", rid, response.len());
                                 agent.add_assistant_message(&response);
+                                // Send updated token usage after streaming.
+                                let meta_msg = DaemonMessage::AgentMeta {
+                                    model_alias: agent.model_config.model_alias(),
+                                    total_tokens: input_tokens + output_tokens,
+                                    context_window: agent.model_config.context_window(),
+                                };
+                                if let Ok(frame) = slate_common::messages::frame_message(&meta_msg) {
+                                    let _ = client_tx.send(frame).await;
+                                }
                                 let msg = DaemonMessage::AgentComplete {
                                     request_id: rid,
                                     summary: response,

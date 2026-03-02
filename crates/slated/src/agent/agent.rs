@@ -122,12 +122,12 @@ impl Agent {
     }
 
     /// Run a streaming LLM call, forwarding chunks over IPC via `client_tx`.
-    /// Returns the accumulated response text.
+    /// Returns (response_text, input_tokens, output_tokens).
     pub async fn run_streaming(
         &self,
         request_id: &str,
         client_tx: &mpsc::Sender<Vec<u8>>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, usize, usize), String> {
         info!(
             "agent {:?} calling {}/{} ({} events in history)",
             self.role,

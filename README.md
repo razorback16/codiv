@@ -127,7 +127,7 @@ Natural language routes to an AI agent that reasons and uses tools.
 4. [x] Streamdown markdown rendering with syntax highlighting
 5. [x] Terminal colorscheme detection
 6. [x] Native tools extracted to shared crate with CLI subcommands
-7. [ ] Tool calling loop (agent reasons, calls tools, continues)
+7. [x] Tool calling loop (agent reasons, calls tools, continues)
 8. [ ] Risk classification + confirmation prompts for destructive commands
 9. [ ] Env snapshot refresh on `cd` and `source`
 10. [ ] TOML config for API keys and model selection

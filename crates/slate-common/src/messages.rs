@@ -71,6 +71,11 @@ pub enum DaemonMessage {
         request_id: String,
         message: String,
     },
+    AgentMeta {
+        model_alias: String,
+        total_tokens: usize,
+        context_window: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

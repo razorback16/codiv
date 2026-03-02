@@ -59,15 +59,53 @@ impl ModelCatalog {
     }
 }
 
+impl ModelAssignment {
+    /// Map a full model identifier to a short display alias.
+    pub fn model_alias(&self) -> String {
+        match self.model.as_str() {
+            "claude-sonnet-4-5" => "sonnet-4.5".to_string(),
+            "claude-sonnet-4-5-20250514" => "sonnet-4.5".to_string(),
+            "claude-opus-4" => "opus-4".to_string(),
+            "claude-haiku-3-5" => "haiku-3.5".to_string(),
+            "gpt-4o" => "gpt-4o".to_string(),
+            "gpt-4o-mini" => "gpt-4o-mini".to_string(),
+            "gemini-2.0-flash" => "gemini-flash".to_string(),
+            "gemini-2.5-pro" => "gemini-pro".to_string(),
+            other => {
+                let stripped = other.strip_prefix("claude-").unwrap_or(other);
+                if stripped.len() > 15 {
+                    stripped[..15].to_string()
+                } else {
+                    stripped.to_string()
+                }
+            }
+        }
+    }
+
+    /// Return the context window size (max tokens) for this model.
+    pub fn context_window(&self) -> usize {
+        match self.model.as_str() {
+            "claude-sonnet-4-5" | "claude-sonnet-4-5-20250514" => 200_000,
+            "claude-opus-4" => 200_000,
+            "claude-haiku-3-5" => 200_000,
+            "gpt-4o" => 128_000,
+            "gpt-4o-mini" => 128_000,
+            "gemini-2.0-flash" => 1_048_576,
+            "gemini-2.5-pro" => 1_048_576,
+            _ => 200_000, // conservative default
+        }
+    }
+}
+
 /// Execute a streaming LLM call, forwarding chunks over IPC.
-/// Returns the accumulated response text.
+/// Returns (response_text, input_tokens, output_tokens).
 pub async fn stream_from_config(
     assignment: &ModelAssignment,
     messages: aisdk::core::messages::Messages,
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
     tools: Vec<Tool>,
-) -> Result<String, DynError> {
+) -> Result<(String, usize, usize), DynError> {
     match assignment.provider.as_str() {
         "anthropic" => {
             run_stream(Anthropic::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
@@ -89,7 +127,7 @@ async fn run_stream<M>(
     tx: &mpsc::Sender<Vec<u8>>,
     config: &ModelAssignment,
     tools: Vec<Tool>,
-) -> Result<String, DynError>
+) -> Result<(String, usize, usize), DynError>
 where
     M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + Send + Sync + 'static,
 {
@@ -192,7 +230,11 @@ where
         tracing::debug!("stop_reason: {:?}", reason);
     }
 
-    Ok(full_text)
+    let usage = response.usage().await;
+    let input_tokens = usage.input_tokens.unwrap_or(0);
+    let output_tokens = usage.output_tokens.unwrap_or(0);
+
+    Ok((full_text, input_tokens, output_tokens))
 }
 
 async fn send_ipc(tx: &mpsc::Sender<Vec<u8>>, msg: &DaemonMessage) -> Result<(), DynError> {

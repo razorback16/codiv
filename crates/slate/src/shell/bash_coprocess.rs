@@ -23,6 +23,15 @@ pub struct CommandResult {
     pub exit_code: i32,
 }
 
+/// Git repository metadata: current branch and working-tree diff stats.
+#[derive(Debug, Clone, Default)]
+pub struct GitInfo {
+    pub branch: String,
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
 /// A bash co-process that communicates over a PTY using a sentinel protocol.
 pub struct BashCoprocess {
     writer: Box<dyn Write + Send>,
@@ -228,6 +237,68 @@ impl BashCoprocess {
             }
         }
         env_vars
+    }
+
+    /// Capture git branch and working-tree diff stats in a single PTY round-trip.
+    ///
+    /// Returns `None` when the current directory is not inside a git repository.
+    pub fn capture_git_info(&mut self) -> Option<GitInfo> {
+        let result = self.execute(
+            "git rev-parse --abbrev-ref HEAD 2>/dev/null && git --no-pager diff HEAD --shortstat 2>/dev/null",
+            5000,
+        );
+        if result.exit_code != 0 {
+            return None;
+        }
+
+        let output = result.output.trim();
+        if output.is_empty() {
+            return None;
+        }
+
+        // First line is the branch name; the rest (if any) is the shortstat output.
+        let mut lines = output.lines();
+        let branch = lines.next().unwrap_or("").trim().to_string();
+        if branch.is_empty() {
+            return None;
+        }
+
+        let mut files_changed: usize = 0;
+        let mut insertions: usize = 0;
+        let mut deletions: usize = 0;
+
+        // Remaining lines: look for the shortstat summary.
+        for line in lines {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Parse tokens like "3 files changed", "10 insertions(+)", "2 deletions(-)"
+            let parts: Vec<&str> = line.split(',').collect();
+            for part in parts {
+                let part = part.trim();
+                if part.contains("file") {
+                    if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse::<usize>().ok()) {
+                        files_changed = n;
+                    }
+                } else if part.contains("insertion") {
+                    if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse::<usize>().ok()) {
+                        insertions = n;
+                    }
+                } else if part.contains("deletion") {
+                    if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse::<usize>().ok()) {
+                        deletions = n;
+                    }
+                }
+            }
+        }
+
+        Some(GitInfo {
+            branch,
+            files_changed,
+            insertions,
+            deletions,
+        })
     }
 
     // --- Non-blocking execution API ---
