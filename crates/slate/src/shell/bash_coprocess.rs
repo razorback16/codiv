@@ -32,6 +32,10 @@ pub struct GitInfo {
     pub deletions: usize,
 }
 
+/// PTY width used during sentinel protocol writes to prevent the sentinel
+/// string from wrapping across PTY lines on narrow terminals.
+const SENTINEL_SAFE_COLS: u16 = 500;
+
 /// A bash co-process that communicates over a PTY using a sentinel protocol.
 pub struct BashCoprocess {
     writer: Box<dyn Write + Send>,
@@ -39,6 +43,7 @@ pub struct BashCoprocess {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     reader_handle: Option<JoinHandle<()>>,
+    real_rows: u16,
     real_cols: u16,
 }
 
@@ -116,6 +121,7 @@ impl BashCoprocess {
             master: pair.master,
             child,
             reader_handle: Some(handle),
+            real_rows: rows,
             real_cols: cols,
         };
 
@@ -157,6 +163,7 @@ impl BashCoprocess {
     /// programs querying ioctl(TIOCGWINSZ) — including `tput lines` in
     /// the PAGER command — get the current dimensions.
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.real_rows = rows;
         self.real_cols = cols;
         self.resize_full(rows, cols);
     }
@@ -173,6 +180,13 @@ impl BashCoprocess {
         });
     }
 
+    /// Restore the PTY to the real terminal dimensions.
+    /// Called after sentinel protocol phases complete (command completion,
+    /// non-blocking command start, etc.).
+    pub fn restore_real_size(&self) {
+        self.resize_full(self.real_rows, self.real_cols);
+    }
+
     /// Execute a command in the bash co-process and return its output and exit code.
     pub fn execute(&mut self, command: &str, timeout_ms: i32) -> CommandResult {
         log::debug!("execute: cmd={:?} timeout={}ms", command, timeout_ms);
@@ -186,7 +200,11 @@ impl BashCoprocess {
             cmd_trimmed, sentinel
         );
 
+        // Widen PTY so the sentinel+command never wraps across lines.
+        self.resize_full(self.real_rows, SENTINEL_SAFE_COLS);
+
         if !self.write_all(full_cmd.as_bytes()) {
+            self.restore_real_size();
             return CommandResult {
                 output: String::new(),
                 exit_code: -1,
@@ -194,12 +212,12 @@ impl BashCoprocess {
         }
 
         let raw = self.read_until_sentinel(&sentinel, timeout_ms);
+        self.restore_real_size();
 
         let mut exit_code: i32 = -1;
-        let stripped = raw.replace('\n', "");
-        if let Some(pos) = Self::find_expanded_sentinel(&stripped, &sentinel) {
+        if let Some(pos) = Self::find_expanded_sentinel(&raw, &sentinel) {
             let code_start = pos + sentinel.len();
-            if let Some(rest) = stripped.get(code_start..) {
+            if let Some(rest) = raw.get(code_start..) {
                 if let Some(code_end) = rest.find("__") {
                     let code_str = &rest[..code_end];
                     if let Ok(code) = code_str.parse::<i32>() {
@@ -318,9 +336,16 @@ impl BashCoprocess {
             "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
             cmd_trimmed, sentinel
         );
+        // Widen PTY so the sentinel+command never wraps across lines.
+        // Do NOT restore real size here — leave the PTY wide. Downstream
+        // handlers restore it: alternate-screen detection sends SIGWINCH
+        // (500→real triggers a repaint), and command-completion calls
+        // restore_real_size().
+        self.resize_full(self.real_rows, SENTINEL_SAFE_COLS);
         if self.write_all(full_cmd.as_bytes()) {
             Some(sentinel)
         } else {
+            self.restore_real_size();
             None
         }
     }
@@ -365,12 +390,11 @@ impl BashCoprocess {
         command: &str,
         sentinel: &str,
     ) -> Option<CommandResult> {
-        let stripped = accumulated.replace('\n', "");
-        let pos = Self::find_expanded_sentinel(&stripped, sentinel)?;
+        let pos = Self::find_expanded_sentinel(accumulated, sentinel)?;
 
         let mut exit_code: i32 = -1;
         let code_start = pos + sentinel.len();
-        if let Some(rest) = stripped.get(code_start..) {
+        if let Some(rest) = accumulated.get(code_start..) {
             if let Some(code_end) = rest.find("__") {
                 let code_str = &rest[..code_end];
                 if let Ok(code) = code_str.parse::<i32>() {
@@ -441,8 +465,7 @@ impl BashCoprocess {
                     let chunk = String::from_utf8_lossy(&data).replace('\r', "");
                     accumulated.push_str(&chunk);
                     // Check if expanded sentinel is present
-                    let check_buf = accumulated.replace('\n', "");
-                    if Self::find_expanded_sentinel(&check_buf, sentinel).is_some() {
+                    if Self::find_expanded_sentinel(&accumulated, sentinel).is_some() {
                         break;
                     }
                 }

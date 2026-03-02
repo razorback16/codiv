@@ -1036,6 +1036,7 @@ fn event_loop(
                     }
                 }
                 pending_command = None;
+                bash.restore_real_size();
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
                 needs_render = true;
@@ -1044,6 +1045,7 @@ fn event_loop(
                 bash.drain_for(100);
                 parser_push_styled(parser, "command timed out (no activity for 5m)", "\x1b[31m");
                 pending_command = None;
+                bash.restore_real_size();
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
                 needs_render = true;

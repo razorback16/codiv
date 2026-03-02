@@ -288,9 +288,7 @@ impl InteractiveSession {
             }
 
             // Check for sentinel after draining all available data.
-            // Strip \n for the check to handle sentinel wrapping on narrow terminals.
-            let check_buf = tail.replace('\n', "");
-            if BashCoprocess::find_expanded_sentinel(&check_buf, sentinel).is_some() {
+            if BashCoprocess::find_expanded_sentinel(&tail, sentinel).is_some() {
                 found_sentinel = true;
                 break;
             }
