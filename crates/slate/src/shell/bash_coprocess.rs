@@ -39,6 +39,7 @@ pub struct BashCoprocess {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     reader_handle: Option<JoinHandle<()>>,
+    real_cols: u16,
 }
 
 fn reader_thread(mut reader: Box<dyn Read + Send>, tx: crossbeam_channel::Sender<Vec<u8>>) {
@@ -115,6 +116,7 @@ impl BashCoprocess {
             master: pair.master,
             child,
             reader_handle: Some(handle),
+            real_cols: cols,
         };
 
         // Drain the initial prompt output adaptively.
@@ -154,9 +156,9 @@ impl BashCoprocess {
     /// Update the PTY window size. Called on terminal resize so that
     /// programs querying ioctl(TIOCGWINSZ) — including `tput lines` in
     /// the PAGER command — get the current dimensions.
-    pub fn resize(&self, rows: u16) {
-        // Keep cols at 500 (wide PTY prevents sentinel wrapping).
-        self.resize_full(rows, 500);
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.real_cols = cols;
+        self.resize_full(rows, cols);
     }
 
     /// Resize the PTY to arbitrary dimensions. Used to match the real
@@ -194,9 +196,10 @@ impl BashCoprocess {
         let raw = self.read_until_sentinel(&sentinel, timeout_ms);
 
         let mut exit_code: i32 = -1;
-        if let Some(pos) = Self::find_expanded_sentinel(&raw, &sentinel) {
+        let stripped = raw.replace('\n', "");
+        if let Some(pos) = Self::find_expanded_sentinel(&stripped, &sentinel) {
             let code_start = pos + sentinel.len();
-            if let Some(rest) = raw.get(code_start..) {
+            if let Some(rest) = stripped.get(code_start..) {
                 if let Some(code_end) = rest.find("__") {
                     let code_str = &rest[..code_end];
                     if let Ok(code) = code_str.parse::<i32>() {
@@ -362,11 +365,12 @@ impl BashCoprocess {
         command: &str,
         sentinel: &str,
     ) -> Option<CommandResult> {
-        let pos = Self::find_expanded_sentinel(accumulated, sentinel)?;
+        let stripped = accumulated.replace('\n', "");
+        let pos = Self::find_expanded_sentinel(&stripped, sentinel)?;
 
         let mut exit_code: i32 = -1;
         let code_start = pos + sentinel.len();
-        if let Some(rest) = accumulated.get(code_start..) {
+        if let Some(rest) = stripped.get(code_start..) {
             if let Some(code_end) = rest.find("__") {
                 let code_str = &rest[..code_end];
                 if let Ok(code) = code_str.parse::<i32>() {
@@ -437,7 +441,8 @@ impl BashCoprocess {
                     let chunk = String::from_utf8_lossy(&data).replace('\r', "");
                     accumulated.push_str(&chunk);
                     // Check if expanded sentinel is present
-                    if Self::find_expanded_sentinel(&accumulated, sentinel).is_some() {
+                    let check_buf = accumulated.replace('\n', "");
+                    if Self::find_expanded_sentinel(&check_buf, sentinel).is_some() {
                         break;
                     }
                 }
@@ -586,7 +591,7 @@ mod tests {
     #[test]
     fn test_execute_echo_hello() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo hello");
         assert_eq!(result.exit_code, 0, "exit code should be 0");
         assert!(
@@ -599,7 +604,7 @@ mod tests {
     #[test]
     fn test_execute_false_exit_code() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("false");
         assert_eq!(result.exit_code, 1, "exit code of 'false' should be 1");
     }
@@ -607,7 +612,7 @@ mod tests {
     #[test]
     fn test_execute_multiline() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("echo line1; echo line2");
         assert_eq!(result.exit_code, 0);
         assert!(
@@ -629,7 +634,7 @@ mod tests {
     #[test]
     fn test_capture_cwd() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
         let cwd = coproc.capture_cwd();
         assert!(!cwd.is_empty(), "cwd should not be empty");
         assert!(
@@ -642,7 +647,7 @@ mod tests {
     #[test]
     fn test_capture_env() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
         let env = coproc.capture_env();
         assert!(!env.is_empty(), "env should not be empty");
         // There should be at least some standard env vars
@@ -682,7 +687,7 @@ mod tests {
     fn test_large_output_not_truncated() {
         let _lock = PTY_LOCK.lock().unwrap();
         // Verify that output larger than the PTY row count is fully captured.
-        let mut coproc = BashCoprocess::spawn(500, 10).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,10).expect("Failed to spawn bash coprocess");
         let result = coproc.execute_default("seq 1 100");
         assert_eq!(result.exit_code, 0);
         let lines: Vec<&str> = result.output.lines().collect();
@@ -708,7 +713,7 @@ mod tests {
     #[test]
     fn test_start_command_and_check_complete() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
 
         let sentinel = coproc.start_command("echo hello").expect("start_command failed");
         let mut accumulated = String::new();
@@ -740,7 +745,7 @@ mod tests {
     #[test]
     fn test_try_read_no_data() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
 
         // Drain initial output first.
         std::thread::sleep(Duration::from_millis(200));
@@ -758,7 +763,7 @@ mod tests {
     #[test]
     fn test_send_bytes_during_command() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
 
         // Use send_bytes to write a complete command to the PTY.
         // This verifies the public API writes through to the PTY
@@ -801,7 +806,7 @@ mod tests {
     #[test]
     fn test_interrupt_hanging_command() {
         let _lock = PTY_LOCK.lock().unwrap();
-        let mut coproc = BashCoprocess::spawn(500, 24).expect("Failed to spawn bash coprocess");
+        let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
 
         // Start `sleep 60` which blocks but is cleanly interruptible.
         let sentinel = coproc.start_command("sleep 60").expect("start_command failed");

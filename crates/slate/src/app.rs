@@ -11,11 +11,9 @@ use crate::ui;
 
 pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Spawn bash co-process
-    let (_cols, rows) = crossterm::terminal::size().unwrap_or((500, 24));
-    // Use a wide PTY so the sentinel command (~82 chars) never wraps.
-    // ratatui handles display-width rendering independently.
-    log::debug!("spawning bash coprocess (rows={})", rows);
-    let mut bash = BashCoprocess::spawn(500, rows)?;
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    log::debug!("spawning bash coprocess (cols={}, rows={})", cols, rows);
+    let mut bash = BashCoprocess::spawn(cols, rows)?;
     log::debug!("bash coprocess spawned successfully");
 
     // 2. Build command index

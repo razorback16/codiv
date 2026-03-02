@@ -104,6 +104,11 @@ fn is_sentinel_noise(line: &str, command: &str, sentinel: &str) -> bool {
         }
     }
 
+    // Catch partial sentinel fragments from line wrapping on narrow terminals
+    if trimmed.contains("__SLATE_SENTINEL_") {
+        return true;
+    }
+
     false
 }
 
@@ -560,7 +565,7 @@ fn event_loop(
                             let parser_rows = rows.saturating_sub(1).max(1);
                             let parser_cols = (*cols).max(1);
                             parser.screen_mut().set_size(parser_rows, parser_cols);
-                            bash.resize(parser_rows);
+                            bash.resize(parser_rows, parser_cols);
                             md_stream.set_width(*cols);
                         }
                         _ => {}
@@ -931,7 +936,7 @@ fn event_loop(
                 real_size.width,
             );
             let rows = real_size.height.saturating_sub(1).max(1);
-            bash.resize_full(rows, 500);
+            bash.resize(rows, real_size.width);
             let _ = std::io::Write::write_all(
                 &mut std::io::stdout(),
                 b"\x1b[2J\x1b[H",
