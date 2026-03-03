@@ -32,10 +32,6 @@ pub struct GitInfo {
     pub deletions: usize,
 }
 
-/// PTY width used during sentinel protocol writes to prevent the sentinel
-/// string from wrapping across PTY lines on narrow terminals.
-const SENTINEL_SAFE_COLS: u16 = 500;
-
 /// A bash co-process that communicates over a PTY using a sentinel protocol.
 pub struct BashCoprocess {
     writer: Box<dyn Write + Send>,
@@ -86,7 +82,7 @@ impl BashCoprocess {
         if let Ok(cwd) = std::env::current_dir() {
             cmd.cwd(cwd);
         }
-        cmd.env("PS1", "$ ");
+        cmd.env("PS1", "");
         cmd.env("HISTFILE", "/dev/null");
         cmd.env("TERM", "xterm-256color");
         // Unset PROMPT_COMMAND to avoid spurious output.
@@ -127,6 +123,9 @@ impl BashCoprocess {
 
         // Drain the initial prompt output adaptively.
         coprocess.drain_initial_output();
+        // Suppress PTY echo so the sentinel-wrapped command line is never echoed back.
+        // Programs that need echo (vim, python, ssh) call tcsetattr() themselves.
+        coprocess.execute("stty -echo", 2000);
         log::info!("bash coprocess ready (pid=child)");
         Ok(coprocess)
     }
@@ -145,13 +144,6 @@ impl BashCoprocess {
     /// prompts for `apt install`).
     pub fn send_bytes(&mut self, data: &[u8]) -> bool {
         self.write_all(data)
-    }
-
-    /// Expose the reader channel and writer for use by `enter_with_sentinel()`.
-    /// Returns both references at once to satisfy the borrow checker (avoids
-    /// overlapping immutable + mutable borrows on `self`).
-    pub fn reader_and_writer(&mut self) -> (&Receiver<Vec<u8>>, &mut dyn Write) {
-        (&self.reader_rx, &mut *self.writer)
     }
 
     /// Expose the PTY reader channel for use in `select!`-based event loops.
@@ -180,13 +172,6 @@ impl BashCoprocess {
         });
     }
 
-    /// Restore the PTY to the real terminal dimensions.
-    /// Called after sentinel protocol phases complete (command completion,
-    /// non-blocking command start, etc.).
-    pub fn restore_real_size(&self) {
-        self.resize_full(self.real_rows, self.real_cols);
-    }
-
     /// Execute a command in the bash co-process and return its output and exit code.
     pub fn execute(&mut self, command: &str, timeout_ms: i32) -> CommandResult {
         log::debug!("execute: cmd={:?} timeout={}ms", command, timeout_ms);
@@ -200,11 +185,7 @@ impl BashCoprocess {
             cmd_trimmed, sentinel
         );
 
-        // Widen PTY so the sentinel+command never wraps across lines.
-        self.resize_full(self.real_rows, SENTINEL_SAFE_COLS);
-
         if !self.write_all(full_cmd.as_bytes()) {
-            self.restore_real_size();
             return CommandResult {
                 output: String::new(),
                 exit_code: -1,
@@ -212,7 +193,6 @@ impl BashCoprocess {
         }
 
         let raw = self.read_until_sentinel(&sentinel, timeout_ms);
-        self.restore_real_size();
 
         let mut exit_code: i32 = -1;
         if let Some(pos) = Self::find_expanded_sentinel(&raw, &sentinel) {
@@ -336,16 +316,9 @@ impl BashCoprocess {
             "{}; __SLATE_EXIT=$?; echo \"{}${{__SLATE_EXIT}}__\"\n",
             cmd_trimmed, sentinel
         );
-        // Widen PTY so the sentinel+command never wraps across lines.
-        // Do NOT restore real size here — leave the PTY wide. Downstream
-        // handlers restore it: alternate-screen detection sends SIGWINCH
-        // (500→real triggers a repaint), and command-completion calls
-        // restore_real_size().
-        self.resize_full(self.real_rows, SENTINEL_SAFE_COLS);
         if self.write_all(full_cmd.as_bytes()) {
             Some(sentinel)
         } else {
-            self.restore_real_size();
             None
         }
     }

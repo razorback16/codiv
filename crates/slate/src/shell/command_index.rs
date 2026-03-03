@@ -93,8 +93,6 @@ impl Default for CommandIndex {
 pub enum InputAction {
     /// Known command — fast-pass to bash.
     Execute,
-    /// Interactive program (vim, htop, ssh, …) — needs PTY passthrough.
-    Interactive,
     /// AI query (prefixed with `?`).
     AiQuery,
     /// Unknown command — first word returned. Routed to agent when daemon is connected.
@@ -174,25 +172,6 @@ fn is_variable_assignment(first_word: &str) -> bool {
     false
 }
 
-/// Set of commands that require interactive / PTY passthrough handling.
-///
-/// Only includes REPLs and remote sessions that need a real TTY but do NOT
-/// enter alternate screen mode. Fullscreen programs (vim, less, htop, man,
-/// etc.) are handled automatically: they run through Execute and get
-/// re-launched via Interactive when alternate screen mode is detected.
-fn interactive_commands() -> HashSet<&'static str> {
-    [
-        "ssh", "tmux", "screen", "python", "python3", "node", "irb", "ghci",
-        "claude", "ipython", "ruby", "lua", "R", "psql", "mysql", "sqlite3",
-        "docker", "sudo", "gdb", "lldb", "sftp", "bc", "bash", "zsh", "fish",
-        "bun", "deno", "ts-node", "perl", "php", "julia", "scala", "erl", "iex",
-        "elixir", "mongosh", "redis-cli", "mosh", "telnet", "ftp", "nix-shell",
-        "bpython",
-    ]
-    .into_iter()
-    .collect()
-}
-
 /// Classify a raw input line into an [`InputAction`].
 pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
     let trimmed = input.trim();
@@ -218,10 +197,6 @@ pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
     }
 
     let first_word = trimmed.split_whitespace().next().unwrap_or("");
-
-    if interactive_commands().contains(first_word) && index.is_known(first_word) {
-        return InputAction::Interactive;
-    }
 
     if shell_builtins().contains(first_word) {
         return InputAction::Execute;
@@ -290,22 +265,21 @@ mod tests {
     }
 
     #[test]
-    fn classify_interactive() {
+    fn classify_ssh_as_execute() {
         let idx = path_only_index();
-        // ssh is virtually always installed and should be classified as Interactive.
-        assert_eq!(classify_input("ssh user@host", &idx), InputAction::Interactive);
+        // ssh is now classified as Execute (unified path).
+        assert_eq!(classify_input("ssh user@host", &idx), InputAction::Execute);
     }
 
     #[test]
-    fn classify_fullscreen_not_interactive() {
+    fn classify_fullscreen_as_execute_or_not_found() {
         let idx = CommandIndex::new();
-        // Fullscreen programs (vim, htop, less, man) are no longer hardcoded
-        // as Interactive — they go through Execute and get auto-detected via
-        // alternate screen mode.
-        assert_ne!(classify_input("vim foo.txt", &idx), InputAction::Interactive);
-        assert_ne!(classify_input("htop", &idx), InputAction::Interactive);
-        assert_ne!(classify_input("less foo.txt", &idx), InputAction::Interactive);
-        assert_ne!(classify_input("man ls", &idx), InputAction::Interactive);
+        // Fullscreen programs go through Execute (or NotFound if not in PATH).
+        // With an empty index, they are NotFound.
+        assert_eq!(classify_input("vim foo.txt", &idx), InputAction::NotFound("vim".to_string()));
+        assert_eq!(classify_input("htop", &idx), InputAction::NotFound("htop".to_string()));
+        assert_eq!(classify_input("less foo.txt", &idx), InputAction::NotFound("less".to_string()));
+        assert_eq!(classify_input("man ls", &idx), InputAction::NotFound("man".to_string()));
     }
 
     #[test]

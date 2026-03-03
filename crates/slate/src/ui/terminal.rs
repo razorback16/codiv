@@ -24,7 +24,6 @@ use crate::ipc::messages as ipc_messages;
 use crate::shell::bash_coprocess::{BashCoprocess, GitInfo};
 use crate::shell::command_index::{classify_input, CommandIndex, InputAction};
 use crate::shell::completion_engine::CompletionEngine;
-use crate::shell::interactive::InteractiveSession;
 
 use super::completion_popup::CompletionPopup;
 use super::input::InputLine;
@@ -58,59 +57,10 @@ struct PendingCommand {
     accumulated: String,
     command: String,
     last_activity: Instant,
-    display_buf: String,
-    last_output: Instant,
 }
 
 /// Default scrollback limit (number of lines retained).
 const MAX_SCROLLBACK: usize = 10_000;
-
-/// Timeout before flushing incomplete line buffer (for prompts that don't end with \n).
-const DISPLAY_FLUSH_MS: u64 = 100;
-
-/// Check whether a line is sentinel protocol noise that should be suppressed.
-fn is_sentinel_noise(line: &str, command: &str, sentinel: &str) -> bool {
-    let plain = BashCoprocess::strip_ansi(line);
-    let trimmed = plain.trim();
-
-    // Lines containing the sentinel marker
-    if trimmed.contains(sentinel) {
-        return true;
-    }
-
-    // Lines containing __SLATE_EXIT
-    if trimmed.contains("__SLATE_EXIT") {
-        return true;
-    }
-
-    // Bare prompt lines
-    if trimmed == "$" || trimmed == "$ " {
-        return true;
-    }
-
-    let without_prompt = trimmed.strip_prefix("$ ").unwrap_or(trimmed);
-    let cmd_trimmed = command.trim();
-
-    // Echoed command line
-    if !cmd_trimmed.is_empty() && without_prompt == cmd_trimmed {
-        return true;
-    }
-
-    // Echoed command with sentinel suffix (e.g. "ls; __SLATE_EXIT=$?; ...")
-    if !cmd_trimmed.is_empty() && without_prompt.starts_with(cmd_trimmed) {
-        let rest = &without_prompt[cmd_trimmed.len()..];
-        if rest.starts_with("; __SLATE_EXIT") {
-            return true;
-        }
-    }
-
-    // Catch partial sentinel fragments from line wrapping on narrow terminals
-    if trimmed.contains("__SLATE_SENTINEL_") {
-        return true;
-    }
-
-    false
-}
 
 /// Helper: write styled text to the vt100 parser using ANSI SGR codes.
 fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str) {
@@ -142,6 +92,61 @@ fn truncate_tool_text(text: &str, max_len: usize) -> String {
     }
 }
 
+/// Convert a crossterm key event into raw terminal bytes for PTY forwarding.
+///
+/// Handles the full range of keys: printable characters (with Ctrl/Alt
+/// modifiers), navigation keys, function keys, and editing keys. Returns
+/// `None` only for keys that have no byte representation (e.g. bare
+/// modifier presses).
+fn key_event_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Option<Vec<u8>> {
+    match code {
+        KeyCode::Char(ch) => {
+            if modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+letter → 0x01..0x1A
+                let ctrl = (ch.to_ascii_lowercase() as u8).wrapping_sub(b'a').wrapping_add(1);
+                if ctrl <= 26 { Some(vec![ctrl]) } else { None }
+            } else if modifiers.contains(KeyModifiers::ALT) {
+                let mut buf = vec![0x1b]; // ESC prefix
+                let mut tmp = [0u8; 4];
+                buf.extend_from_slice(ch.encode_utf8(&mut tmp).as_bytes());
+                Some(buf)
+            } else {
+                let mut tmp = [0u8; 4];
+                let s = ch.encode_utf8(&mut tmp);
+                Some(s.as_bytes().to_vec())
+            }
+        }
+        KeyCode::Enter     => Some(b"\r".to_vec()),
+        KeyCode::Backspace => Some(b"\x7f".to_vec()),
+        KeyCode::Tab       => Some(b"\t".to_vec()),
+        KeyCode::BackTab   => Some(b"\x1b[Z".to_vec()),
+        KeyCode::Esc       => Some(b"\x1b".to_vec()),
+        KeyCode::Up        => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down      => Some(b"\x1b[B".to_vec()),
+        KeyCode::Right     => Some(b"\x1b[C".to_vec()),
+        KeyCode::Left      => Some(b"\x1b[D".to_vec()),
+        KeyCode::Home      => Some(b"\x1b[H".to_vec()),
+        KeyCode::End       => Some(b"\x1b[F".to_vec()),
+        KeyCode::PageUp    => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown  => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Insert    => Some(b"\x1b[2~".to_vec()),
+        KeyCode::Delete    => Some(b"\x1b[3~".to_vec()),
+        KeyCode::F(n) => {
+            let s = match n {
+                1  => "\x1bOP",    2  => "\x1bOQ",
+                3  => "\x1bOR",    4  => "\x1bOS",
+                5  => "\x1b[15~",  6  => "\x1b[17~",
+                7  => "\x1b[18~",  8  => "\x1b[19~",
+                9  => "\x1b[20~",  10 => "\x1b[21~",
+                11 => "\x1b[23~",  12 => "\x1b[24~",
+                _ => return None,
+            };
+            Some(s.as_bytes().to_vec())
+        }
+        _ => None,
+    }
+}
+
 /// Run the main terminal UI.
 ///
 /// This function takes ownership of the terminal, enters the alternate screen
@@ -169,7 +174,6 @@ pub fn run(
     let mut scroll_offset: usize = 0;
 
     let mut input = InputLine::new();
-    let mut interactive_session = InteractiveSession::new();
     let mut cwd = initial_cwd;
     let mut client = client;
     let mut prompt_is_live = false;
@@ -183,7 +187,6 @@ pub fn run(
         &mut parser,
         &mut scroll_offset,
         &mut input,
-        &mut interactive_session,
         bash,
         command_index,
         &shutdown,
@@ -203,22 +206,11 @@ pub fn run(
 /// Spawn a background thread that blocks on `crossterm::event::read()` and
 /// forwards events through a crossbeam channel. This lets the main loop
 /// `select!` on terminal input alongside PTY and daemon channels.
-fn spawn_crossterm_reader(
-    paused: Arc<AtomicBool>,
-) -> crossbeam_channel::Receiver<crossterm::event::Event> {
+fn spawn_crossterm_reader() -> crossbeam_channel::Receiver<crossterm::event::Event> {
     let (tx, rx) = crossbeam_channel::unbounded();
     std::thread::Builder::new()
         .name("crossterm-reader".into())
         .spawn(move || loop {
-            // When paused (interactive session active), spin on poll() with a
-            // short timeout instead of blocking in read(). This prevents the
-            // reader thread from stealing keystrokes meant for vim/less/etc.
-            if paused.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-            // Use poll+read instead of a bare read() so we periodically check
-            // the pause flag even when no events arrive.
             match crossterm::event::poll(Duration::from_millis(100)) {
                 Ok(true) => match crossterm::event::read() {
                     Ok(evt) => {
@@ -228,7 +220,7 @@ fn spawn_crossterm_reader(
                     }
                     Err(_) => break,
                 },
-                Ok(false) => {} // timeout, loop back to check pause flag
+                Ok(false) => {}
                 Err(_) => break,
             }
         })
@@ -239,7 +231,6 @@ fn spawn_crossterm_reader(
 /// Compute the minimum timeout until the next timer-driven action.
 ///
 /// Returns the shortest of:
-/// - Display flush remaining (100ms after last output, only when pending command has buffered incomplete line)
 /// - Heartbeat remaining (10s interval, only when daemon connected)
 /// - Activity timeout remaining (300s, only when a command is pending)
 /// - Fallback ceiling of 60s (guarantees we wake up periodically)
@@ -258,18 +249,6 @@ fn compute_next_timeout(
     }
 
     if let Some(ref pending) = pending_command {
-        // Display flush: 100ms after last output when buffer is non-empty.
-        if !pending.display_buf.is_empty() {
-            let elapsed = pending.last_output.elapsed();
-            let flush_deadline = Duration::from_millis(DISPLAY_FLUSH_MS);
-            if elapsed < flush_deadline {
-                timeout = timeout.min(flush_deadline - elapsed);
-            } else {
-                // Already past deadline — wake immediately.
-                return Duration::ZERO;
-            }
-        }
-
         // Activity timeout: 300s since last activity.
         let activity_deadline = Duration::from_secs(300);
         let activity_elapsed = pending.last_activity.elapsed();
@@ -294,26 +273,13 @@ fn compute_next_timeout(
     timeout
 }
 
-/// Process PTY output bytes for a pending command: accumulate, filter noise,
-/// and feed complete lines to the VT100 parser.
+/// Process PTY output bytes for a pending command: feed raw bytes directly
+/// to the VT100 parser and accumulate for sentinel detection.
 fn process_pty_bytes(bytes: &[u8], pending: &mut PendingCommand, parser: &mut vt100::Parser) {
+    parser.process(bytes);
     let text = String::from_utf8_lossy(bytes);
     pending.accumulated.push_str(&text);
-    pending.display_buf.push_str(&text);
     pending.last_activity = Instant::now();
-    pending.last_output = Instant::now();
-
-    while let Some(newline_pos) = pending.display_buf.find('\n') {
-        let line = pending.display_buf[..newline_pos].to_string();
-        pending.display_buf = pending.display_buf[newline_pos + 1..].to_string();
-        if !is_sentinel_noise(&line, &pending.command, &pending.sentinel) {
-            let out = format!("{}\n", line);
-            parser.process(out.as_bytes());
-        }
-        if parser.screen().alternate_screen() {
-            break;
-        }
-    }
 }
 
 /// Process a single daemon message, updating parser state.
@@ -438,7 +404,6 @@ fn event_loop(
     parser: &mut vt100::Parser,
     scroll_offset: &mut usize,
     input: &mut InputLine,
-    interactive_session: &mut InteractiveSession,
     bash: &mut BashCoprocess,
     command_index: &CommandIndex,
     shutdown: &Arc<AtomicBool>,
@@ -464,10 +429,7 @@ fn event_loop(
     completion_engine.start_init(bash);
 
     // Spawn crossterm reader thread for channelized terminal input.
-    // The pause flag stops it from reading stdin during interactive sessions
-    // (vim, less, etc.) so it doesn't steal keystrokes.
-    let crossterm_paused = Arc::new(AtomicBool::new(false));
-    let crossterm_rx = spawn_crossterm_reader(crossterm_paused.clone());
+    let crossterm_rx = spawn_crossterm_reader();
 
     let mut needs_render = true;
 
@@ -580,36 +542,17 @@ fn event_loop(
                             // --- Forward keystrokes to PTY when a command is executing ---
                             let mut key_handled = false;
                             if pending_command.is_some() {
-                                match (key.code, key.modifiers) {
-                                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                        // Fall through to existing Ctrl+C handler below.
+                                // Ctrl+C falls through to the dedicated handler below.
+                                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                    // fall through
+                                } else if let Some(bytes) = key_event_to_bytes(key.code, key.modifiers) {
+                                    bash.send_bytes(&bytes);
+                                    if let Some(ref mut p) = pending_command {
+                                        p.last_activity = Instant::now();
                                     }
-                                    (KeyCode::Enter, _) => {
-                                        bash.send_bytes(b"\r");
-                                        if let Some(ref mut p) = pending_command {
-                                            p.last_activity = Instant::now();
-                                        }
-                                        key_handled = true;
-                                    }
-                                    (KeyCode::Char(ch), _) => {
-                                        let mut buf = [0u8; 4];
-                                        let s = ch.encode_utf8(&mut buf);
-                                        bash.send_bytes(s.as_bytes());
-                                        if let Some(ref mut p) = pending_command {
-                                            p.last_activity = Instant::now();
-                                        }
-                                        key_handled = true;
-                                    }
-                                    (KeyCode::Backspace, _) => {
-                                        bash.send_bytes(b"\x7f");
-                                        if let Some(ref mut p) = pending_command {
-                                            p.last_activity = Instant::now();
-                                        }
-                                        key_handled = true;
-                                    }
-                                    _ => {
-                                        key_handled = true;
-                                    }
+                                    key_handled = true;
+                                } else {
+                                    key_handled = true;
                                 }
                             }
 
@@ -700,48 +643,6 @@ fn event_loop(
                                                     }
                                                 }
 
-                                                InputAction::Interactive => {
-                                                    let env = bash.capture_env();
-                                                    let interactive_cwd = cwd.clone();
-                                                    // Pause crossterm reader so it doesn't steal keystrokes from the interactive program.
-                                                    crossterm_paused.store(true, Ordering::Relaxed);
-                                                    terminal::disable_raw_mode()?;
-                                                    execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
-                                                    interactive_session.spawn_and_enter(
-                                                        &raw_input,
-                                                        &env,
-                                                        &interactive_cwd,
-                                                    );
-                                                    let _ = std::io::Write::write_all(
-                                                        &mut std::io::stdout(),
-                                                        b"\x1b[2J\x1b[H",
-                                                    );
-                                                    let _ = std::io::Write::flush(&mut std::io::stdout());
-                                                    execute!(term.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-                                                    terminal::enable_raw_mode()?;
-                                                    term.clear()?;
-                                                    // Resume crossterm reader and drain any stale events.
-                                                    crossterm_paused.store(false, Ordering::Relaxed);
-                                                    while crossterm_rx.try_recv().is_ok() {}
-                                                    if parser.screen().alternate_screen() {
-                                                        parser.process(b"\x1b[?1049l");
-                                                        parser.process(b"\x1b[?25h");
-                                                    } else {
-                                                        let visible_rows = parser.screen().size().0;
-                                                        for _ in 0..visible_rows {
-                                                            parser.process(b"\r\n");
-                                                        }
-                                                        parser.process(b"\x1b[2J\x1b[H");
-                                                    }
-                                                    *cwd = bash.capture_cwd();
-                                                    git_info = bash.capture_git_info();
-                                                    parser_push_styled(
-                                                        parser,
-                                                        "(interactive session ended)",
-                                                        "\x1b[90m",
-                                                    );
-                                                }
-
                                                 InputAction::Clear => {
                                                     let term_size = term.size()?;
                                                     let rows = term_size.height.saturating_sub(1).max(1);
@@ -778,8 +679,6 @@ fn event_loop(
                                                                 accumulated: String::new(),
                                                                 command: raw_input.clone(),
                                                                 last_activity: Instant::now(),
-                                                                display_buf: String::new(),
-                                                                last_output: Instant::now(),
                                                             });
                                                         }
                                                         None => {
@@ -918,104 +817,15 @@ fn event_loop(
             }
         }
 
-        // --- Post-select: handle alternate screen detection ---
-        if parser.screen().alternate_screen() && pending_command.is_some() {
-            let pending = pending_command.take().unwrap();
-            let real_size = term.size()?;
-            bash.resize_full(real_size.height, real_size.width);
-            // Pause crossterm reader so it doesn't steal keystrokes from the interactive program.
-            crossterm_paused.store(true, Ordering::Relaxed);
-            terminal::disable_raw_mode()?;
-            execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
-            let (reader_rx, writer) = bash.reader_and_writer();
-            let accumulated = interactive_session.enter_with_sentinel(
-                reader_rx,
-                writer,
-                &pending.sentinel,
-                real_size.height,
-                real_size.width,
-            );
-            let rows = real_size.height.saturating_sub(1).max(1);
-            bash.resize(rows, real_size.width);
-            let _ = std::io::Write::write_all(
-                &mut std::io::stdout(),
-                b"\x1b[2J\x1b[H",
-            );
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-            execute!(term.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-            terminal::enable_raw_mode()?;
-            term.clear()?;
-            // Resume crossterm reader and drain any stale events.
-            crossterm_paused.store(false, Ordering::Relaxed);
-            while crossterm_rx.try_recv().is_ok() {}
-            let cols = real_size.width.max(1);
-            parser.screen_mut().set_size(rows, cols);
-            parser.process(b"\x1b[?1049l");
-            parser.process(b"\x1b[?25h");
-            let mut alt_cmd_output = String::new();
-            let mut alt_cmd_exit: i32 = 0;
-            if let Some((acc, captured_screen)) = accumulated {
-                if let Some(screen_bytes) = captured_screen {
-                    parser.process(&screen_bytes);
-                    parser.process(b"\r\n");
-                }
-                if let Some(result) = BashCoprocess::check_complete(
-                    &acc,
-                    &pending.command,
-                    &pending.sentinel,
-                ) {
-                    if result.exit_code != 0 {
-                        parser_push_styled(
-                            parser,
-                            &format!("exit code: {}", result.exit_code),
-                            "\x1b[31m",
-                        );
-                    }
-                    alt_cmd_output = result.output;
-                    alt_cmd_exit = result.exit_code;
-                }
-            }
-            *cwd = bash.capture_cwd();
-            git_info = bash.capture_git_info();
-            if let Some(ref mut c) = client {
-                if let Some(frame) = ipc_messages::build_command_result(
-                    &pending.command,
-                    &alt_cmd_output,
-                    alt_cmd_exit,
-                    cwd,
-                ) {
-                    c.send(&frame);
-                }
-            }
-            *scroll_offset = 0;
-            parser.screen_mut().set_scrollback(0);
-            needs_render = true;
-        }
-
         // --- Post-select: check command completion ---
         if let Some(ref mut pending) = pending_command {
-            // Flush incomplete line buffer after timeout.
-            if !pending.display_buf.is_empty()
-                && pending.last_output.elapsed() > Duration::from_millis(DISPLAY_FLUSH_MS)
-            {
-                let buf = std::mem::take(&mut pending.display_buf);
-                if !is_sentinel_noise(&buf, &pending.command, &pending.sentinel) {
-                    parser.process(buf.as_bytes());
-                }
-                needs_render = true;
-            }
-
             if let Some(result) = BashCoprocess::check_complete(
                 &pending.accumulated,
                 &pending.command,
                 &pending.sentinel,
             ) {
-                let buf = std::mem::take(&mut pending.display_buf);
-                if !buf.is_empty()
-                    && !is_sentinel_noise(&buf, &pending.command, &pending.sentinel)
-                {
-                    parser.process(buf.as_bytes());
-                }
+                // Erase the sentinel result line from the parser display.
+                parser.process(b"\x1b[A\x1b[2K");
                 if result.exit_code != 0 {
                     parser_push_styled(
                         parser,
@@ -1036,7 +846,6 @@ fn event_loop(
                     }
                 }
                 pending_command = None;
-                bash.restore_real_size();
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
                 needs_render = true;
@@ -1045,7 +854,6 @@ fn event_loop(
                 bash.drain_for(100);
                 parser_push_styled(parser, "command timed out (no activity for 5m)", "\x1b[31m");
                 pending_command = None;
-                bash.restore_real_size();
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
                 needs_render = true;
@@ -1085,8 +893,9 @@ fn render_frame(
     context_usage: (usize, usize),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
-    // and no command is currently executing or agent streaming).
-    if scroll_offset == 0 && !is_executing && !agent_streaming {
+    // and no command is currently executing or agent streaming, and not in alt screen).
+    let in_alt_screen = parser.screen().alternate_screen();
+    if scroll_offset == 0 && !is_executing && !agent_streaming && !in_alt_screen {
         let prompt_text = if !model_alias.is_empty() {
             format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1))
         } else {
@@ -1112,61 +921,68 @@ fn render_frame(
     term.draw(|frame| {
         let area = frame.area();
 
-        // Layout: terminal area (flexible) | status bar (1)
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),    // PseudoTerminal (now includes prompt)
-                Constraint::Length(1), // Status bar
-            ])
-            .split(area);
+        if in_alt_screen {
+            // Fullscreen: render PseudoTerminal over the entire area (no status bar).
+            let pseudo_term = PseudoTerminal::new(parser.screen())
+                .cursor(PtCursor::default().visibility(true));
+            frame.render_widget(pseudo_term, area);
+        } else {
+            // Normal: terminal area + status bar.
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(1),    // PseudoTerminal (now includes prompt)
+                    Constraint::Length(1), // Status bar
+                ])
+                .split(area);
 
-        let term_area = chunks[0];
-        let status_area = chunks[1];
+            let term_area = chunks[0];
+            let status_area = chunks[1];
 
-        // --- Render pseudoterminal ---
-        let cursor_visible = scroll_offset == 0;
-        let pseudo_term = PseudoTerminal::new(parser.screen())
-            .cursor(PtCursor::default().visibility(cursor_visible));
-        frame.render_widget(pseudo_term, term_area);
+            // --- Render pseudoterminal ---
+            let cursor_visible = scroll_offset == 0;
+            let pseudo_term = PseudoTerminal::new(parser.screen())
+                .cursor(PtCursor::default().visibility(cursor_visible));
+            frame.render_widget(pseudo_term, term_area);
 
-        // --- Render selection highlight ---
-        if selection.is_active() {
-            let ((sc, sr), (ec, er)) = selection.normalized_range();
-            let buf = frame.buffer_mut();
-            for row in sr..=er {
-                if row < term_area.top() || row >= term_area.bottom() {
-                    continue;
-                }
-                let col_start = if row == sr { sc } else { 0 };
-                let col_end = if row == er { ec } else { term_area.right().saturating_sub(1) };
-                for col in col_start..=col_end {
-                    if col >= term_area.right() {
-                        break;
+            // --- Render selection highlight ---
+            if selection.is_active() {
+                let ((sc, sr), (ec, er)) = selection.normalized_range();
+                let buf = frame.buffer_mut();
+                for row in sr..=er {
+                    if row < term_area.top() || row >= term_area.bottom() {
+                        continue;
                     }
-                    let cell = &mut buf[(col, row)];
-                    let fg = cell.fg;
-                    let bg = cell.bg;
-                    cell.fg = if bg == Color::Reset { Color::Black } else { bg };
-                    cell.bg = if fg == Color::Reset { Color::White } else { fg };
+                    let col_start = if row == sr { sc } else { 0 };
+                    let col_end = if row == er { ec } else { term_area.right().saturating_sub(1) };
+                    for col in col_start..=col_end {
+                        if col >= term_area.right() {
+                            break;
+                        }
+                        let cell = &mut buf[(col, row)];
+                        let fg = cell.fg;
+                        let bg = cell.bg;
+                        cell.fg = if bg == Color::Reset { Color::Black } else { bg };
+                        cell.bg = if fg == Color::Reset { Color::White } else { fg };
+                    }
                 }
             }
-        }
 
-        // --- Render status bar ---
-        render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area, git_info);
+            // --- Render status bar ---
+            render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area, git_info);
 
-        // --- Render completion popup ---
-        if completion_popup.is_visible() {
-            let (cursor_row, _cursor_col) = parser.screen().cursor_position();
-            let prompt_len = if !model_alias.is_empty() {
-                format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1)).len()
-            } else {
-                2 // "> "
-            };
-            let anchor_x = (prompt_len + input.cursor_position()) as u16;
-            let anchor_y = term_area.top() + cursor_row;
-            completion_popup.render(frame, anchor_x, anchor_y);
+            // --- Render completion popup ---
+            if completion_popup.is_visible() {
+                let (cursor_row, _cursor_col) = parser.screen().cursor_position();
+                let prompt_len = if !model_alias.is_empty() {
+                    format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1)).len()
+                } else {
+                    2 // "> "
+                };
+                let anchor_x = (prompt_len + input.cursor_position()) as u16;
+                let anchor_y = term_area.top() + cursor_row;
+                completion_popup.render(frame, anchor_x, anchor_y);
+            }
         }
     })?;
 
