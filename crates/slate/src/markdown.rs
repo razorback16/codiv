@@ -179,8 +179,8 @@ impl MarkdownStream {
             pretty_broken: false,
             clipboard: false,
             savebrace: false,
-            margin: 0,
-            fixed_width: Some(width as usize),
+            margin: 2,
+            fixed_width: Some((width as usize).saturating_sub(2)),
             ..Default::default()
         });
         renderer.set_theme(theme);

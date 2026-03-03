@@ -25,9 +25,11 @@ use crate::shell::bash_coprocess::{BashCoprocess, GitInfo};
 use crate::shell::command_index::{classify_input, CommandIndex, InputAction};
 use crate::shell::completion_engine::CompletionEngine;
 
+use super::blocks::{Block, BlockRegistry, ToolResultAction};
 use super::completion_popup::CompletionPopup;
 use super::input::InputLine;
 use super::selection::TextSelection;
+use super::tool_modal::ToolResultModal;
 use crate::VERSION;
 use crate::markdown::MarkdownStream;
 
@@ -64,7 +66,7 @@ const MAX_SCROLLBACK: usize = 10_000;
 
 /// Helper: write styled text to the vt100 parser using ANSI SGR codes.
 fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str) {
-    let line = format!("{}{}\x1b[0m\r\n", ansi_prefix, text);
+    let line = format!("  {}{}\x1b[0m\r\n", ansi_prefix, text);
     parser.process(line.as_bytes());
 }
 
@@ -79,68 +81,6 @@ fn format_tokens(n: usize) -> String {
         .format(n as f64);
     // "200.0k" -> "200k", "1.2k" unchanged
     s.trim().replace(".0", "")
-}
-
-/// Truncate tool text for display, collapsing newlines and limiting length.
-fn truncate_tool_text(text: &str, max_len: usize) -> String {
-    // Collapse whitespace/newlines into single spaces for inline display.
-    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.len() <= max_len {
-        collapsed
-    } else {
-        format!("{}...", &collapsed[..max_len])
-    }
-}
-
-/// Format a tool call as a CLI-style command for shell-prompt display.
-///
-/// **Bash** is special: shows just the raw command (no `bash` prefix, no flags).
-/// All other tools use `toolname --param value` style, skipping verbose params
-/// like `content`, `old_string`, `new_string`, and `timeout_ms`.
-/// Malformed JSON falls back to `toolname <truncated raw args>`.
-fn format_tool_command(tool_name: &str, arguments: &str) -> String {
-    let parsed: Result<serde_json::Map<String, serde_json::Value>, _> =
-        serde_json::from_str(arguments);
-
-    let name_lower = tool_name.to_ascii_lowercase();
-
-    match parsed {
-        Ok(map) => {
-            // Bash: just show the raw command
-            if name_lower == "bash" {
-                if let Some(serde_json::Value::String(cmd)) = map.get("command") {
-                    return cmd.clone();
-                }
-                return truncate_tool_text(arguments, 120);
-            }
-
-            // Params to skip (too verbose for display)
-            const SKIP: &[&str] = &["content", "old_string", "new_string", "timeout_ms"];
-
-            let mut parts = vec![name_lower];
-            for (key, val) in &map {
-                if SKIP.contains(&key.as_str()) {
-                    continue;
-                }
-                let display_val = match val {
-                    serde_json::Value::String(s) => {
-                        if s.contains(' ') {
-                            format!("\"{}\"", s)
-                        } else {
-                            s.clone()
-                        }
-                    }
-                    other => other.to_string(),
-                };
-                parts.push(format!("--{} {}", key, display_val));
-            }
-            parts.join(" ")
-        }
-        Err(_) => {
-            // Malformed JSON fallback
-            format!("{} {}", name_lower, truncate_tool_text(arguments, 120))
-        }
-    }
 }
 
 /// Convert a crossterm key event into raw terminal bytes for PTY forwarding.
@@ -333,6 +273,14 @@ fn process_pty_bytes(bytes: &[u8], pending: &mut PendingCommand, parser: &mut vt
     pending.last_activity = Instant::now();
 }
 
+/// Get the absolute scrollback line number (scrollback_len + cursor_row).
+fn get_scrollback_line(parser: &vt100::Parser) -> u64 {
+    let screen = parser.screen();
+    let (cursor_row, _) = screen.cursor_position();
+    let scrollback_len = screen.scrollback() as u64;
+    scrollback_len + cursor_row as u64
+}
+
 /// Process a single daemon message, updating parser state.
 fn handle_daemon_message(
     msg: ipc_messages::DaemonMessage,
@@ -342,7 +290,8 @@ fn handle_daemon_message(
     last_daemon_timestamp: &mut u64,
     model_alias: &mut String,
     context_usage: &mut (usize, usize),
-    cwd: &str,
+    _cwd: &str,
+    tracker: &mut BlockRegistry,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -367,25 +316,42 @@ fn handle_daemon_message(
                         parser.process(b"\r\n");
                     }
                     md_stream.reset();
-                    let folder_name = std::path::Path::new(cwd)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(cwd);
-                    let command = format_tool_command(&name, &arguments);
-                    parser_push_styled(
-                        parser,
-                        &format!("{} $ {}", folder_name, command),
-                        "\x1b[35m",
-                    );
+                    tracker.record_tool_call(&name, &arguments);
                 }
-                ipc_messages::StreamChunk::ToolResult { name: _, result } => {
-                    if !result.is_empty() {
-                        let mut output = String::new();
-                        for line in result.lines() {
-                            output.push_str(&format!("    {}\r\n", line));
+                ipc_messages::StreamChunk::ToolResult { name, result } => {
+                    {
+                        let will_merge = tracker.will_merge_edit(&name);
+                        if !will_merge {
+                            parser.process(b"\r\n");
                         }
-                        let line = format!("\x1b[34m{}\x1b[0m", output);
-                        parser.process(line.as_bytes());
+                        let scrollback_line = get_scrollback_line(parser);
+                        match tracker.record_tool_result(&name, &result, scrollback_line) {
+                            ToolResultAction::Merged => {
+                                // Block merged into previous — update the summary
+                                // line in the VT100 buffer by moving cursor up and
+                                // rewriting the line.
+                                let summary = tracker
+                                    .last_tool_block_mut()
+                                    .map(|tb| tb.summary.clone());
+                                if let Some(summary) = summary {
+                                    parser.process(b"\x1b[A\r\x1b[K");
+                                    let line = format!("  \x1b[32m{}\x1b[0m\r\n", summary);
+                                    parser.process(line.as_bytes());
+                                }
+                            }
+                            ToolResultAction::Summary { header, summary } => {
+                                // Write 2-line block to VT100.
+                                // Header: bold green ● ToolName(args)
+                                let header_line = format!("  \x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                parser.process(header_line.as_bytes());
+                                // Summary: colored based on tool
+                                let is_bash_error = name.eq_ignore_ascii_case("bash")
+                                    && !summary.contains("exit 0");
+                                let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
+                                let summary_line = format!("  {}{}\x1b[0m\r\n", color, summary);
+                                parser.process(summary_line.as_bytes());
+                            }
+                        }
                     }
                 }
             };
@@ -466,6 +432,8 @@ fn event_loop(
     let mut model_alias = String::new();
     let mut context_usage: (usize, usize) = (0, 0);
     let mut md_stream = MarkdownStream::new(term.size().map(|s| s.width).unwrap_or(80));
+    let mut tracker = BlockRegistry::new();
+    let mut tool_result_modal = ToolResultModal::new();
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -496,7 +464,7 @@ fn event_loop(
         // --- Render only when needed ---
         if needs_render {
             let is_executing = pending_command.is_some();
-            render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, agent_streaming, &completion_popup, &selection, git_info.as_ref(), &model_alias, context_usage)?;
+            render_frame(term, parser, input, cwd, daemon_connected, last_daemon_timestamp, *scroll_offset, prompt_is_live, is_executing, agent_streaming, &completion_popup, &selection, git_info.as_ref(), &model_alias, context_usage, &tracker, &tool_result_modal)?;
             needs_render = false;
         }
 
@@ -571,7 +539,7 @@ fn event_loop(
                             let parser_cols = (*cols).max(1);
                             parser.screen_mut().set_size(parser_rows, parser_cols);
                             bash.resize(parser_rows, parser_cols);
-                            md_stream.set_width(*cols);
+                            md_stream.set_width(parser_cols);
                         }
                         _ => {}
                     }
@@ -582,8 +550,21 @@ fn event_loop(
                             // Clear text selection on any keypress.
                             selection.clear();
 
-                            // --- Forward keystrokes to PTY when a command is executing ---
+                            // --- Modal key interception (highest priority) ---
                             let mut key_handled = false;
+                            if tool_result_modal.is_visible() {
+                                match key.code {
+                                    KeyCode::Esc => tool_result_modal.close(),
+                                    KeyCode::Up => tool_result_modal.scroll_up(1),
+                                    KeyCode::Down => tool_result_modal.scroll_down(1),
+                                    KeyCode::PageUp => tool_result_modal.scroll_up(20),
+                                    KeyCode::PageDown => tool_result_modal.scroll_down(20),
+                                    _ => {} // consume everything else
+                                }
+                                key_handled = true;
+                            }
+
+                            // --- Forward keystrokes to PTY when a command is executing ---
                             if pending_command.is_some() {
                                 // Ctrl+C falls through to the dedicated handler below.
                                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -634,6 +615,51 @@ fn event_loop(
                                 }
 
                                 if !popup_handled {
+                                    // --- Block navigation (Shift+Up/Down) ---
+                                    let mut block_handled = false;
+                                    match (key.code, key.modifiers) {
+                                        (KeyCode::Up, m) if m.contains(KeyModifiers::SHIFT) => {
+                                            if tracker.focused_index().is_some() {
+                                                tracker.focus_prev();
+                                            } else {
+                                                tracker.focus_last();
+                                            }
+                                            block_handled = true;
+                                        }
+                                        (KeyCode::Down, m) if m.contains(KeyModifiers::SHIFT) => {
+                                            if tracker.focused_index().is_some() {
+                                                tracker.focus_next();
+                                            }
+                                            block_handled = true;
+                                        }
+                                        (KeyCode::Enter, _) if tracker.focused_index().is_some() && pending_command.is_none() => {
+                                            if let Some(Block::Tool(tb)) = tracker.focused() {
+                                                tool_result_modal.open(
+                                                    &tb.header,
+                                                    &tb.full_content,
+                                                    tb.is_diff,
+                                                    tb.id,
+                                                );
+                                            }
+                                            // PromptBlock: future — re-run
+                                            block_handled = true;
+                                        }
+                                        (KeyCode::Esc, _) if tracker.focused_index().is_some() => {
+                                            if let Some(Block::Prompt(_)) = tracker.focused() {
+                                                if tracker.check_double_esc() {
+                                                    // Double Esc — clear the prompt (future: clear inline editor)
+                                                    tracker.unfocus();
+                                                }
+                                                // Single Esc: do nothing
+                                            } else {
+                                                tracker.unfocus();
+                                            }
+                                            block_handled = true;
+                                        }
+                                        _ => {}
+                                    }
+
+                                    if !block_handled {
                                     match (key.code, key.modifiers) {
                                         // --- Ctrl combos ---
                                         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -660,7 +686,10 @@ fn event_loop(
                                         // --- Enter: submit input ---
                                         (KeyCode::Enter, _) if pending_command.is_none() => {
                                             let raw_input = input.submit();
-                                            parser.process(b"\r\n");
+                                            parser.process(b"\r\x1b[K\r\n");
+                                            let scrollback_line = get_scrollback_line(parser);
+                                            parser.process(format!("  {}\r\n", raw_input).as_bytes());
+                                            tracker.record_prompt(&raw_input, scrollback_line);
                                             *prompt_is_live = false;
                                             let action = classify_input(&raw_input, command_index);
 
@@ -693,6 +722,8 @@ fn event_loop(
                                                     *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
                                                     *scroll_offset = 0;
                                                     *prompt_is_live = false;
+                                                    tracker.clear();
+                                                    tool_result_modal.close();
                                                 }
 
                                                 InputAction::Reset => {
@@ -707,6 +738,8 @@ fn event_loop(
                                                     completion_engine.start_init(bash);
                                                     completion_popup.dismiss();
                                                     selection.clear();
+                                                    tracker.clear();
+                                                    tool_result_modal.close();
                                                     parser_push_styled(
                                                         parser,
                                                         &format!("slate v{} — type 'exit' to quit", crate::VERSION),
@@ -826,6 +859,7 @@ fn event_loop(
 
                                         _ => {}
                                     }
+                                    } // if !block_handled
                                 }
                             }
                         }
@@ -836,10 +870,10 @@ fn event_loop(
             }
             recv(daemon_rx) -> msg => {
                 if let Ok(msg) = msg {
-                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd);
+                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker);
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
-                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd);
+                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker);
                     }
                     needs_render = true;
                 }
@@ -934,26 +968,23 @@ fn render_frame(
     git_info: Option<&GitInfo>,
     model_alias: &str,
     context_usage: (usize, usize),
+    tracker: &BlockRegistry,
+    tool_result_modal: &ToolResultModal,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
     let in_alt_screen = parser.screen().alternate_screen();
     if scroll_offset == 0 && !is_executing && !agent_streaming && !in_alt_screen {
-        let folder_name = std::path::Path::new(cwd)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(cwd);
-        let prompt_text = format!("{} $ ", folder_name);
         let input_text = input.content();
 
-        // Clear current line, write prompt + input with styling.
+        // Write the input text at column 2, leaving cols 0-1 for the `> ` overlay.
         parser.process(
-            format!("\r\x1b[K\x1b[36m{}\x1b[0m{}", prompt_text, input_text).as_bytes(),
+            format!("\r\x1b[K  {}", input_text).as_bytes(),
         );
 
         // Position cursor: move back from end if cursor isn't at end of input.
-        let target_col = prompt_text.len() + input.cursor_position();
-        let current_col = prompt_text.len() + input_text.len();
+        let target_col = input.cursor_position();
+        let current_col = input_text.len();
         if current_col > target_col {
             parser.process(format!("\x1b[{}D", current_col - target_col).as_bytes());
         }
@@ -988,6 +1019,33 @@ fn render_frame(
                 .cursor(PtCursor::default().visibility(cursor_visible));
             frame.render_widget(pseudo_term, term_area);
 
+            // --- Render `>` prompt gutter for all visible prompt blocks ---
+            {
+                let scrollback_len = parser.screen().scrollback() as u64;
+                let screen_rows = parser.screen().size().0 as u64;
+                let abs_bottom = scrollback_len + screen_rows - scroll_offset as u64;
+                let abs_top = abs_bottom.saturating_sub(screen_rows);
+                let buf = frame.buffer_mut();
+                for block in tracker.blocks() {
+                    if let Block::Prompt(pb) = block {
+                        if pb.scrollback_line >= abs_top && pb.scrollback_line < abs_bottom {
+                            let row = (pb.scrollback_line - abs_top) as u16 + term_area.top();
+                            if row < term_area.bottom() {
+                                buf[(term_area.left(), row)].set_char('>').set_fg(Color::Cyan);
+                            }
+                        }
+                    }
+                }
+                // Also draw `>` for the live (in-progress) prompt
+                if *prompt_is_live && scroll_offset == 0 {
+                    let (cursor_row, _) = parser.screen().cursor_position();
+                    let row = term_area.top() + cursor_row;
+                    if row < term_area.bottom() {
+                        buf[(term_area.left(), row)].set_char('>').set_fg(Color::Cyan);
+                    }
+                }
+            }
+
             // --- Render selection highlight ---
             if selection.is_active() {
                 let ((sc, sr), (ec, er)) = selection.normalized_range();
@@ -1017,16 +1075,78 @@ fn render_frame(
             // --- Render completion popup ---
             if completion_popup.is_visible() {
                 let (cursor_row, _cursor_col) = parser.screen().cursor_position();
-                let prompt_len = {
-                    let folder_name = std::path::Path::new(cwd)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(cwd);
-                    format!("{} > ", folder_name).len()
-                };
-                let anchor_x = (prompt_len + input.cursor_position()) as u16;
+                let anchor_x = input.cursor_position() as u16;
                 let anchor_y = term_area.top() + cursor_row;
                 completion_popup.render(frame, anchor_x, anchor_y);
+            }
+
+            // --- Render block selection overlay ---
+            if let Some(focused) = tracker.focused() {
+                let (scrollback_line, line_count) = match focused {
+                    Block::Tool(tb) => (tb.scrollback_line, tb.line_count),
+                    Block::Prompt(pb) => (pb.scrollback_line, 1),
+                };
+                let scrollback_len = parser.screen().scrollback() as u64;
+                let screen_rows = parser.screen().size().0 as u64;
+                let abs_bottom = scrollback_len + screen_rows - scroll_offset as u64;
+                let abs_top = abs_bottom.saturating_sub(screen_rows);
+                if scrollback_line >= abs_top && scrollback_line < abs_bottom {
+                    let screen_row = (scrollback_line - abs_top) as u16 + term_area.top();
+                    let top_rule = screen_row.saturating_sub(1);
+                    let bottom_rule = screen_row + line_count;
+                    let buf = frame.buffer_mut();
+                    for row in [top_rule, bottom_rule] {
+                        if row >= term_area.top() && row < term_area.bottom() {
+                            for col in term_area.left()..term_area.right() {
+                                let cell = &mut buf[(col, row)];
+                                cell.set_char('\u{2500}');
+                                cell.set_fg(Color::DarkGray);
+                            }
+                        }
+                    }
+                    // Show "(press Enter to expand)" hint for ToolBlocks
+                    if let Block::Tool(_) = focused {
+                        let hint = " (press Enter to expand)";
+                        let hint_row = screen_row + 1; // summary line
+                        if hint_row >= term_area.top() && hint_row < term_area.bottom() {
+                            // Find end of existing text
+                            let buf = frame.buffer_mut();
+                            let mut text_end = term_area.left();
+                            for col in term_area.left()..term_area.right() {
+                                let ch = buf[(col, hint_row)].symbol();
+                                if ch != " " && ch != "" {
+                                    text_end = col + 1;
+                                }
+                            }
+                            for (i, ch) in hint.chars().enumerate() {
+                                let col = text_end + i as u16;
+                                if col < term_area.right() {
+                                    buf[(col, hint_row)]
+                                        .set_char(ch)
+                                        .set_fg(Color::DarkGray);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if *prompt_is_live && scroll_offset == 0 {
+                let (cursor_row, _) = parser.screen().cursor_position();
+                let screen_row = term_area.top() + cursor_row;
+                let top_rule = screen_row.saturating_sub(1);
+                let bottom_rule = screen_row + 1;
+                let buf = frame.buffer_mut();
+                for row in [top_rule, bottom_rule] {
+                    if row >= term_area.top() && row < term_area.bottom() {
+                        for col in term_area.left()..term_area.right() {
+                            buf[(col, row)].set_char('\u{2500}').set_fg(Color::DarkGray);
+                        }
+                    }
+                }
+            }
+
+            // --- Render tool result modal ---
+            if tool_result_modal.is_visible() {
+                tool_result_modal.render(frame, area);
             }
         }
     })?;

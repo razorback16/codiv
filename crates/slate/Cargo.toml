@@ -26,3 +26,4 @@ log = "0.4"
 env_logger = "0.11"
 streamdown-parser = { git = "https://github.com/razorback16/streamdown-rs" }
 streamdown-render = { git = "https://github.com/razorback16/streamdown-rs" }
+similar = "2"
