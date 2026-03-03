@@ -92,6 +92,57 @@ fn truncate_tool_text(text: &str, max_len: usize) -> String {
     }
 }
 
+/// Format a tool call as a CLI-style command for shell-prompt display.
+///
+/// **Bash** is special: shows just the raw command (no `bash` prefix, no flags).
+/// All other tools use `toolname --param value` style, skipping verbose params
+/// like `content`, `old_string`, `new_string`, and `timeout_ms`.
+/// Malformed JSON falls back to `toolname <truncated raw args>`.
+fn format_tool_command(tool_name: &str, arguments: &str) -> String {
+    let parsed: Result<serde_json::Map<String, serde_json::Value>, _> =
+        serde_json::from_str(arguments);
+
+    let name_lower = tool_name.to_ascii_lowercase();
+
+    match parsed {
+        Ok(map) => {
+            // Bash: just show the raw command
+            if name_lower == "bash" {
+                if let Some(serde_json::Value::String(cmd)) = map.get("command") {
+                    return cmd.clone();
+                }
+                return truncate_tool_text(arguments, 120);
+            }
+
+            // Params to skip (too verbose for display)
+            const SKIP: &[&str] = &["content", "old_string", "new_string", "timeout_ms"];
+
+            let mut parts = vec![name_lower];
+            for (key, val) in &map {
+                if SKIP.contains(&key.as_str()) {
+                    continue;
+                }
+                let display_val = match val {
+                    serde_json::Value::String(s) => {
+                        if s.contains(' ') {
+                            format!("\"{}\"", s)
+                        } else {
+                            s.clone()
+                        }
+                    }
+                    other => other.to_string(),
+                };
+                parts.push(format!("--{} {}", key, display_val));
+            }
+            parts.join(" ")
+        }
+        Err(_) => {
+            // Malformed JSON fallback
+            format!("{} {}", name_lower, truncate_tool_text(arguments, 120))
+        }
+    }
+}
+
 /// Convert a crossterm key event into raw terminal bytes for PTY forwarding.
 ///
 /// Handles the full range of keys: printable characters (with Ctrl/Alt
@@ -291,6 +342,7 @@ fn handle_daemon_message(
     last_daemon_timestamp: &mut u64,
     model_alias: &mut String,
     context_usage: &mut (usize, usize),
+    cwd: &str,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -315,35 +367,26 @@ fn handle_daemon_message(
                         parser.process(b"\r\n");
                     }
                     md_stream.reset();
-                    let summary = truncate_tool_text(&arguments, 120);
+                    let folder_name = std::path::Path::new(cwd)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(cwd);
+                    let command = format_tool_command(&name, &arguments);
                     parser_push_styled(
                         parser,
-                        &format!("  {} {}", name, summary),
-                        "\x1b[36m",
+                        &format!("{} $ {}", folder_name, command),
+                        "\x1b[35m",
                     );
                 }
-                ipc_messages::StreamChunk::ToolResult { name, result } => {
-                    let lines: Vec<&str> = result.lines().collect();
-                    let max_lines = 20;
-                    let max_line_len = 200;
-                    let truncated_lines = lines.len() > max_lines;
-                    let display_lines = &lines[..lines.len().min(max_lines)];
-                    let mut output = format!("  {} result:", name);
-                    for line in display_lines {
-                        if line.len() > max_line_len {
-                            output.push_str(&format!("\r\n    {}...", &line[..max_line_len]));
-                        } else {
-                            output.push_str(&format!("\r\n    {}", line));
+                ipc_messages::StreamChunk::ToolResult { name: _, result } => {
+                    if !result.is_empty() {
+                        let mut output = String::new();
+                        for line in result.lines() {
+                            output.push_str(&format!("    {}\r\n", line));
                         }
+                        let line = format!("\x1b[34m{}\x1b[0m", output);
+                        parser.process(line.as_bytes());
                     }
-                    if truncated_lines {
-                        output.push_str(&format!(
-                            "\r\n    ... ({} more lines)",
-                            lines.len() - max_lines
-                        ));
-                    }
-                    let line = format!("\x1b[2;32m{}\x1b[0m\r\n", output);
-                    parser.process(line.as_bytes());
                 }
             };
         }
@@ -793,10 +836,10 @@ fn event_loop(
             }
             recv(daemon_rx) -> msg => {
                 if let Ok(msg) = msg {
-                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage);
+                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd);
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
-                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage);
+                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd);
                     }
                     needs_render = true;
                 }
@@ -896,11 +939,11 @@ fn render_frame(
     // and no command is currently executing or agent streaming, and not in alt screen).
     let in_alt_screen = parser.screen().alternate_screen();
     if scroll_offset == 0 && !is_executing && !agent_streaming && !in_alt_screen {
-        let prompt_text = if !model_alias.is_empty() {
-            format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1))
-        } else {
-            "> ".to_string()
-        };
+        let folder_name = std::path::Path::new(cwd)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(cwd);
+        let prompt_text = format!("{} $ ", folder_name);
         let input_text = input.content();
 
         // Clear current line, write prompt + input with styling.
@@ -969,15 +1012,17 @@ fn render_frame(
             }
 
             // --- Render status bar ---
-            render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area, git_info);
+            render_status_bar(frame, cwd, daemon_connected, daemon_timestamp, is_executing, status_area, git_info, model_alias, context_usage);
 
             // --- Render completion popup ---
             if completion_popup.is_visible() {
                 let (cursor_row, _cursor_col) = parser.screen().cursor_position();
-                let prompt_len = if !model_alias.is_empty() {
-                    format!("[{} | {}/{}] > ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1)).len()
-                } else {
-                    2 // "> "
+                let prompt_len = {
+                    let folder_name = std::path::Path::new(cwd)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(cwd);
+                    format!("{} > ", folder_name).len()
                 };
                 let anchor_x = (prompt_len + input.cursor_position()) as u16;
                 let anchor_y = term_area.top() + cursor_row;
@@ -998,6 +1043,8 @@ fn render_status_bar(
     is_executing: bool,
     area: Rect,
     git_info: Option<&GitInfo>,
+    model_alias: &str,
+    context_usage: (usize, usize),
 ) {
     let width = area.width as usize;
 
@@ -1019,7 +1066,12 @@ fn render_status_bar(
     };
 
     let running_indicator = if is_executing { " [running]" } else { "" };
-    let right = format!(" {} | slate v{} ", daemon_status, VERSION);
+    let model_part = if !model_alias.is_empty() {
+        format!("{} {}/{} | ", model_alias, format_tokens(context_usage.0), format_tokens(context_usage.1))
+    } else {
+        String::new()
+    };
+    let right = format!(" {}{} | slate v{} ", model_part, daemon_status, VERSION);
     let left = match git_info {
         Some(info) => {
             let branch_part = format!("({})", info.branch);
