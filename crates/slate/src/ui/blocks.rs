@@ -172,32 +172,6 @@ impl BlockRegistry {
         }));
     }
 
-    /// Peek at the pending tool call to check if the next tool result will
-    /// merge into the previous Edit block (same file). This is non-consuming —
-    /// it does NOT take the pending tool call.
-    pub fn will_merge_edit(&self, name: &str) -> bool {
-        let canonical = canonical_tool_name(name);
-        if canonical != "Edit" {
-            return false;
-        }
-        let args_json = match self.pending_tool_call.as_ref() {
-            Some(p) => &p.arguments,
-            None => return false,
-        };
-        let args: Value = match serde_json::from_str(args_json) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let file_path = match json_str(&args, "file_path") {
-            Some(fp) => fp,
-            None => return false,
-        };
-        matches!(
-            self.blocks.last(),
-            Some(Block::Tool(prev)) if prev.tool_name == "Edit" && prev.edit_file_path.as_deref() == Some(&file_path)
-        )
-    }
-
     // -- accessors ----------------------------------------------------------
 
     pub fn blocks(&self) -> &[Block] {
@@ -206,27 +180,27 @@ impl BlockRegistry {
 
     // -- focus / navigation -------------------------------------------------
 
+    fn is_navigable(block: &Block) -> bool {
+        matches!(block, Block::Prompt(_) | Block::Tool(_))
+    }
+
     pub fn focus_last(&mut self) {
-        if !self.blocks.is_empty() {
-            self.focused_index = Some(self.blocks.len() - 1);
-        }
+        self.focused_index = self.blocks.iter().rposition(Self::is_navigable);
     }
 
     pub fn focus_prev(&mut self) {
-        match self.focused_index {
-            Some(0) => {} // stay at 0 — prompt is always below
-            Some(i) => self.focused_index = Some(i - 1),
-            None => {}
+        if let Some(i) = self.focused_index {
+            self.focused_index = self.blocks[..i].iter().rposition(Self::is_navigable);
         }
     }
 
     pub fn focus_next(&mut self) {
         if let Some(i) = self.focused_index {
-            if i + 1 < self.blocks.len() {
-                self.focused_index = Some(i + 1);
-            } else {
-                self.focused_index = None;
-            }
+            self.focused_index = self.blocks[i + 1..]
+                .iter()
+                .position(Self::is_navigable)
+                .map(|rel| i + 1 + rel);
+            // None means past last navigable block → unfocused (returns to live prompt)
         }
     }
 

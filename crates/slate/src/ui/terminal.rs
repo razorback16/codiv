@@ -160,7 +160,7 @@ pub fn run(
     let term_size = term.size()?;
     // Parser rows = total height - 1 (status bar)
     let parser_rows = term_size.height.saturating_sub(1).max(1);
-    let parser_cols = term_size.width.max(1);
+    let parser_cols = term_size.width.saturating_sub(2).max(1);
     let mut parser = vt100::Parser::new(parser_rows, parser_cols, MAX_SCROLLBACK);
     let mut scroll_offset: usize = 0;
 
@@ -273,12 +273,61 @@ fn process_pty_bytes(bytes: &[u8], pending: &mut PendingCommand, parser: &mut vt
     pending.last_activity = Instant::now();
 }
 
-/// Get the absolute scrollback line number (scrollback_len + cursor_row).
-fn get_scrollback_line(parser: &vt100::Parser) -> u64 {
-    let screen = parser.screen();
-    let (cursor_row, _) = screen.cursor_position();
-    let scrollback_len = screen.scrollback() as u64;
-    scrollback_len + cursor_row as u64
+/// Get the true scrollback buffer length by probing set_scrollback's clamping behaviour.
+/// set_scrollback(usize::MAX) clamps to the actual VecDeque length, so reading it back
+/// gives us the true number of lines currently in the scrollback buffer.
+fn true_scrollback_len(parser: &mut vt100::Parser) -> usize {
+    let saved = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let len = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(saved);
+    len
+}
+
+/// Get the absolute line number of the cursor: true_scrollback_len + cursor_row.
+fn get_scrollback_line(parser: &mut vt100::Parser) -> u64 {
+    let (cursor_row, _) = parser.screen().cursor_position();
+    true_scrollback_len(parser) as u64 + cursor_row as u64
+}
+
+/// Adjust scroll_offset so the focused block is visible, centering it if off-screen.
+fn scroll_to_focused(
+    parser: &mut vt100::Parser,
+    scroll_offset: &mut usize,
+    tracker: &BlockRegistry,
+) {
+    let focused = match tracker.focused() {
+        Some(b) => b,
+        None => {
+            *scroll_offset = 0;
+            parser.screen_mut().set_scrollback(0);
+            return;
+        }
+    };
+    let scrollback_line = match focused {
+        Block::Prompt(pb) => pb.scrollback_line,
+        Block::Tool(tb) => tb.scrollback_line,
+        Block::CmdResponse(cb) => cb.scrollback_line,
+        Block::AiResponse(ab) => ab.scrollback_line,
+    };
+    let sb_len = true_scrollback_len(parser) as u64;
+    let screen_rows = parser.screen().size().0 as u64;
+    // abs_bottom at scroll_offset==0: sb_len + screen_rows
+    // To bring scrollback_line to the middle of screen, we want:
+    //   abs_top = scrollback_line - screen_rows/2
+    //   scroll_offset = sb_len + screen_rows - screen_rows - abs_top
+    //                 = sb_len - abs_top
+    let half = screen_rows / 2;
+    let desired_abs_top = scrollback_line.saturating_sub(half);
+    // scroll_offset = how far from the natural bottom we are
+    let natural_abs_top = sb_len; // abs_top when scroll_offset==0 is sb_len (cursor at bottom)
+    let new_offset = if desired_abs_top >= natural_abs_top {
+        0
+    } else {
+        (natural_abs_top - desired_abs_top) as usize
+    };
+    *scroll_offset = new_offset;
+    parser.screen_mut().set_scrollback(*scroll_offset);
 }
 
 /// Process a single daemon message, updating parser state.
@@ -287,7 +336,6 @@ fn handle_daemon_message(
     parser: &mut vt100::Parser,
     md_stream: &mut MarkdownStream,
     agent_streaming: &mut bool,
-    ai_separator_emitted: &mut bool,
     last_daemon_timestamp: &mut u64,
     model_alias: &mut String,
     context_usage: &mut (usize, usize),
@@ -302,9 +350,7 @@ fn handle_daemon_message(
         } => {
             match chunk {
                 ipc_messages::StreamChunk::Text(t) => {
-                    if !*ai_separator_emitted {
-                        parser.process(b"\r\n");
-                        *ai_separator_emitted = true;
+                    if ai_start_scrollback.is_none() {
                         *ai_start_scrollback = Some(get_scrollback_line(parser));
                     }
                     if let Some(ansi) = md_stream.push(&t) {
@@ -312,9 +358,7 @@ fn handle_daemon_message(
                     }
                 }
                 ipc_messages::StreamChunk::Reasoning(t) => {
-                    if !*ai_separator_emitted {
-                        parser.process(b"\r\n");
-                        *ai_separator_emitted = true;
+                    if ai_start_scrollback.is_none() {
                         *ai_start_scrollback = Some(get_scrollback_line(parser));
                     }
                     let t = t.replace('\n', "\r\n");
@@ -325,17 +369,12 @@ fn handle_daemon_message(
                     let pending = md_stream.finish();
                     if !pending.is_empty() {
                         parser.process(&pending);
-                        parser.process(b"\r\n");
                     }
                     md_stream.reset();
                     tracker.record_tool_call(&name, &arguments);
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
                     {
-                        let will_merge = tracker.will_merge_edit(&name);
-                        if !will_merge {
-                            parser.process(b"\r\n");
-                        }
                         let scrollback_line = get_scrollback_line(parser);
                         match tracker.record_tool_result(&name, &result, scrollback_line) {
                             ToolResultAction::Merged => {
@@ -347,21 +386,22 @@ fn handle_daemon_message(
                                     .map(|tb| tb.summary.clone());
                                 if let Some(summary) = summary {
                                     parser.process(b"\x1b[A\r\x1b[K");
-                                    let line = format!("  \x1b[32m{}\x1b[0m\r\n", summary);
+                                    let line = format!("\x1b[32m{}\x1b[0m\r\n", summary);
                                     parser.process(line.as_bytes());
                                 }
                             }
                             ToolResultAction::Summary { header, summary } => {
                                 // Write 2-line block to VT100.
                                 // Header: bold green ● ToolName(args)
-                                let header_line = format!("  \x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                let header_line = format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
                                 parser.process(header_line.as_bytes());
                                 // Summary: colored based on tool
                                 let is_bash_error = name.eq_ignore_ascii_case("bash")
                                     && !summary.contains("exit 0");
                                 let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
-                                let summary_line = format!("  {}{}\x1b[0m\r\n", color, summary);
+                                let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
                                 parser.process(summary_line.as_bytes());
+                                parser.process(b"\r\n"); // trailing separator after tool block
                             }
                         }
                     }
@@ -378,13 +418,16 @@ fn handle_daemon_message(
                     parser.process(&final_bytes);
                 }
                 let ai_end = get_scrollback_line(parser);
+                let had_ai_content = ai_start_scrollback.is_some();
                 if let Some(start) = ai_start_scrollback.take() {
                     let line_count = (ai_end.saturating_sub(start)) as u16;
                     if line_count > 0 {
                         tracker.record_ai_response(start, line_count);
                     }
                 }
-                parser.process(b"\r\n"); // blank separator after AI response
+                if !final_bytes.is_empty() || had_ai_content {
+                    parser.process(b"\r\n"); // AI block trailing separator
+                }
                 md_stream.reset();
                 *agent_streaming = false;
             }
@@ -447,7 +490,6 @@ fn event_loop(
     let mut selection = TextSelection::new();
     let mut clipboard = arboard::Clipboard::new().ok();
     let mut agent_streaming = false;
-    let mut ai_separator_emitted = false;
     let mut cmd_start_scrollback: Option<u64> = None;
     let mut ai_start_scrollback: Option<u64> = None;
     let mut git_info: Option<GitInfo> = bash.capture_git_info();
@@ -558,7 +600,7 @@ fn event_loop(
                         }
                         Event::Resize(cols, rows) => {
                             let parser_rows = rows.saturating_sub(1).max(1);
-                            let parser_cols = (*cols).max(1);
+                            let parser_cols = (*cols).saturating_sub(2).max(1);
                             parser.screen_mut().set_size(parser_rows, parser_cols);
                             bash.resize(parser_rows, parser_cols);
                             md_stream.set_width(parser_cols);
@@ -646,12 +688,14 @@ fn event_loop(
                                             } else {
                                                 tracker.focus_last();
                                             }
+                                            scroll_to_focused(parser, scroll_offset, &tracker);
                                             block_handled = true;
                                         }
                                         (KeyCode::Down, m) if m.contains(KeyModifiers::SHIFT) => {
                                             if tracker.focused_index().is_some() {
                                                 tracker.focus_next();
                                             }
+                                            scroll_to_focused(parser, scroll_offset, &tracker);
                                             block_handled = true;
                                         }
                                         (KeyCode::Enter, _) if tracker.focused_index().is_some() && pending_command.is_none() => {
@@ -727,7 +771,6 @@ fn event_loop(
                                                             let query = raw_input.trim_start().strip_prefix('?').unwrap_or(&raw_input);
                                                             if send_agent_request(c, query, &cwd) {
                                                                 agent_streaming = true;
-                                                                ai_separator_emitted = false;
                                                             }
                                                         } else {
                                                             parser_push_styled(
@@ -741,7 +784,7 @@ fn event_loop(
                                                     InputAction::Clear => {
                                                         let term_size = term.size()?;
                                                         let rows = term_size.height.saturating_sub(1).max(1);
-                                                        let cols = term_size.width.max(1);
+                                                        let cols = term_size.width.saturating_sub(2).max(1);
                                                         *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
                                                         *scroll_offset = 0;
                                                         *prompt_is_live = false;
@@ -752,7 +795,7 @@ fn event_loop(
                                                     InputAction::Reset => {
                                                         let term_size = term.size()?;
                                                         let rows = term_size.height.saturating_sub(1).max(1);
-                                                        let cols = term_size.width.max(1);
+                                                        let cols = term_size.width.saturating_sub(2).max(1);
                                                         *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
                                                         *scroll_offset = 0;
                                                         *prompt_is_live = false;
@@ -768,7 +811,7 @@ fn event_loop(
                                                             &format!("slate v{} — type 'exit' to quit", crate::VERSION),
                                                             "\x1b[90m",
                                                         );
-                                                        parser.process(b"\r\n"); // blank separator line after header
+                                                        parser.process(b"\r\n\r\n"); // header line + blank line after
                                                     }
 
                                                     InputAction::Execute => {
@@ -796,7 +839,6 @@ fn event_loop(
                                                         if let Some(ref mut c) = client {
                                                             if send_agent_request(c, &raw_input, &cwd) {
                                                                 agent_streaming = true;
-                                                                ai_separator_emitted = false;
                                                             }
                                                         } else {
                                                             parser_push_styled(
@@ -897,10 +939,10 @@ fn event_loop(
             }
             recv(daemon_rx) -> msg => {
                 if let Ok(msg) = msg {
-                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut ai_separator_emitted, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker, &mut ai_start_scrollback);
+                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker, &mut ai_start_scrollback);
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
-                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut ai_separator_emitted, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker, &mut ai_start_scrollback);
+                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker, &mut ai_start_scrollback);
                     }
                     needs_render = true;
                 }
@@ -1020,9 +1062,9 @@ fn render_frame(
     if scroll_offset == 0 && !is_executing && !agent_streaming && !in_alt_screen {
         let input_text = input.content();
 
-        // Write the input text at column 2, leaving cols 0-1 for the `> ` overlay.
+        // Write the input text; visual indent comes from content_area offset.
         parser.process(
-            format!("\r\x1b[K  {}", input_text).as_bytes(),
+            format!("\r\x1b[K{}", input_text).as_bytes(),
         );
 
         // Position cursor: move back from end if cursor isn't at end of input.
@@ -1055,31 +1097,45 @@ fn render_frame(
 
             let term_area = chunks[0];
             let status_area = chunks[1];
+            // Content area is 2 cols narrower (left gutter for `>` marker).
+            let content_area = Rect {
+                x: term_area.x + 2,
+                width: term_area.width.saturating_sub(2),
+                ..term_area
+            };
 
             // --- Render pseudoterminal ---
             let cursor_visible = scroll_offset == 0;
             let pseudo_term = PseudoTerminal::new(parser.screen())
                 .cursor(PtCursor::default().visibility(cursor_visible));
-            frame.render_widget(pseudo_term, term_area);
+            frame.render_widget(pseudo_term, content_area);
 
-            // --- Render `>` prompt gutter for all visible prompt blocks ---
+            // --- Render `>` prompt gutter for past and live prompts ---
             {
-                let scrollback_len = parser.screen().scrollback() as u64;
+                // Compute the absolute line range currently visible on screen.
                 let screen_rows = parser.screen().size().0 as u64;
-                let abs_bottom = scrollback_len + screen_rows - scroll_offset as u64;
-                let abs_top = abs_bottom.saturating_sub(screen_rows);
+                let sb_len = true_scrollback_len(parser) as u64;
+                // abs_bottom = first absolute line BELOW the visible area (at scroll_offset==0)
+                let abs_bottom = sb_len + screen_rows;
+                // when scrolled up, abs_top shifts back by scroll_offset rows
+                let abs_top = abs_bottom
+                    .saturating_sub(screen_rows)
+                    .saturating_sub(scroll_offset as u64);
+                let abs_view_bottom = abs_top + screen_rows;
+
                 let buf = frame.buffer_mut();
                 for block in tracker.blocks() {
                     if let Block::Prompt(pb) = block {
-                        if pb.scrollback_line >= abs_top && pb.scrollback_line < abs_bottom {
-                            let row = (pb.scrollback_line - abs_top) as u16 + term_area.top();
+                        if pb.scrollback_line >= abs_top && pb.scrollback_line < abs_view_bottom {
+                            let screen_row = (pb.scrollback_line - abs_top) as u16;
+                            let row = term_area.top() + screen_row;
                             if row < term_area.bottom() {
                                 buf[(term_area.left(), row)].set_char('>').set_fg(Color::Cyan);
                             }
                         }
                     }
                 }
-                // Also draw `>` for the live (in-progress) prompt
+                // Live prompt: draw `>` at the current cursor row.
                 if *prompt_is_live && scroll_offset == 0 {
                     let (cursor_row, _) = parser.screen().cursor_position();
                     let row = term_area.top() + cursor_row;
@@ -1131,10 +1187,12 @@ fn render_frame(
                     Block::CmdResponse(cb) => (cb.scrollback_line, cb.line_count),
                     Block::AiResponse(ab) => (ab.scrollback_line, ab.line_count),
                 };
-                let scrollback_len = parser.screen().scrollback() as u64;
+                let sb_len = true_scrollback_len(parser) as u64;
                 let screen_rows = parser.screen().size().0 as u64;
-                let abs_bottom = scrollback_len + screen_rows - scroll_offset as u64;
-                let abs_top = abs_bottom.saturating_sub(screen_rows);
+                let abs_bottom = sb_len + screen_rows;
+                let abs_top = abs_bottom
+                    .saturating_sub(screen_rows)
+                    .saturating_sub(scroll_offset as u64);
                 if scrollback_line >= abs_top && scrollback_line < abs_bottom {
                     let screen_row = (scrollback_line - abs_top) as u16 + term_area.top();
                     let top_rule = screen_row.saturating_sub(1);
