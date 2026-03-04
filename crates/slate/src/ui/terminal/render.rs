@@ -2,14 +2,31 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use tui_term::widget::{Cursor as PtCursor, PseudoTerminal};
 
-use crate::shell::bash_coprocess::GitInfo;
-use crate::ui::input::InputLine;
-use crate::ui::completion_popup::CompletionPopup;
-use crate::ui::selection::TextSelection;
-use crate::ui::tool_modal::ToolResultModal;
-use crate::{VERSION, ui::blocks::{Block, BlockRegistry}};
 use super::utils::format_tokens;
 use super::utils::true_scrollback_len;
+use super::{PROMPT_GUTTER_WIDTH, STATUS_BAR_HEIGHT};
+use crate::shell::bash_coprocess::GitInfo;
+use crate::ui::completion_popup::CompletionPopup;
+use crate::ui::input::InputLine;
+use crate::ui::selection::TextSelection;
+use crate::ui::tool_modal::ToolResultModal;
+use crate::{
+    ui::blocks::{Block, BlockRegistry},
+    VERSION,
+};
+
+#[inline]
+fn input_rendered_cols(input_text: &str) -> usize {
+    input_text.chars().count()
+}
+
+#[inline]
+fn completion_anchor_x(term_area_left: u16, cursor_col: usize) -> u16 {
+    let cursor_col = u16::try_from(cursor_col).unwrap_or(u16::MAX);
+    term_area_left
+        .saturating_add(PROMPT_GUTTER_WIDTH)
+        .saturating_add(cursor_col)
+}
 
 pub(crate) fn render_frame(
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -41,7 +58,7 @@ pub(crate) fn render_frame(
 
         // Position cursor: move back from end if cursor isn't at end of input.
         let target_col = input.cursor_position();
-        let current_col = input_text.len();
+        let current_col = input_rendered_cols(input_text);
         if current_col > target_col {
             parser.process(format!("\x1b[{}D", current_col - target_col).as_bytes());
         }
@@ -54,16 +71,16 @@ pub(crate) fn render_frame(
 
         if in_alt_screen {
             // Fullscreen: render PseudoTerminal over the entire area (no status bar).
-            let pseudo_term = PseudoTerminal::new(parser.screen())
-                .cursor(PtCursor::default().visibility(true));
+            let pseudo_term =
+                PseudoTerminal::new(parser.screen()).cursor(PtCursor::default().visibility(true));
             frame.render_widget(pseudo_term, area);
         } else {
             // Normal: terminal area + status bar.
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(1),    // PseudoTerminal (now includes prompt)
-                    Constraint::Length(1), // Status bar
+                    Constraint::Min(1),                    // PseudoTerminal (now includes prompt)
+                    Constraint::Length(STATUS_BAR_HEIGHT), // Status bar
                 ])
                 .split(area);
 
@@ -71,8 +88,8 @@ pub(crate) fn render_frame(
             let status_area = chunks[1];
             // Content area is 2 cols narrower (left gutter for `>` marker).
             let content_area = Rect {
-                x: term_area.x + 2,
-                width: term_area.width.saturating_sub(2),
+                x: term_area.x + PROMPT_GUTTER_WIDTH,
+                width: term_area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
                 ..term_area
             };
 
@@ -102,7 +119,9 @@ pub(crate) fn render_frame(
                             let screen_row = (pb.scrollback_line - abs_top) as u16;
                             let row = term_area.top() + screen_row;
                             if row < term_area.bottom() {
-                                buf[(term_area.left(), row)].set_char('>').set_fg(Color::Cyan);
+                                buf[(term_area.left(), row)]
+                                    .set_char('>')
+                                    .set_fg(Color::Cyan);
                             }
                         }
                     }
@@ -112,7 +131,9 @@ pub(crate) fn render_frame(
                     let (cursor_row, _) = parser.screen().cursor_position();
                     let row = term_area.top() + cursor_row;
                     if row < term_area.bottom() {
-                        buf[(term_area.left(), row)].set_char('>').set_fg(Color::Cyan);
+                        buf[(term_area.left(), row)]
+                            .set_char('>')
+                            .set_fg(Color::Cyan);
                     }
                 }
             }
@@ -125,10 +146,17 @@ pub(crate) fn render_frame(
                     if row < term_area.top() || row >= term_area.bottom() {
                         continue;
                     }
-                    let col_start = if row == sr { sc } else { 0 };
-                    let col_end = if row == er { ec } else { term_area.right().saturating_sub(1) };
+                    let col_start = if row == sr { sc } else { content_area.left() };
+                    let col_end = if row == er {
+                        ec
+                    } else {
+                        content_area.right().saturating_sub(1)
+                    };
                     for col in col_start..=col_end {
-                        if col >= term_area.right() {
+                        if col < content_area.left() {
+                            continue;
+                        }
+                        if col >= content_area.right() {
                             break;
                         }
                         let cell = &mut buf[(col, row)];
@@ -156,7 +184,7 @@ pub(crate) fn render_frame(
             // --- Render completion popup ---
             if completion_popup.is_visible() {
                 let (cursor_row, _cursor_col) = parser.screen().cursor_position();
-                let anchor_x = input.cursor_position() as u16;
+                let anchor_x = completion_anchor_x(term_area.left(), input.cursor_position());
                 let anchor_y = term_area.top() + cursor_row;
                 completion_popup.render(frame, anchor_x, anchor_y);
             }
@@ -182,11 +210,10 @@ pub(crate) fn render_frame(
                     let buf = frame.buffer_mut();
                     for row in [top_rule, bottom_rule] {
                         if row >= term_area.top() && row < term_area.bottom() {
-                            let is_blank = (term_area.left()..term_area.right())
-                                .all(|col| {
-                                    let ch = buf[(col, row)].symbol();
-                                    ch == " " || ch == ""
-                                });
+                            let is_blank = (term_area.left()..term_area.right()).all(|col| {
+                                let ch = buf[(col, row)].symbol();
+                                ch == " " || ch == ""
+                            });
                             if is_blank {
                                 for col in term_area.left()..term_area.right() {
                                     let cell = &mut buf[(col, row)];
@@ -213,9 +240,7 @@ pub(crate) fn render_frame(
                             for (i, ch) in hint.chars().enumerate() {
                                 let col = text_end + i as u16;
                                 if col < term_area.right() {
-                                    buf[(col, hint_row)]
-                                        .set_char(ch)
-                                        .set_fg(Color::DarkGray);
+                                    buf[(col, hint_row)].set_char(ch).set_fg(Color::DarkGray);
                                 }
                             }
                         }
@@ -230,11 +255,10 @@ pub(crate) fn render_frame(
                 let buf = frame.buffer_mut();
                 for row in [top_rule, bottom_rule] {
                     if row >= term_area.top() && row < term_area.bottom() {
-                        let is_blank = (term_area.left()..term_area.right())
-                            .all(|col| {
-                                let ch = buf[(col, row)].symbol();
-                                ch == " " || ch == ""
-                            });
+                        let is_blank = (term_area.left()..term_area.right()).all(|col| {
+                            let ch = buf[(col, row)].symbol();
+                            ch == " " || ch == ""
+                        });
                         if is_blank {
                             for col in term_area.left()..term_area.right() {
                                 buf[(col, row)].set_char('\u{2500}').set_fg(Color::DarkGray);
@@ -308,7 +332,10 @@ pub(crate) fn render_status_bar(
             } else {
                 String::new()
             };
-            format!(" {} {}{}{} ", cwd, branch_part, stats_part, running_indicator)
+            format!(
+                " {} {}{}{} ",
+                cwd, branch_part, stats_part, running_indicator
+            )
         }
         None => format!(" {}{} ", cwd, running_indicator),
     };
@@ -323,4 +350,23 @@ pub(crate) fn render_status_bar(
     )));
 
     frame.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{completion_anchor_x, input_rendered_cols};
+
+    #[test]
+    fn input_rendered_cols_counts_characters_not_bytes() {
+        assert_eq!(input_rendered_cols("abc"), 3);
+        assert_eq!(input_rendered_cols("éñ"), 2);
+        assert_eq!(input_rendered_cols("a🙂b"), 3);
+    }
+
+    #[test]
+    fn completion_anchor_x_includes_gutter() {
+        assert_eq!(completion_anchor_x(0, 0), 2);
+        assert_eq!(completion_anchor_x(0, 5), 7);
+        assert_eq!(completion_anchor_x(3, 4), 9);
+    }
 }

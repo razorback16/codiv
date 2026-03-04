@@ -2,10 +2,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::markdown::MarkdownStream;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
-use crate::markdown::MarkdownStream;
 
 use crate::ipc::client::SlatedClient;
 use crate::ipc::messages as ipc_messages;
@@ -22,10 +22,11 @@ use crate::ui::tool_modal::ToolResultModal;
 use super::daemon;
 use super::input as terminal_input;
 use super::io as terminal_io;
-use super::state::{PendingCommand, MAX_SCROLLBACK};
-use super::utils::{get_scrollback_line, parser_push_styled, send_agent_request};
-use super::utils::scroll_to_focused;
 use super::render::render_frame;
+use super::state::{PendingCommand, MAX_SCROLLBACK};
+use super::utils::scroll_to_focused;
+use super::utils::{get_scrollback_line, parser_push_styled, send_agent_request};
+use super::{parser_cols_from_term_width, parser_rows_from_term_height, PROMPT_GUTTER_WIDTH};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
 pub(crate) fn event_loop(
@@ -55,7 +56,7 @@ pub(crate) fn event_loop(
     let mut context_usage: (usize, usize) = (0, 0);
     let mut md_stream = MarkdownStream::new(
         term.size()
-            .map(|s| s.width.saturating_sub(2).max(1))
+            .map(|s| parser_cols_from_term_width(s.width))
             .unwrap_or(80),
     );
     let mut tracker = BlockRegistry::new();
@@ -131,10 +132,9 @@ pub(crate) fn event_loop(
         } else {
             &no_pty
         };
-        let no_daemon: crossbeam_channel::Receiver<ipc_messages::DaemonMessage> = crossbeam_channel::never();
-        let daemon_rx = client
-            .as_ref()
-            .map_or(&no_daemon, |c| c.daemon_receiver());
+        let no_daemon: crossbeam_channel::Receiver<ipc_messages::DaemonMessage> =
+            crossbeam_channel::never();
+        let daemon_rx = client.as_ref().map_or(&no_daemon, |c| c.daemon_receiver());
 
         crossbeam_channel::select! {
             recv(pty_rx) -> msg => {
@@ -168,11 +168,12 @@ pub(crate) fn event_loop(
                                     selection.finish();
                                     if selection.is_active() {
                                         let term_area_height =
-                                            term.size().map(|s| s.height.saturating_sub(1).max(1)).unwrap_or(1);
+                                            term.size().map(|s| parser_rows_from_term_height(s.height)).unwrap_or(1);
                                         let text = selection.extract_text(
                                             parser.screen(),
                                             0,
                                             term_area_height,
+                                            PROMPT_GUTTER_WIDTH,
                                         );
                                         if !text.is_empty() {
                                             if let Some(ref mut cb) = clipboard {
@@ -187,8 +188,8 @@ pub(crate) fn event_loop(
                             }
                         }
                         Event::Resize(cols, rows) => {
-                            let parser_rows = rows.saturating_sub(1).max(1);
-                            let parser_cols = (*cols).saturating_sub(2).max(1);
+                            let parser_rows = parser_rows_from_term_height(*rows);
+                            let parser_cols = parser_cols_from_term_width(*cols);
                             parser.screen_mut().set_size(parser_rows, parser_cols);
                             bash.resize(parser_rows, parser_cols);
                             md_stream.set_width(parser_cols);
@@ -393,10 +394,8 @@ pub(crate) fn event_loop(
 
                                                         InputAction::Clear => {
                                                             let term_size = term.size()?;
-                                                            let rows =
-                                                                term_size.height.saturating_sub(1).max(1);
-                                                            let cols =
-                                                                term_size.width.saturating_sub(2).max(1);
+                                                            let rows = parser_rows_from_term_height(term_size.height);
+                                                            let cols = parser_cols_from_term_width(term_size.width);
                                                             *parser = vt100::Parser::new(
                                                                 rows,
                                                                 cols,
@@ -410,10 +409,8 @@ pub(crate) fn event_loop(
 
                                                         InputAction::Reset => {
                                                             let term_size = term.size()?;
-                                                            let rows =
-                                                                term_size.height.saturating_sub(1).max(1);
-                                                            let cols =
-                                                                term_size.width.saturating_sub(2).max(1);
+                                                            let rows = parser_rows_from_term_height(term_size.height);
+                                                            let cols = parser_cols_from_term_width(term_size.width);
                                                             *parser = vt100::Parser::new(
                                                                 rows,
                                                                 cols,
@@ -634,7 +631,7 @@ pub(crate) fn event_loop(
         // --- Post-select: drain additional PTY data ---
         if pending_command.is_some() {
             let pty_rx = bash.pty_receiver();
-                    while let Ok(bytes) = pty_rx.try_recv() {
+            while let Ok(bytes) = pty_rx.try_recv() {
                 if let Some(ref mut pending) = pending_command {
                     terminal_io::process_pty_bytes(&bytes, pending, parser);
                 }
@@ -673,7 +670,12 @@ pub(crate) fn event_loop(
                 if let Some(start) = cmd_start_scrollback.take() {
                     let line_count = (cmd_end.saturating_sub(start)) as u16;
                     if line_count > 0 {
-                        tracker.record_cmd_response(&pending.command, start, line_count, result.exit_code);
+                        tracker.record_cmd_response(
+                            &pending.command,
+                            start,
+                            line_count,
+                            result.exit_code,
+                        );
                     }
                 }
                 parser.process(b"\r\n"); // blank separator after command output
@@ -702,7 +704,9 @@ pub(crate) fn event_loop(
 
         // --- Periodic heartbeat every 10s ---
         if let Some(ref mut c) = client {
-            if c.is_connected() && last_heartbeat_sent.elapsed() > std::time::Duration::from_secs(10) {
+            if c.is_connected()
+                && last_heartbeat_sent.elapsed() > std::time::Duration::from_secs(10)
+            {
                 if let Some(hb) = ipc_messages::build_heartbeat() {
                     c.send(&hb);
                 }

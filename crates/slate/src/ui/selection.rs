@@ -74,12 +74,14 @@ impl TextSelection {
     ///
     /// `term_area_top` is the screen row where the terminal area begins
     /// (usually 0). The vt100 screen already has `set_scrollback` applied,
-    /// so no separate scroll offset is needed.
+    /// so no separate scroll offset is needed. `content_area_left` is the
+    /// terminal content x-offset (used to skip the prompt gutter).
     pub fn extract_text(
         &self,
         screen: &vt100::Screen,
         term_area_top: u16,
         term_area_height: u16,
+        content_area_left: u16,
     ) -> String {
         if !self.is_active() {
             return String::new();
@@ -88,12 +90,15 @@ impl TextSelection {
         let ((sc, sr), (ec, er)) = self.normalized_range();
         let screen_size = screen.size();
         let total_cols = screen_size.1;
+        let content_right = content_area_left.saturating_add(total_cols.saturating_sub(1));
 
         let mut result = String::new();
 
         for screen_row in sr..=er {
             // Only extract from the terminal area.
-            if screen_row < term_area_top || screen_row >= term_area_top + term_area_height {
+            if screen_row < term_area_top
+                || screen_row >= term_area_top.saturating_add(term_area_height)
+            {
                 continue;
             }
 
@@ -103,19 +108,22 @@ impl TextSelection {
                 continue;
             }
 
-            let col_start = if screen_row == sr { sc } else { 0 };
-            let col_end = if screen_row == er {
-                ec
+            let row_col_start = if screen_row == sr {
+                sc
             } else {
-                total_cols.saturating_sub(1)
+                content_area_left
             };
+            let row_col_end = if screen_row == er { ec } else { content_right };
+            let col_start = row_col_start.max(content_area_left);
+            let col_end = row_col_end.min(content_right);
+            if col_start > col_end {
+                continue;
+            }
 
             let mut line = String::new();
-            for col in col_start..=col_end {
-                if col >= total_cols {
-                    break;
-                }
-                let cell = screen.cell(vt_row, col);
+            for screen_col in col_start..=col_end {
+                let vt_col = screen_col.saturating_sub(content_area_left);
+                let cell = screen.cell(vt_row, vt_col);
                 if let Some(cell) = cell {
                     line.push(cell.contents().chars().next().unwrap_or(' '));
                 } else {
@@ -132,5 +140,38 @@ impl TextSelection {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TextSelection;
+
+    #[test]
+    fn extract_text_applies_content_left_offset() {
+        let mut parser = vt100::Parser::new(1, 10, 0);
+        parser.process(b"abcdefghij");
+
+        let mut selection = TextSelection::new();
+        selection.start_at(4, 0);
+        selection.update(6, 0);
+        selection.finish();
+
+        let text = selection.extract_text(parser.screen(), 0, 1, 2);
+        assert_eq!(text, "cde");
+    }
+
+    #[test]
+    fn extract_text_clamps_left_edge_to_content_area() {
+        let mut parser = vt100::Parser::new(1, 10, 0);
+        parser.process(b"abcdefghij");
+
+        let mut selection = TextSelection::new();
+        selection.start_at(0, 0);
+        selection.update(3, 0);
+        selection.finish();
+
+        let text = selection.extract_text(parser.screen(), 0, 1, 2);
+        assert_eq!(text, "ab");
     }
 }

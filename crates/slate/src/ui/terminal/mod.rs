@@ -13,8 +13,8 @@ mod render;
 mod state;
 mod utils;
 
-pub(crate) use event_loop::event_loop;
 use self::state::MAX_SCROLLBACK;
+pub(crate) use event_loop::event_loop;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -28,8 +28,21 @@ use ratatui::Terminal;
 use crate::ipc::client::SlatedClient;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::shell::command_index::CommandIndex;
-use crate::VERSION;
 use crate::ui::input::InputLine;
+use crate::VERSION;
+
+pub(super) const STATUS_BAR_HEIGHT: u16 = 1;
+pub(super) const PROMPT_GUTTER_WIDTH: u16 = 2;
+
+#[inline]
+pub(super) fn parser_rows_from_term_height(term_height: u16) -> u16 {
+    term_height.saturating_sub(STATUS_BAR_HEIGHT).max(1)
+}
+
+#[inline]
+pub(super) fn parser_cols_from_term_width(term_width: u16) -> u16 {
+    term_width.saturating_sub(PROMPT_GUTTER_WIDTH).max(1)
+}
 
 /// Run the main terminal UI.
 ///
@@ -51,9 +64,8 @@ pub fn run(
 
     // --- State ---
     let term_size = term.size()?;
-    // Parser rows = total height - 1 (status bar)
-    let parser_rows = term_size.height.saturating_sub(1).max(1);
-    let parser_cols = term_size.width.saturating_sub(2).max(1);
+    let parser_rows = parser_rows_from_term_height(term_size.height);
+    let parser_cols = parser_cols_from_term_width(term_size.width);
     let mut parser = vt100::Parser::new(parser_rows, parser_cols, MAX_SCROLLBACK);
     let mut scroll_offset: usize = 0;
 
@@ -64,8 +76,11 @@ pub fn run(
 
     // Welcome message.
     parser.process(
-        format!("\x1b[90mslate v{} — type 'exit' to quit\x1b[0m\r\n\r\n", VERSION)
-            .as_bytes(),
+        format!(
+            "\x1b[90mslate v{} — type 'exit' to quit\x1b[0m\r\n\r\n",
+            VERSION
+        )
+        .as_bytes(),
     );
 
     // --- Event loop ---
@@ -84,7 +99,11 @@ pub fn run(
 
     // --- Cleanup (always runs) ---
     terminal::disable_raw_mode()?;
-    execute!(term.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        term.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     term.show_cursor()?;
 
     result
