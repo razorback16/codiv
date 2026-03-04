@@ -170,7 +170,7 @@ pub fn run(
     let mut prompt_is_live = false;
 
     // Welcome message.
-    parser_push_styled(&mut parser, &format!("slate v{} — type 'exit' to quit", VERSION), "\x1b[90m");
+    parser.process(format!("\x1b[90mslate v{} — type 'exit' to quit\x1b[0m\r\n\r\n", VERSION).as_bytes());
 
     // --- Event loop ---
     let result = event_loop(
@@ -287,11 +287,13 @@ fn handle_daemon_message(
     parser: &mut vt100::Parser,
     md_stream: &mut MarkdownStream,
     agent_streaming: &mut bool,
+    ai_separator_emitted: &mut bool,
     last_daemon_timestamp: &mut u64,
     model_alias: &mut String,
     context_usage: &mut (usize, usize),
     _cwd: &str,
     tracker: &mut BlockRegistry,
+    ai_start_scrollback: &mut Option<u64>,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -300,11 +302,21 @@ fn handle_daemon_message(
         } => {
             match chunk {
                 ipc_messages::StreamChunk::Text(t) => {
+                    if !*ai_separator_emitted {
+                        parser.process(b"\r\n");
+                        *ai_separator_emitted = true;
+                        *ai_start_scrollback = Some(get_scrollback_line(parser));
+                    }
                     if let Some(ansi) = md_stream.push(&t) {
                         parser.process(&ansi);
                     }
                 }
                 ipc_messages::StreamChunk::Reasoning(t) => {
+                    if !*ai_separator_emitted {
+                        parser.process(b"\r\n");
+                        *ai_separator_emitted = true;
+                        *ai_start_scrollback = Some(get_scrollback_line(parser));
+                    }
                     let t = t.replace('\n', "\r\n");
                     parser.process(t.as_bytes());
                 }
@@ -365,7 +377,14 @@ fn handle_daemon_message(
                 if !final_bytes.is_empty() {
                     parser.process(&final_bytes);
                 }
-                parser.process(b"\r\n");
+                let ai_end = get_scrollback_line(parser);
+                if let Some(start) = ai_start_scrollback.take() {
+                    let line_count = (ai_end.saturating_sub(start)) as u16;
+                    if line_count > 0 {
+                        tracker.record_ai_response(start, line_count);
+                    }
+                }
+                parser.process(b"\r\n"); // blank separator after AI response
                 md_stream.reset();
                 *agent_streaming = false;
             }
@@ -428,6 +447,9 @@ fn event_loop(
     let mut selection = TextSelection::new();
     let mut clipboard = arboard::Clipboard::new().ok();
     let mut agent_streaming = false;
+    let mut ai_separator_emitted = false;
+    let mut cmd_start_scrollback: Option<u64> = None;
+    let mut ai_start_scrollback: Option<u64> = None;
     let mut git_info: Option<GitInfo> = bash.capture_git_info();
     let mut model_alias = String::new();
     let mut context_usage: (usize, usize) = (0, 0);
@@ -645,15 +667,8 @@ fn event_loop(
                                             block_handled = true;
                                         }
                                         (KeyCode::Esc, _) if tracker.focused_index().is_some() => {
-                                            if let Some(Block::Prompt(_)) = tracker.focused() {
-                                                if tracker.check_double_esc() {
-                                                    // Double Esc — clear the prompt (future: clear inline editor)
-                                                    tracker.unfocus();
-                                                }
-                                                // Single Esc: do nothing
-                                            } else {
-                                                tracker.unfocus();
-                                            }
+                                            // Any block type: single Esc returns to live prompt
+                                            tracker.unfocus();
                                             block_handled = true;
                                         }
                                         _ => {}
@@ -686,104 +701,116 @@ fn event_loop(
                                         // --- Enter: submit input ---
                                         (KeyCode::Enter, _) if pending_command.is_none() => {
                                             let raw_input = input.submit();
-                                            parser.process(b"\r\x1b[K\r\n");
-                                            let scrollback_line = get_scrollback_line(parser);
-                                            parser.process(format!("  {}\r\n", raw_input).as_bytes());
-                                            tracker.record_prompt(&raw_input, scrollback_line);
-                                            *prompt_is_live = false;
-                                            let action = classify_input(&raw_input, command_index);
 
-                                            match action {
-                                                InputAction::Empty => {}
+                                            // Empty input — spring back, don't create a prompt block
+                                            if raw_input.trim().is_empty() {
+                                                *scroll_offset = 0;
+                                                parser.screen_mut().set_scrollback(0);
+                                            } else {
+                                                // Prompt text already on screen from last render_frame.
+                                                // Record position, then advance cursor past it.
+                                                let scrollback_line = get_scrollback_line(parser);
+                                                parser.process(b"\r\n");
+                                                tracker.record_prompt(&raw_input, scrollback_line);
+                                                *prompt_is_live = false;
+                                                let action = classify_input(&raw_input, command_index);
 
-                                                InputAction::Exit => {
-                                                    break;
-                                                }
+                                                match action {
+                                                    InputAction::Empty => {}
 
-                                                InputAction::AiQuery => {
-                                                    if let Some(ref mut c) = client {
-                                                        let query = raw_input.trim_start().strip_prefix('?').unwrap_or(&raw_input);
-                                                        if send_agent_request(c, query, &cwd) {
-                                                            agent_streaming = true;
-                                                        }
-                                                    } else {
-                                                        parser_push_styled(
-                                                            parser,
-                                                            "AI mode not available (daemon not connected)",
-                                                            "\x1b[31m",
-                                                        );
+                                                    InputAction::Exit => {
+                                                        break;
                                                     }
-                                                }
 
-                                                InputAction::Clear => {
-                                                    let term_size = term.size()?;
-                                                    let rows = term_size.height.saturating_sub(1).max(1);
-                                                    let cols = term_size.width.max(1);
-                                                    *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
-                                                    *scroll_offset = 0;
-                                                    *prompt_is_live = false;
-                                                    tracker.clear();
-                                                    tool_result_modal.close();
-                                                }
-
-                                                InputAction::Reset => {
-                                                    let term_size = term.size()?;
-                                                    let rows = term_size.height.saturating_sub(1).max(1);
-                                                    let cols = term_size.width.max(1);
-                                                    *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
-                                                    *scroll_offset = 0;
-                                                    *prompt_is_live = false;
-                                                    input.clear_history();
-                                                    completion_engine = CompletionEngine::new();
-                                                    completion_engine.start_init(bash);
-                                                    completion_popup.dismiss();
-                                                    selection.clear();
-                                                    tracker.clear();
-                                                    tool_result_modal.close();
-                                                    parser_push_styled(
-                                                        parser,
-                                                        &format!("slate v{} — type 'exit' to quit", crate::VERSION),
-                                                        "\x1b[90m",
-                                                    );
-                                                }
-
-                                                InputAction::Execute => {
-                                                    match bash.start_command(&raw_input) {
-                                                        Some(sentinel) => {
-                                                            pending_command = Some(PendingCommand {
-                                                                sentinel,
-                                                                accumulated: String::new(),
-                                                                command: raw_input.clone(),
-                                                                last_activity: Instant::now(),
-                                                            });
-                                                        }
-                                                        None => {
+                                                    InputAction::AiQuery => {
+                                                        if let Some(ref mut c) = client {
+                                                            let query = raw_input.trim_start().strip_prefix('?').unwrap_or(&raw_input);
+                                                            if send_agent_request(c, query, &cwd) {
+                                                                agent_streaming = true;
+                                                                ai_separator_emitted = false;
+                                                            }
+                                                        } else {
                                                             parser_push_styled(
                                                                 parser,
-                                                                "failed to send command to shell",
+                                                                "AI mode not available (daemon not connected)",
+                                                                "\x1b[31m",
+                                                            );
+                                                        }
+                                                    }
+
+                                                    InputAction::Clear => {
+                                                        let term_size = term.size()?;
+                                                        let rows = term_size.height.saturating_sub(1).max(1);
+                                                        let cols = term_size.width.max(1);
+                                                        *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
+                                                        *scroll_offset = 0;
+                                                        *prompt_is_live = false;
+                                                        tracker.clear();
+                                                        tool_result_modal.close();
+                                                    }
+
+                                                    InputAction::Reset => {
+                                                        let term_size = term.size()?;
+                                                        let rows = term_size.height.saturating_sub(1).max(1);
+                                                        let cols = term_size.width.max(1);
+                                                        *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
+                                                        *scroll_offset = 0;
+                                                        *prompt_is_live = false;
+                                                        input.clear_history();
+                                                        completion_engine = CompletionEngine::new();
+                                                        completion_engine.start_init(bash);
+                                                        completion_popup.dismiss();
+                                                        selection.clear();
+                                                        tracker.clear();
+                                                        tool_result_modal.close();
+                                                        parser_push_styled(
+                                                            parser,
+                                                            &format!("slate v{} — type 'exit' to quit", crate::VERSION),
+                                                            "\x1b[90m",
+                                                        );
+                                                        parser.process(b"\r\n"); // blank separator line after header
+                                                    }
+
+                                                    InputAction::Execute => {
+                                                        match bash.start_command(&raw_input) {
+                                                            Some(sentinel) => {
+                                                                cmd_start_scrollback = Some(get_scrollback_line(parser));
+                                                                pending_command = Some(PendingCommand {
+                                                                    sentinel,
+                                                                    accumulated: String::new(),
+                                                                    command: raw_input.clone(),
+                                                                    last_activity: Instant::now(),
+                                                                });
+                                                            }
+                                                            None => {
+                                                                parser_push_styled(
+                                                                    parser,
+                                                                    "failed to send command to shell",
+                                                                    "\x1b[31m",
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+
+                                                    InputAction::NotFound(ref word) => {
+                                                        if let Some(ref mut c) = client {
+                                                            if send_agent_request(c, &raw_input, &cwd) {
+                                                                agent_streaming = true;
+                                                                ai_separator_emitted = false;
+                                                            }
+                                                        } else {
+                                                            parser_push_styled(
+                                                                parser,
+                                                                &format!("command not found: {}", word),
                                                                 "\x1b[31m",
                                                             );
                                                         }
                                                     }
                                                 }
 
-                                                InputAction::NotFound(ref word) => {
-                                                    if let Some(ref mut c) = client {
-                                                        if send_agent_request(c, &raw_input, &cwd) {
-                                                            agent_streaming = true;
-                                                        }
-                                                    } else {
-                                                        parser_push_styled(
-                                                            parser,
-                                                            &format!("command not found: {}", word),
-                                                            "\x1b[31m",
-                                                        );
-                                                    }
-                                                }
+                                                *scroll_offset = 0;
+                                                parser.screen_mut().set_scrollback(0);
                                             }
-
-                                            *scroll_offset = 0;
-                                            parser.screen_mut().set_scrollback(0);
                                         }
 
                                         // --- Tab: completion ---
@@ -870,10 +897,10 @@ fn event_loop(
             }
             recv(daemon_rx) -> msg => {
                 if let Ok(msg) = msg {
-                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker);
+                    handle_daemon_message(msg, parser, &mut md_stream, &mut agent_streaming, &mut ai_separator_emitted, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker, &mut ai_start_scrollback);
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
-                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker);
+                        handle_daemon_message(msg2, parser, &mut md_stream, &mut agent_streaming, &mut ai_separator_emitted, &mut last_daemon_timestamp, &mut model_alias, &mut context_usage, cwd, &mut tracker, &mut ai_start_scrollback);
                     }
                     needs_render = true;
                 }
@@ -922,6 +949,14 @@ fn event_loop(
                         c.send(&frame);
                     }
                 }
+                let cmd_end = get_scrollback_line(parser);
+                if let Some(start) = cmd_start_scrollback.take() {
+                    let line_count = (cmd_end.saturating_sub(start)) as u16;
+                    if line_count > 0 {
+                        tracker.record_cmd_response(&pending.command, start, line_count, result.exit_code);
+                    }
+                }
+                parser.process(b"\r\n"); // blank separator after command output
                 pending_command = None;
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
@@ -930,6 +965,14 @@ fn event_loop(
                 bash.send_interrupt();
                 bash.drain_for(100);
                 parser_push_styled(parser, "command timed out (no activity for 5m)", "\x1b[31m");
+                let cmd_end = get_scrollback_line(parser);
+                if let Some(start) = cmd_start_scrollback.take() {
+                    let line_count = (cmd_end.saturating_sub(start)) as u16;
+                    if line_count > 0 {
+                        tracker.record_cmd_response(&pending.command, start, line_count, -1);
+                    }
+                }
+                parser.process(b"\r\n"); // blank separator after timed-out command
                 pending_command = None;
                 *scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
@@ -1085,6 +1128,8 @@ fn render_frame(
                 let (scrollback_line, line_count) = match focused {
                     Block::Tool(tb) => (tb.scrollback_line, tb.line_count),
                     Block::Prompt(pb) => (pb.scrollback_line, 1),
+                    Block::CmdResponse(cb) => (cb.scrollback_line, cb.line_count),
+                    Block::AiResponse(ab) => (ab.scrollback_line, ab.line_count),
                 };
                 let scrollback_len = parser.screen().scrollback() as u64;
                 let screen_rows = parser.screen().size().0 as u64;
@@ -1097,10 +1142,17 @@ fn render_frame(
                     let buf = frame.buffer_mut();
                     for row in [top_rule, bottom_rule] {
                         if row >= term_area.top() && row < term_area.bottom() {
-                            for col in term_area.left()..term_area.right() {
-                                let cell = &mut buf[(col, row)];
-                                cell.set_char('\u{2500}');
-                                cell.set_fg(Color::DarkGray);
+                            let is_blank = (term_area.left()..term_area.right())
+                                .all(|col| {
+                                    let ch = buf[(col, row)].symbol();
+                                    ch == " " || ch == ""
+                                });
+                            if is_blank {
+                                for col in term_area.left()..term_area.right() {
+                                    let cell = &mut buf[(col, row)];
+                                    cell.set_char('\u{2500}');
+                                    cell.set_fg(Color::DarkGray);
+                                }
                             }
                         }
                     }
@@ -1130,6 +1182,7 @@ fn render_frame(
                     }
                 }
             } else if *prompt_is_live && scroll_offset == 0 {
+                // Live prompt is implicitly selected — draw ───── rules
                 let (cursor_row, _) = parser.screen().cursor_position();
                 let screen_row = term_area.top() + cursor_row;
                 let top_rule = screen_row.saturating_sub(1);
@@ -1137,8 +1190,15 @@ fn render_frame(
                 let buf = frame.buffer_mut();
                 for row in [top_rule, bottom_rule] {
                     if row >= term_area.top() && row < term_area.bottom() {
-                        for col in term_area.left()..term_area.right() {
-                            buf[(col, row)].set_char('\u{2500}').set_fg(Color::DarkGray);
+                        let is_blank = (term_area.left()..term_area.right())
+                            .all(|col| {
+                                let ch = buf[(col, row)].symbol();
+                                ch == " " || ch == ""
+                            });
+                        if is_blank {
+                            for col in term_area.left()..term_area.right() {
+                                buf[(col, row)].set_char('\u{2500}').set_fg(Color::DarkGray);
+                            }
                         }
                     }
                 }

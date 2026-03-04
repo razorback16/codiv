@@ -40,6 +40,7 @@ pub struct MarkdownStream {
     buf: SharedBuf,
     line_buffer: String,
     terminal_width: u16,
+    first_output: bool,
 }
 
 impl MarkdownStream {
@@ -52,6 +53,7 @@ impl MarkdownStream {
             buf,
             line_buffer: String::new(),
             terminal_width,
+            first_output: true,
         }
     }
 
@@ -78,8 +80,14 @@ impl MarkdownStream {
             None
         } else {
             let raw = self.buf.drain();
-            let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n");
-            Some(output.into_bytes())
+            let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n  ");
+            let indented = if self.first_output {
+                self.first_output = false;
+                format!("  {}", output)
+            } else {
+                output
+            };
+            Some(indented.into_bytes())
         }
     }
 
@@ -94,8 +102,17 @@ impl MarkdownStream {
         self.renderer.render(&final_events).ok();
 
         let raw = self.buf.drain();
-        let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n");
-        output.into_bytes()
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n  ");
+        let indented = if self.first_output {
+            self.first_output = false;
+            format!("  {}", output)
+        } else {
+            output
+        };
+        indented.into_bytes()
     }
 
     /// Reset for a new streaming session.
@@ -104,6 +121,7 @@ impl MarkdownStream {
         self.line_buffer.clear();
         self.buf.drain();
         self.renderer = Self::build_renderer(self.buf.clone(), self.terminal_width);
+        self.first_output = true;
     }
 
     pub fn set_width(&mut self, width: u16) {

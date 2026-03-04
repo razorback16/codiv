@@ -4,8 +4,6 @@
 //! [`BlockRegistry`]. Tool calls render as 2-line summaries (header + summary)
 //! that can be expanded via a modal overlay.
 
-use std::time::Instant;
-
 use serde_json::Value;
 
 use super::diff::generate_unified_diff;
@@ -36,9 +34,27 @@ pub struct PromptBlock {
     pub scrollback_line: u64,
 }
 
+#[allow(dead_code)]
+pub struct CmdResponseBlock {
+    pub id: usize,
+    pub command: String,
+    pub scrollback_line: u64,
+    pub line_count: u16,
+    pub exit_code: i32,
+}
+
+#[allow(dead_code)]
+pub struct AiResponseBlock {
+    pub id: usize,
+    pub scrollback_line: u64,
+    pub line_count: u16,
+}
+
 pub enum Block {
-    Tool(ToolBlock),
     Prompt(PromptBlock),
+    CmdResponse(CmdResponseBlock),
+    AiResponse(AiResponseBlock),
+    Tool(ToolBlock),
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +87,6 @@ pub struct BlockRegistry {
     focused_index: Option<usize>,
     next_id: usize,
     pending_tool_call: Option<PendingToolCall>,
-    last_esc_time: Option<Instant>,
 }
 
 impl BlockRegistry {
@@ -81,7 +96,6 @@ impl BlockRegistry {
             focused_index: None,
             next_id: 0,
             pending_tool_call: None,
-            last_esc_time: None,
         }
     }
 
@@ -136,6 +150,28 @@ impl BlockRegistry {
         }));
     }
 
+    /// Record a shell command response block.
+    pub fn record_cmd_response(&mut self, command: &str, scrollback_line: u64, line_count: u16, exit_code: i32) {
+        let id = self.next_id();
+        self.blocks.push(Block::CmdResponse(CmdResponseBlock {
+            id,
+            command: command.to_string(),
+            scrollback_line,
+            line_count,
+            exit_code,
+        }));
+    }
+
+    /// Record an AI response block.
+    pub fn record_ai_response(&mut self, scrollback_line: u64, line_count: u16) {
+        let id = self.next_id();
+        self.blocks.push(Block::AiResponse(AiResponseBlock {
+            id,
+            scrollback_line,
+            line_count,
+        }));
+    }
+
     /// Peek at the pending tool call to check if the next tool result will
     /// merge into the previous Edit block (same file). This is non-consuming —
     /// it does NOT take the pending tool call.
@@ -178,7 +214,7 @@ impl BlockRegistry {
 
     pub fn focus_prev(&mut self) {
         match self.focused_index {
-            Some(0) => self.focused_index = None,
+            Some(0) => {} // stay at 0 — prompt is always below
             Some(i) => self.focused_index = Some(i - 1),
             None => {}
         }
@@ -223,19 +259,6 @@ impl BlockRegistry {
         self.focused_index = None;
         self.next_id = 0;
         self.pending_tool_call = None;
-        self.last_esc_time = None;
-    }
-
-    /// Returns `true` if two Esc presses occurred within 500 ms.
-    pub fn check_double_esc(&mut self) -> bool {
-        let now = Instant::now();
-        if let Some(prev) = self.last_esc_time.take() {
-            if now.duration_since(prev).as_millis() < 500 {
-                return true;
-            }
-        }
-        self.last_esc_time = Some(now);
-        false
     }
 
     /// Returns a mutable reference to the last [`ToolBlock`], if any.
