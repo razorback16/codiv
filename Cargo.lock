@@ -20,7 +20,7 @@ dependencies = [
 [[package]]
 name = "aisdk"
 version = "0.5.2"
-source = "git+https://github.com/razorback16/aisdk?branch=fix%2Fstream-text-tool-loop#a51d3aad861608c4321edd364e88462a50a282fc"
+source = "git+https://github.com/razorback16/aisdk?branch=main#9c429a2c1f4f9ae9fee9e0e0f11b322c2782e6a0"
 dependencies = [
  "aisdk-macros",
  "async-trait",
@@ -41,7 +41,7 @@ dependencies = [
 [[package]]
 name = "aisdk-macros"
 version = "0.3.0"
-source = "git+https://github.com/razorback16/aisdk?branch=fix%2Fstream-text-tool-loop#a51d3aad861608c4321edd364e88462a50a282fc"
+source = "git+https://github.com/razorback16/aisdk?branch=main#9c429a2c1f4f9ae9fee9e0e0f11b322c2782e6a0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3258,7 +3258,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82a72c767771b47409d2345987fda8628641887d5466101319899796367354a0"
 dependencies = [
  "fastrand",
- "getrandom 0.4.1",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -4054,7 +4054,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

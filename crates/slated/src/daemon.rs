@@ -54,6 +54,8 @@ impl Daemon {
                 let model_catalog = agent::config::ModelCatalog::load();
                 let assignment =
                     model_catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+                let provider_config =
+                    model_catalog.resolve_provider_config(&assignment);
 
                 if let Some(client_tx) = self.ipc.client_sender(client_id) {
                     let rid = request_id.clone();
@@ -75,6 +77,7 @@ impl Daemon {
                         agent::agent::Agent::new(
                             slate_common::types::AgentRole::Engineer,
                             assignment,
+                            provider_config,
                             "You are a helpful coding assistant embedded in a terminal. \
                             You can see the user's recent terminal commands and their output in the conversation history. \
                             Use this context to give relevant, concise answers. \
@@ -198,9 +201,11 @@ impl Daemon {
                     let agent = session.agent.get_or_insert_with(|| {
                         let catalog = crate::agent::config::ModelCatalog::load();
                         let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+                        let provider_config = catalog.resolve_provider_config(&assignment);
                         crate::agent::agent::Agent::new(
                             slate_common::types::AgentRole::Engineer,
                             assignment,
+                            provider_config,
                             "You are a helpful coding assistant embedded in a terminal. \
                             You can see the user's recent terminal commands and their output in the conversation history. \
                             Use this context to give relevant, concise answers. \

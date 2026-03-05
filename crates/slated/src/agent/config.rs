@@ -10,9 +10,26 @@ use tokio::sync::mpsc;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
+#[derive(Clone, Default, Deserialize)]
+pub struct ProviderConfig {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ModelCatalog {
     pub default_provider: String,
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
     pub roles: HashMap<String, ModelAssignment>,
 }
 
@@ -23,6 +40,8 @@ pub struct ModelAssignment {
     #[allow(dead_code)] // reserved for future aisdk support
     pub max_tokens: Option<u32>,
     pub temperature: Option<u8>,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
 }
 
 impl ModelCatalog {
@@ -37,6 +56,7 @@ impl ModelCatalog {
         // Default: Anthropic Claude for everything
         Self {
             default_provider: "anthropic".to_string(),
+            providers: HashMap::new(),
             roles: HashMap::new(),
         }
     }
@@ -55,7 +75,19 @@ impl ModelCatalog {
             model: "claude-sonnet-4-5".to_string(),
             max_tokens: Some(8192),
             temperature: None,
+            api_key: None,
+            base_url: None,
         })
+    }
+
+    pub fn resolve_provider_config(&self, assignment: &ModelAssignment) -> ProviderConfig {
+        let global = self.providers.get(&assignment.provider);
+        ProviderConfig {
+            api_key: assignment.api_key.clone()
+                .or_else(|| global.and_then(|g| g.api_key.clone())),
+            base_url: assignment.base_url.clone()
+                .or_else(|| global.and_then(|g| g.base_url.clone())),
+        }
     }
 }
 
@@ -97,10 +129,75 @@ impl ModelAssignment {
     }
 }
 
+fn build_anthropic_model(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::Anthropic<aisdk::core::DynamicModel>, DynError> {
+    if provider_config.api_key.is_some() || provider_config.base_url.is_some() {
+        let mut builder = Anthropic::builder().model_name(model_name);
+        if let Some(ref key) = provider_config.api_key {
+            builder = builder.api_key(key);
+        } else {
+            // Builder requires api_key; fall back to env var
+            let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+            builder = builder.api_key(key);
+        }
+        if let Some(ref url) = provider_config.base_url {
+            builder = builder.base_url(url);
+        }
+        Ok(builder.build()?)
+    } else {
+        Ok(Anthropic::model_name(model_name))
+    }
+}
+
+fn build_openai_model(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::OpenAI<aisdk::core::DynamicModel>, DynError> {
+    if provider_config.api_key.is_some() || provider_config.base_url.is_some() {
+        let mut builder = OpenAI::builder().model_name(model_name);
+        if let Some(ref key) = provider_config.api_key {
+            builder = builder.api_key(key);
+        } else {
+            let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+            builder = builder.api_key(key);
+        }
+        if let Some(ref url) = provider_config.base_url {
+            builder = builder.base_url(url);
+        }
+        Ok(builder.build()?)
+    } else {
+        Ok(OpenAI::model_name(model_name))
+    }
+}
+
+fn build_google_model(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::Google<aisdk::core::DynamicModel>, DynError> {
+    if provider_config.api_key.is_some() || provider_config.base_url.is_some() {
+        let mut builder = Google::builder().model_name(model_name);
+        if let Some(ref key) = provider_config.api_key {
+            builder = builder.api_key(key);
+        } else {
+            let key = std::env::var("GOOGLE_API_KEY").unwrap_or_default();
+            builder = builder.api_key(key);
+        }
+        if let Some(ref url) = provider_config.base_url {
+            builder = builder.base_url(url);
+        }
+        Ok(builder.build()?)
+    } else {
+        Ok(Google::model_name(model_name))
+    }
+}
+
 /// Execute a streaming LLM call, forwarding chunks over IPC.
 /// Returns (response_text, input_tokens, output_tokens).
 pub async fn stream_from_config(
     assignment: &ModelAssignment,
+    provider_config: &ProviderConfig,
     messages: aisdk::core::messages::Messages,
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
@@ -108,13 +205,16 @@ pub async fn stream_from_config(
 ) -> Result<(String, usize, usize), DynError> {
     match assignment.provider.as_str() {
         "anthropic" => {
-            run_stream(Anthropic::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
+            let model = build_anthropic_model(&assignment.model, provider_config)?;
+            run_stream(model, messages, request_id, tx, assignment, tools).await
         }
         "openai" => {
-            run_stream(OpenAI::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
+            let model = build_openai_model(&assignment.model, provider_config)?;
+            run_stream(model, messages, request_id, tx, assignment, tools).await
         }
         "google" => {
-            run_stream(Google::model_name(&assignment.model), messages, request_id, tx, assignment, tools).await
+            let model = build_google_model(&assignment.model, provider_config)?;
+            run_stream(model, messages, request_id, tx, assignment, tools).await
         }
         other => Err(format!("unsupported provider: {}", other).into()),
     }
