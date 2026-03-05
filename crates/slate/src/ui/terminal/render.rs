@@ -121,15 +121,19 @@ pub(crate) fn render_frame(
 
                 let buf = frame.buffer_mut();
                 for block in tracker.blocks() {
-                    if let Block::Prompt(pb) = block {
-                        if pb.scrollback_line >= abs_top && pb.scrollback_line < abs_view_bottom {
-                            let screen_row = (pb.scrollback_line - abs_top) as u16;
-                            let row = term_area.top() + screen_row;
-                            if row < term_area.bottom() {
-                                buf[(term_area.left(), row)]
-                                    .set_char('>')
-                                    .set_fg(Color::Cyan);
-                            }
+                    let (scrollback_line, gutter_char, gutter_fg) = match block {
+                        Block::Prompt(pb) => (pb.scrollback_line, '>', Color::Cyan),
+                        Block::AiResponse(ab) => (ab.scrollback_line, '\u{25CF}', Color::White),
+                        Block::Tool(tb) => (tb.scrollback_line, '\u{25CF}', Color::Green),
+                        Block::CmdResponse(cb) => (cb.scrollback_line, '$', Color::White),
+                    };
+                    if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
+                        let screen_row = (scrollback_line - abs_top) as u16;
+                        let row = term_area.top() + screen_row;
+                        if row < term_area.bottom() {
+                            buf[(term_area.left(), row)]
+                                .set_char(gutter_char)
+                                .set_fg(gutter_fg);
                         }
                     }
                 }

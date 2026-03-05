@@ -279,7 +279,7 @@ impl BlockRegistry {
         // First edit (or new file) — compute single-edit summary.
         let summary_text = single_edit_summary(&old_string, &new_string);
         let short_path = short_filename(&file_path);
-        let header = format!("\u{25CF} Edit({})", short_path);
+        let header = format!("Edit({})", short_path);
         let summary = format!("  \u{2514} {}", summary_text);
 
         let id = self.next_id();
@@ -309,7 +309,7 @@ impl BlockRegistry {
         let line_count = result.lines().count();
         let short_path = short_filename(&file_path);
 
-        let header = format!("\u{25CF} Read({})", short_path);
+        let header = format!("Read({})", short_path);
         let summary = format!("  \u{2514} Read {} lines", line_count);
 
         let id = self.next_id();
@@ -340,7 +340,7 @@ impl BlockRegistry {
         let line_count = content.lines().count();
         let short_path = short_filename(&file_path);
 
-        let header = format!("\u{25CF} Write({})", short_path);
+        let header = format!("Write({})", short_path);
         let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
 
         let id = self.next_id();
@@ -370,7 +370,7 @@ impl BlockRegistry {
         let command_preview = truncate_str(&command, 60);
         let exit_code = parse_bash_exit_code(result);
 
-        let header = format!("\u{25CF} Bash({})", command_preview);
+        let header = format!("Bash({})", command_preview);
         let summary = if exit_code == 0 {
             "  \u{2514} exit 0".to_string()
         } else {
@@ -419,7 +419,7 @@ impl BlockRegistry {
             )
         };
 
-        let header = format!("\u{25CF} Grep({})", args_preview);
+        let header = format!("Grep({})", args_preview);
         let noun = if match_count == 1 { "line" } else { "lines" };
         let summary = format!("  \u{2514} Found {} {}", match_count, noun);
 
@@ -460,7 +460,7 @@ impl BlockRegistry {
             )
         };
 
-        let header = format!("\u{25CF} Glob({})", args_preview);
+        let header = format!("Glob({})", args_preview);
         let noun = if file_count == 1 { "file" } else { "files" };
         let summary = format!("  \u{2514} Found {} {}", file_count, noun);
 
@@ -489,7 +489,7 @@ impl BlockRegistry {
         scrollback_line: u64,
     ) -> ToolResultAction {
         let args_preview = summarize_args(args);
-        let header = format!("\u{25CF} {}({})", tool_name, args_preview);
+        let header = format!("{}({})", tool_name, args_preview);
         let summary = "  \u{2514} completed".to_string();
 
         let id = self.next_id();

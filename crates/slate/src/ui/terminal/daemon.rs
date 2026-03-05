@@ -44,6 +44,21 @@ pub(crate) fn handle_daemon_message(
                         parser.process(&pending);
                     }
                     md_stream.reset();
+
+                    // Close the current AI response block if one is open,
+                    // so it doesn't span across tool calls.
+                    let had_ai_content = ai_start_scrollback.is_some();
+                    if let Some(start) = ai_start_scrollback.take() {
+                        let ai_end = get_scrollback_line(parser);
+                        let line_count = (ai_end.saturating_sub(start)) as u16;
+                        if line_count > 0 {
+                            tracker.record_ai_response(start, line_count);
+                        }
+                    }
+                    if !pending.is_empty() || had_ai_content {
+                        parser.process(b"\r\n"); // separator between AI text and tool block
+                    }
+
                     tracker.record_tool_call(&name, &arguments);
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
