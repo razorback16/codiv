@@ -51,6 +51,13 @@ pub(crate) fn render_frame(
     // and no command is currently executing or agent streaming, and not in alt screen).
     let in_alt_screen = parser.screen().alternate_screen();
     if scroll_offset == 0 && !is_executing && !agent_streaming && !in_alt_screen {
+        // If cursor is on the last row, scroll up to make room for bottom ruler line.
+        let screen_rows = parser.screen().size().0;
+        let (cursor_row, _) = parser.screen().cursor_position();
+        if cursor_row + 1 >= screen_rows {
+            parser.process(b"\n\x1b[A");
+        }
+
         let input_text = input.content();
 
         // Write the input text; visual indent comes from content_area offset.
