@@ -10,10 +10,10 @@ use ratatui::Terminal;
 use crate::ipc::client::SlatedClient;
 use crate::ipc::messages as ipc_messages;
 use crate::shell::bash_coprocess::BashCoprocess;
-use crate::shell::command_index::{classify_input, CommandIndex, InputAction};
+use crate::shell::command_index::{classify_input, InputAction};
 use crate::shell::completion_engine::CompletionEngine;
 
-use crate::ui::blocks::{Block, BlockRegistry};
+use crate::ui::blocks::{Block, BlockRegistry, InputMode};
 use crate::ui::completion_popup::CompletionPopup;
 use crate::ui::input::InputLine;
 use crate::ui::selection::TextSelection;
@@ -37,7 +37,6 @@ pub(crate) fn event_loop(
     scroll_offset: &mut usize,
     input: &mut InputLine,
     bash: &mut BashCoprocess,
-    command_index: &CommandIndex,
     shutdown: &Arc<std::sync::atomic::AtomicBool>,
     cwd: &mut String,
     client: &mut Option<SlatedClient>,
@@ -68,6 +67,7 @@ pub(crate) fn event_loop(
     let mut tool_result_modal = ToolResultModal::new();
     let mut was_alt_screen = false;
     let mut anim = AnimationState::new();
+    let mut input_mode = InputMode::Command;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -137,6 +137,7 @@ pub(crate) fn event_loop(
                 &tracker,
                 &tool_result_modal,
                 &anim,
+                input_mode,
             )?;
             needs_render = false;
         }
@@ -401,33 +402,15 @@ pub(crate) fn event_loop(
                                                     // Record position, then advance cursor past it.
                                                     let scrollback_line = get_scrollback_line(parser);
                                                     parser.process(b"\r\n\r\n");
-                                                    tracker.record_prompt(&raw_input, scrollback_line);
+                                                    tracker.record_prompt(&raw_input, scrollback_line, input_mode);
                                                     *prompt_is_live = false;
-                                                    let action = classify_input(&raw_input, command_index);
+                                                    let action = classify_input(&raw_input);
 
                                                     match action {
                                                         InputAction::Empty => {}
 
                                                         InputAction::Exit => {
                                                             break;
-                                                        }
-
-                                                        InputAction::AiQuery => {
-                                                            if let Some(ref mut c) = client {
-                                                                let query = raw_input
-                                                                    .trim_start()
-                                                                    .strip_prefix('?')
-                                                                    .unwrap_or(&raw_input);
-                                                                if send_agent_request(c, query, cwd) {
-                                                                    agent_streaming = true;
-                                                                }
-                                                            } else {
-                                                                parser_push_styled(
-                                                                    parser,
-                                                                    "AI mode not available (daemon not connected)",
-                                                                    "\x1b[31m",
-                                                                );
-                                                            }
                                                         }
 
                                                         InputAction::Clear => {
@@ -471,44 +454,44 @@ pub(crate) fn event_loop(
                                                                 ),
                                                                 "\x1b[90m",
                                                             );
-                                                            parser.process(b"\r\n\r\n"); // header line + blank line after
+                                                            parser.process(b"\r\n\r\n");
                                                         }
 
-                                                        InputAction::Execute => {
-                                                            match bash.start_command(&raw_input) {
-                                                                Some(sentinel) => {
-                                                                    cmd_start_scrollback = Some(get_scrollback_line(parser));
-                                                                    pending_command = Some(PendingCommand {
-                                                                        sentinel,
-                                                                        accumulated: String::new(),
-                                                                        command: raw_input.clone(),
-                                                                        last_activity: Instant::now(),
-                                                                    });
+                                                        InputAction::Submit => {
+                                                            match input_mode {
+                                                                InputMode::Command => {
+                                                                    match bash.start_command(&raw_input) {
+                                                                        Some(sentinel) => {
+                                                                            cmd_start_scrollback = Some(get_scrollback_line(parser));
+                                                                            pending_command = Some(PendingCommand {
+                                                                                sentinel,
+                                                                                accumulated: String::new(),
+                                                                                command: raw_input.clone(),
+                                                                                last_activity: Instant::now(),
+                                                                            });
+                                                                        }
+                                                                        None => {
+                                                                            parser_push_styled(
+                                                                                parser,
+                                                                                "failed to send command to shell",
+                                                                                "\x1b[31m",
+                                                                            );
+                                                                        }
+                                                                    }
                                                                 }
-                                                                None => {
-                                                                    parser_push_styled(
-                                                                        parser,
-                                                                        "failed to send command to shell",
-                                                                        "\x1b[31m",
-                                                                    );
+                                                                InputMode::Ai => {
+                                                                    if let Some(ref mut c) = client {
+                                                                        if send_agent_request(c, &raw_input, cwd) {
+                                                                            agent_streaming = true;
+                                                                        }
+                                                                    } else {
+                                                                        parser_push_styled(
+                                                                            parser,
+                                                                            "AI mode not available (daemon not connected)",
+                                                                            "\x1b[31m",
+                                                                        );
+                                                                    }
                                                                 }
-                                                            }
-                                                        }
-
-                                                        InputAction::NotFound(ref word) => {
-                                                            if let Some(ref mut c) = client {
-                                                                if send_agent_request(c, &raw_input, cwd) {
-                                                                    agent_streaming = true;
-                                                                }
-                                                            } else {
-                                                                parser_push_styled(
-                                                                    parser,
-                                                                    &format!(
-                                                                        "command not found: {}",
-                                                                        word
-                                                                    ),
-                                                                    "\x1b[31m",
-                                                                );
                                                             }
                                                         }
                                                     }
@@ -518,51 +501,61 @@ pub(crate) fn event_loop(
                                                 }
                                             }
 
-                                            // --- Tab: completion ---
+                                            // --- Tab: mode switch or completion ---
                                             (KeyCode::Tab, _) if pending_command.is_none() => {
-                                                let line = input.content().to_string();
-                                                let cursor = input.cursor_byte_offset();
-                                                if let Some(result) =
-                                                    completion_engine.complete(bash, &line, cursor)
-                                                {
-                                                    match result.candidates.len() {
-                                                        0 => {}
-                                                        1 => {
-                                                            let candidate = &result.candidates[0];
-                                                            let suffix = if
-                                                                std::path::Path::new(candidate).is_dir()
-                                                            {
-                                                                "/"
-                                                            } else {
-                                                                " "
-                                                            };
-                                                            input.replace_range(
-                                                                result.replace_start,
-                                                                result.replace_end,
-                                                                &format!("{}{}", candidate, suffix),
-                                                            );
-                                                        }
-                                                        _ => {
-                                                            let common = terminal_input::longest_common_prefix(
-                                                                &result.candidates,
-                                                            );
-                                                            let prefix =
-                                                                &line[result.replace_start..result.replace_end];
-                                                            if common.len() > prefix.len() {
+                                                if input.content().is_empty() {
+                                                    // Toggle mode
+                                                    input_mode = match input_mode {
+                                                        InputMode::Command => InputMode::Ai,
+                                                        InputMode::Ai => InputMode::Command,
+                                                    };
+                                                } else if input_mode == InputMode::Command {
+                                                    // Existing tab-completion logic
+                                                    let line = input.content().to_string();
+                                                    let cursor = input.cursor_byte_offset();
+                                                    if let Some(result) =
+                                                        completion_engine.complete(bash, &line, cursor)
+                                                    {
+                                                        match result.candidates.len() {
+                                                            0 => {}
+                                                            1 => {
+                                                                let candidate = &result.candidates[0];
+                                                                let suffix = if
+                                                                    std::path::Path::new(candidate).is_dir()
+                                                                {
+                                                                    "/"
+                                                                } else {
+                                                                    " "
+                                                                };
                                                                 input.replace_range(
                                                                     result.replace_start,
                                                                     result.replace_end,
-                                                                    &common,
+                                                                    &format!("{}{}", candidate, suffix),
                                                                 );
                                                             }
-                                                            completion_popup.open(
-                                                                result.candidates,
-                                                                result.replace_start,
-                                                                result.replace_end,
-                                                            );
+                                                            _ => {
+                                                                let common = terminal_input::longest_common_prefix(
+                                                                    &result.candidates,
+                                                                );
+                                                                let prefix =
+                                                                    &line[result.replace_start..result.replace_end];
+                                                                if common.len() > prefix.len() {
+                                                                    input.replace_range(
+                                                                        result.replace_start,
+                                                                        result.replace_end,
+                                                                        &common,
+                                                                    );
+                                                                }
+                                                                completion_popup.open(
+                                                                    result.candidates,
+                                                                    result.replace_start,
+                                                                    result.replace_end,
+                                                                );
+                                                            }
                                                         }
                                                     }
                                                 }
+                                                // In AI mode with non-empty input: no-op
                                             }
 
                                             // --- History navigation ---

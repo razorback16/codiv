@@ -11,7 +11,7 @@ use crate::ui::input::InputLine;
 use crate::ui::selection::TextSelection;
 use crate::ui::tool_modal::ToolResultModal;
 use crate::{
-    ui::blocks::{Block, BlockRegistry},
+    ui::blocks::{Block, BlockRegistry, InputMode},
     VERSION,
 };
 
@@ -49,6 +49,7 @@ pub(crate) fn render_frame(
     tracker: &BlockRegistry,
     tool_result_modal: &ToolResultModal,
     anim: &super::animation::AnimationState,
+    input_mode: InputMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
@@ -125,7 +126,13 @@ pub(crate) fn render_frame(
                 let buf = frame.buffer_mut();
                 for block in tracker.blocks() {
                     let (scrollback_line, gutter_char, gutter_fg) = match block {
-                        Block::Prompt(pb) => (pb.scrollback_line, '>', Color::Cyan),
+                        Block::Prompt(pb) => {
+                            let (ch, fg) = match pb.mode {
+                                InputMode::Command => ('$', Color::White),
+                                InputMode::Ai => ('>', Color::Cyan),
+                            };
+                            (pb.scrollback_line, ch, fg)
+                        }
                         Block::AiResponse(ab) => (ab.scrollback_line, '\u{25CF}', Color::White),
                         Block::Tool(tb) => (tb.scrollback_line, '\u{25CF}', Color::Green),
                         Block::CmdResponse(cb) => (cb.scrollback_line, '$', Color::White),
@@ -143,12 +150,16 @@ pub(crate) fn render_frame(
                 }
                 // Live prompt: draw `>` at the current cursor row.
                 if *prompt_is_live && scroll_offset == 0 {
+                    let (live_char, live_fg) = match input_mode {
+                        InputMode::Command => ('$', Color::White),
+                        InputMode::Ai => ('>', Color::Cyan),
+                    };
                     let (cursor_row, _) = parser.screen().cursor_position();
                     let row = term_area.top() + cursor_row;
                     if row < term_area.bottom() {
                         buf[(term_area.left(), row)]
-                            .set_char('>')
-                            .set_fg(Color::Cyan);
+                            .set_char(live_char)
+                            .set_fg(live_fg);
                     }
                 } else if agent_streaming && scroll_offset == 0 {
                     let (cursor_row, _) = parser.screen().cursor_position();

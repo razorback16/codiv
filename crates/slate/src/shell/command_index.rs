@@ -1,89 +1,4 @@
-//! Command index: scans PATH directories for executable commands.
-//! Also provides input classification for the shell dispatcher.
-
-use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
-
-// ---------------------------------------------------------------------------
-// CommandIndex
-// ---------------------------------------------------------------------------
-
-pub struct CommandIndex {
-    index: HashSet<String>,
-}
-
-impl CommandIndex {
-    pub fn new() -> Self {
-        Self {
-            index: HashSet::new(),
-        }
-    }
-
-    /// Scan all directories listed in `$PATH` for executable files.
-    /// First entry wins (mimics shell lookup order).
-    pub fn scan_path_directories(&mut self) {
-        let path_env = match std::env::var("PATH") {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-
-        for dir in path_env.split(':') {
-            if dir.is_empty() {
-                continue;
-            }
-
-            let entries = match std::fs::read_dir(dir) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            for entry in entries.flatten() {
-                let ft = match entry.file_type() {
-                    Ok(ft) => ft,
-                    Err(_) => continue,
-                };
-
-                if !ft.is_file() && !ft.is_symlink() {
-                    continue;
-                }
-
-                let metadata = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-
-                let mode = metadata.permissions().mode();
-                // Check any execute bit (owner, group, others)
-                if mode & 0o111 == 0 {
-                    continue;
-                }
-
-                let name = entry.file_name().to_string_lossy().into_owned();
-                self.index.insert(name);
-            }
-        }
-    }
-
-    /// Check whether `name` is a known command.
-    pub fn is_known(&self, name: &str) -> bool {
-        self.index.contains(name)
-    }
-
-    /// Insert shell builtin names into the index so they appear in tab completion.
-    /// Detects the user's shell from `$SHELL` and adds the appropriate builtins.
-    pub fn add_builtins(&mut self) {
-        for name in shell_builtins() {
-            self.index.insert(name.to_string());
-        }
-    }
-
-}
-
-impl Default for CommandIndex {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+//! Input classification for the shell dispatcher.
 
 // ---------------------------------------------------------------------------
 // Input classification
@@ -91,126 +6,26 @@ impl Default for CommandIndex {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InputAction {
-    /// Known command — fast-pass to bash.
-    Execute,
-    /// AI query (prefixed with `?`).
-    AiQuery,
-    /// Unknown command — first word returned. Routed to agent when daemon is connected.
-    NotFound(String),
+    /// Route according to current InputMode.
+    Submit,
     /// Clear screen and scrollback.
     Clear,
-    /// Full session reset (screen, scrollback, history, completions).
+    /// Full session reset.
     Reset,
-    /// User wants to exit the shell.
+    /// User wants to exit.
     Exit,
     /// Empty input line.
     Empty,
 }
 
-/// Return builtins for the user's shell (detected from `$SHELL`).
-/// Falls back to bash builtins if detection fails.
-fn shell_builtins() -> HashSet<&'static str> {
-    let shell = std::env::var("SHELL").unwrap_or_default();
-    if shell.ends_with("/zsh") {
-        zsh_builtins()
-    } else {
-        bash_builtins()
-    }
-}
-
-/// Complete set of bash builtins from bash-builtins(7).
-/// `exit`/`logout` excluded (handled as `InputAction::Exit`).
-fn bash_builtins() -> HashSet<&'static str> {
-    [
-        ":", ".", "[", "alias", "bg", "bind", "break", "builtin", "cd", "command", "compgen",
-        "complete", "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval",
-        "exec", "export", "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let",
-        "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray",
-        "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test", "times",
-        "trap", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait", "caller",
-    ]
-    .into_iter()
-    .collect()
-}
-
-/// Common ZSH builtins from zshbuiltins(1).
-/// `exit`/`logout` excluded (handled as `InputAction::Exit`).
-fn zsh_builtins() -> HashSet<&'static str> {
-    [
-        ":", ".", "[", "alias", "autoload", "bg", "bindkey", "break", "builtin", "cd", "chdir",
-        "command", "compctl", "compadd", "compdef", "continue", "declare", "dirs", "disable",
-        "disown", "echo", "echotc", "emulate", "enable", "eval", "exec", "export", "false", "fc",
-        "fg", "float", "functions", "getln", "getopts", "hash", "history", "integer", "jobs",
-        "kill", "let", "limit", "local", "log", "noglob", "popd", "print", "printf", "pushd",
-        "pushln", "pwd", "read", "readonly", "rehash", "return", "sched", "set", "setopt", "shift",
-        "source", "suspend", "test", "times", "trap", "true", "ttyctl", "type", "typeset",
-        "ulimit", "umask", "unalias", "unfunction", "unhash", "unlimit", "unset", "unsetopt",
-        "vared", "wait", "whence", "where", "which", "zcompile", "zle", "zmodload", "zparseopts",
-        "zstyle",
-        "bye", "comparguments", "compcall", "compdescribe", "compfiles", "compgroups",
-        "compquote", "compset", "comptags", "comptry", "compvalues", "echoti",
-        "private", "r", "zformat", "zregexparse",
-    ]
-    .into_iter()
-    .collect()
-}
-
-/// Detect variable assignments (`NAME=VALUE` where NAME is `[A-Za-z_][A-Za-z0-9_]*`).
-fn is_variable_assignment(first_word: &str) -> bool {
-    if let Some(eq_pos) = first_word.find('=') {
-        let name = &first_word[..eq_pos];
-        if !name.is_empty() {
-            let mut chars = name.chars();
-            let first = chars.next().unwrap();
-            if (first.is_ascii_alphabetic() || first == '_')
-                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Classify a raw input line into an [`InputAction`].
-pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
+pub fn classify_input(input: &str) -> InputAction {
     let trimmed = input.trim();
-
-    if trimmed.is_empty() {
-        return InputAction::Empty;
-    }
-
-    if trimmed == "exit" || trimmed == "quit" {
-        return InputAction::Exit;
-    }
-
-    if trimmed == "clear" {
-        return InputAction::Clear;
-    }
-
-    if trimmed == "reset" {
-        return InputAction::Reset;
-    }
-
-    if trimmed.starts_with('?') {
-        return InputAction::AiQuery;
-    }
-
-    let first_word = trimmed.split_whitespace().next().unwrap_or("");
-
-    if shell_builtins().contains(first_word) {
-        return InputAction::Execute;
-    }
-
-    if is_variable_assignment(first_word) {
-        return InputAction::Execute;
-    }
-
-    if index.is_known(first_word) {
-        return InputAction::Execute;
-    }
-
-    InputAction::NotFound(first_word.to_string())
+    if trimmed.is_empty() { return InputAction::Empty; }
+    if trimmed == "exit" || trimmed == "quit" { return InputAction::Exit; }
+    if trimmed == "clear" { return InputAction::Clear; }
+    if trimmed == "reset" { return InputAction::Reset; }
+    InputAction::Submit
 }
 
 // ---------------------------------------------------------------------------
@@ -221,123 +36,24 @@ pub fn classify_input(input: &str, index: &CommandIndex) -> InputAction {
 mod tests {
     use super::*;
 
-    /// Helper: build a CommandIndex with only PATH scanning (no bash needed).
-    fn path_only_index() -> CommandIndex {
-        let mut idx = CommandIndex::new();
-        idx.scan_path_directories();
-        idx
-    }
-
-    #[test]
-    fn scan_path_finds_common_commands() {
-        let idx = path_only_index();
-        assert!(
-            idx.is_known("ls"),
-            "ls should be found in PATH"
-        );
-        assert!(
-            idx.is_known("echo"),
-            "echo should be found in PATH"
-        );
-    }
-
-    #[test]
-    fn unknown_is_not_known() {
-        let idx = path_only_index();
-        assert!(
-            !idx.is_known("xyzzy_definitely_not_a_command"),
-            "nonsense name must not be known"
-        );
-    }
-
     #[test]
     fn classify_empty() {
-        let idx = CommandIndex::new();
-        assert_eq!(classify_input("", &idx), InputAction::Empty);
-        assert_eq!(classify_input("   ", &idx), InputAction::Empty);
+        assert_eq!(classify_input(""), InputAction::Empty);
+        assert_eq!(classify_input("   "), InputAction::Empty);
     }
 
     #[test]
     fn classify_exit() {
-        let idx = CommandIndex::new();
-        assert_eq!(classify_input("exit", &idx), InputAction::Exit);
-        assert_eq!(classify_input("quit", &idx), InputAction::Exit);
+        assert_eq!(classify_input("exit"), InputAction::Exit);
+        assert_eq!(classify_input("quit"), InputAction::Exit);
     }
 
     #[test]
-    fn classify_ssh_as_execute() {
-        let idx = path_only_index();
-        // ssh is now classified as Execute (unified path).
-        assert_eq!(classify_input("ssh user@host", &idx), InputAction::Execute);
+    fn classify_submit() {
+        assert_eq!(classify_input("ls -la"), InputAction::Submit);
+        assert_eq!(classify_input("hello world"), InputAction::Submit);
+        assert_eq!(classify_input("?what is rust"), InputAction::Submit);
+        assert_eq!(classify_input("cd /tmp"), InputAction::Submit);
+        assert_eq!(classify_input("FOO=bar"), InputAction::Submit);
     }
-
-    #[test]
-    fn classify_fullscreen_as_execute_or_not_found() {
-        let idx = CommandIndex::new();
-        // Fullscreen programs go through Execute (or NotFound if not in PATH).
-        // With an empty index, they are NotFound.
-        assert_eq!(classify_input("vim foo.txt", &idx), InputAction::NotFound("vim".to_string()));
-        assert_eq!(classify_input("htop", &idx), InputAction::NotFound("htop".to_string()));
-        assert_eq!(classify_input("less foo.txt", &idx), InputAction::NotFound("less".to_string()));
-        assert_eq!(classify_input("man ls", &idx), InputAction::NotFound("man".to_string()));
-    }
-
-    #[test]
-    fn classify_ai_query() {
-        let idx = CommandIndex::new();
-        assert_eq!(classify_input("?what is rust", &idx), InputAction::AiQuery);
-    }
-
-    #[test]
-    fn classify_known_command() {
-        let idx = path_only_index();
-        assert_eq!(classify_input("ls -la", &idx), InputAction::Execute);
-    }
-
-    #[test]
-    fn classify_unknown() {
-        let idx = CommandIndex::new();
-        assert_eq!(
-            classify_input("xyzzy_fake", &idx),
-            InputAction::NotFound("xyzzy_fake".to_string())
-        );
-    }
-
-    #[test]
-    fn classify_builtin_cd() {
-        let idx = CommandIndex::new();
-        assert_eq!(classify_input("cd /tmp", &idx), InputAction::Execute);
-    }
-
-    #[test]
-    fn classify_builtin_export() {
-        let idx = CommandIndex::new();
-        assert_eq!(classify_input("export FOO=bar", &idx), InputAction::Execute);
-    }
-
-    #[test]
-    fn classify_builtin_source() {
-        let idx = CommandIndex::new();
-        assert_eq!(
-            classify_input("source ~/.bashrc", &idx),
-            InputAction::Execute
-        );
-        assert_eq!(classify_input(". ~/.bashrc", &idx), InputAction::Execute);
-    }
-
-    #[test]
-    fn classify_variable_assignment() {
-        let idx = CommandIndex::new();
-        assert_eq!(classify_input("FOO=bar", &idx), InputAction::Execute);
-    }
-
-    #[test]
-    fn classify_truly_unknown_still_not_found() {
-        let idx = CommandIndex::new();
-        assert_eq!(
-            classify_input("frobnicate --all", &idx),
-            InputAction::NotFound("frobnicate".to_string())
-        );
-    }
-
 }

@@ -6,7 +6,6 @@ use crate::ipc::client::SlatedClient;
 use crate::ipc::daemon_launcher;
 use crate::ipc::messages;
 use crate::shell::BashCoprocess;
-use crate::shell::CommandIndex;
 use crate::ui;
 
 pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
@@ -16,13 +15,7 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
     let mut bash = BashCoprocess::spawn(cols, rows)?;
     log::debug!("bash coprocess spawned successfully");
 
-    // 2. Build command index
-    log::debug!("building command index");
-    let mut command_index = CommandIndex::new();
-    command_index.scan_path_directories();
-    command_index.add_builtins();
-
-    // 3. Get initial cwd
+    // 2. Get initial cwd
     let cwd = bash.capture_cwd();
     log::debug!("initial cwd: {}", cwd);
 
@@ -33,7 +26,7 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
 
     // 5. Run the terminal UI (blocks until exit)
     log::debug!("entering terminal UI");
-    ui::terminal::run(&mut bash, &command_index, shutdown, cwd, client)
+    ui::terminal::run(&mut bash, shutdown, cwd, client)
 }
 
 fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<SlatedClient> {

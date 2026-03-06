@@ -28,7 +28,6 @@ use ratatui::Terminal;
 
 use crate::ipc::client::SlatedClient;
 use crate::shell::bash_coprocess::BashCoprocess;
-use crate::shell::command_index::CommandIndex;
 use crate::ui::input::InputLine;
 use crate::VERSION;
 
@@ -51,7 +50,6 @@ pub(super) fn parser_cols_from_term_width(term_width: u16) -> u16 {
 /// with raw mode, and runs a synchronous event loop until the user exits.
 pub fn run(
     bash: &mut BashCoprocess,
-    command_index: &CommandIndex,
     shutdown: Arc<AtomicBool>,
     initial_cwd: String,
     client: Option<SlatedClient>,
@@ -91,7 +89,6 @@ pub fn run(
         &mut scroll_offset,
         &mut input,
         bash,
-        command_index,
         &shutdown,
         &mut cwd,
         &mut client,

@@ -3,5 +3,4 @@ pub mod command_index;
 pub mod completion_engine;
 
 pub use bash_coprocess::BashCoprocess;
-pub use command_index::CommandIndex;
 

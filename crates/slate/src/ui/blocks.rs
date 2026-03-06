@@ -27,11 +27,18 @@ pub struct ToolBlock {
     edit_file_path: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMode {
+    Command,
+    Ai,
+}
+
 #[allow(dead_code)]
 pub struct PromptBlock {
     pub id: usize,
     pub text: String,
     pub scrollback_line: u64,
+    pub mode: InputMode,
 }
 
 #[allow(dead_code)]
@@ -150,12 +157,13 @@ impl BlockRegistry {
     }
 
     /// Record a user prompt.
-    pub fn record_prompt(&mut self, text: &str, scrollback_line: u64) {
+    pub fn record_prompt(&mut self, text: &str, scrollback_line: u64, mode: InputMode) {
         let id = self.next_id();
         self.blocks.push(Block::Prompt(PromptBlock {
             id,
             text: text.to_string(),
             scrollback_line,
+            mode,
         }));
     }
 
