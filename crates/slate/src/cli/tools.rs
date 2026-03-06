@@ -1,5 +1,4 @@
 use clap::Args;
-use serde_json;
 
 use crate::cli::Commands;
 

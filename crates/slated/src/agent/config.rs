@@ -28,8 +28,10 @@ impl std::fmt::Debug for ProviderConfig {
 #[derive(Debug, Deserialize)]
 pub struct ModelCatalog {
     pub default_provider: String,
+    pub default_model: String,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
     pub roles: HashMap<String, ModelAssignment>,
 }
 
@@ -44,21 +46,65 @@ pub struct ModelAssignment {
     pub base_url: Option<String>,
 }
 
+const DEFAULT_MODELS_TOML: &str = r#"# Slate Agent — Model Configuration
+#
+# This file controls which LLM provider and model is used.
+# Edit the values below to switch providers or models.
+
+# The provider used when a role doesn't specify one.
+# Supported: "anthropic", "openai", "google"
+default_provider = "anthropic"
+
+# The model used when a role doesn't specify one.
+default_model = "claude-sonnet-4-5"
+
+# ── Provider-level settings ──────────────────────────────────────────
+# API keys and base URLs set here apply to all roles using that provider.
+# Per-role settings (below) take precedence over these.
+#
+# [providers.anthropic]
+# api_key = "sk-ant-..."          # or set ANTHROPIC_API_KEY env var
+# base_url = "https://custom-endpoint.example.com"
+#
+# [providers.openai]
+# api_key = "sk-..."              # or set OPENAI_API_KEY env var
+#
+# [providers.google]
+# api_key = "..."                 # or set GOOGLE_API_KEY env var
+
+# ── Per-role overrides ───────────────────────────────────────────────
+# Assign a specific provider/model to each agent role.
+# Available roles: engineer, team_lead, reviewer, researcher, security
+#
+# [roles.engineer]
+# provider = "anthropic"
+# model = "claude-sonnet-4-5"
+# max_tokens = 8192
+# temperature = 0
+# api_key = "sk-ant-..."          # overrides provider-level key
+# base_url = "https://..."        # overrides provider-level url
+#
+# [roles.reviewer]
+# provider = "openai"
+# model = "gpt-4o"
+"#;
+
 impl ModelCatalog {
     pub fn load() -> Self {
-        let config_path = slate_common::config::config_dir().join("models.toml");
+        let config_dir = slate_common::config::config_dir();
+        let config_path = config_dir.join("models.toml");
+
         if let Ok(contents) = std::fs::read_to_string(&config_path) {
             if let Ok(catalog) = toml::from_str(&contents) {
                 return catalog;
             }
         }
 
-        // Default: Anthropic Claude for everything
-        Self {
-            default_provider: "anthropic".to_string(),
-            providers: HashMap::new(),
-            roles: HashMap::new(),
-        }
+        // Create the default config file so users can discover and edit it.
+        let _ = std::fs::create_dir_all(&config_dir);
+        let _ = std::fs::write(&config_path, DEFAULT_MODELS_TOML);
+
+        toml::from_str(DEFAULT_MODELS_TOML).expect("default models.toml must parse")
     }
 
     pub fn assignment_for(&self, role: &AgentRole) -> ModelAssignment {
@@ -72,7 +118,7 @@ impl ModelCatalog {
 
         self.roles.get(key).cloned().unwrap_or(ModelAssignment {
             provider: self.default_provider.clone(),
-            model: "claude-sonnet-4-5".to_string(),
+            model: self.default_model.clone(),
             max_tokens: Some(8192),
             temperature: None,
             api_key: None,

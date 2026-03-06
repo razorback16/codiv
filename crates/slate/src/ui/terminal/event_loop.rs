@@ -29,6 +29,7 @@ use super::utils::{get_scrollback_line, parser_push_styled, send_agent_request};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height, PROMPT_GUTTER_WIDTH};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn event_loop(
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     parser: &mut vt100::Parser,
@@ -61,6 +62,7 @@ pub(crate) fn event_loop(
     );
     let mut tracker = BlockRegistry::new();
     let mut tool_result_modal = ToolResultModal::new();
+    let mut was_alt_screen = false;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -76,7 +78,7 @@ pub(crate) fn event_loop(
             break;
         }
 
-        let daemon_connected = client.as_ref().map_or(false, |c| c.is_connected());
+        let daemon_connected = client.as_ref().is_some_and(|c| c.is_connected());
 
         // Check for daemon disconnect.
         if !daemon_connected && client.is_some() {
@@ -86,6 +88,24 @@ pub(crate) fn event_loop(
         // --- Poll completion engine background init when the coprocess is free ---
         if pending_command.is_none() {
             completion_engine.poll_init(bash);
+        }
+
+        // --- Detect alternate-screen transitions (vim, etc.) ---
+        let in_alt_screen = parser.screen().alternate_screen();
+        if in_alt_screen != was_alt_screen {
+            was_alt_screen = in_alt_screen;
+            if let Ok(sz) = term.size() {
+                let parser_rows = parser_rows_from_term_height(sz.height);
+                let parser_cols = if in_alt_screen {
+                    // Full width — no gutter margin for fullscreen apps.
+                    sz.width.max(1)
+                } else {
+                    parser_cols_from_term_width(sz.width)
+                };
+                parser.screen_mut().set_size(parser_rows, parser_cols);
+                bash.resize(parser_rows, parser_cols);
+            }
+            needs_render = true;
         }
 
         // --- Render only when needed ---
@@ -189,7 +209,11 @@ pub(crate) fn event_loop(
                         }
                         Event::Resize(cols, rows) => {
                             let parser_rows = parser_rows_from_term_height(*rows);
-                            let parser_cols = parser_cols_from_term_width(*cols);
+                            let parser_cols = if was_alt_screen {
+                                (*cols).max(1)
+                            } else {
+                                parser_cols_from_term_width(*cols)
+                            };
                             parser.screen_mut().set_size(parser_rows, parser_cols);
                             bash.resize(parser_rows, parser_cols);
                             md_stream.set_width(parser_cols);
@@ -380,7 +404,7 @@ pub(crate) fn event_loop(
                                                                     .trim_start()
                                                                     .strip_prefix('?')
                                                                     .unwrap_or(&raw_input);
-                                                                if send_agent_request(c, query, &cwd) {
+                                                                if send_agent_request(c, query, cwd) {
                                                                     agent_streaming = true;
                                                                 }
                                                             } else {
@@ -459,7 +483,7 @@ pub(crate) fn event_loop(
 
                                                         InputAction::NotFound(ref word) => {
                                                             if let Some(ref mut c) = client {
-                                                                if send_agent_request(c, &raw_input, &cwd) {
+                                                                if send_agent_request(c, &raw_input, cwd) {
                                                                     agent_streaming = true;
                                                                 }
                                                             } else {

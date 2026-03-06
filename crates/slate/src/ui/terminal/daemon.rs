@@ -4,6 +4,7 @@ use crate::ui::blocks::{BlockRegistry, ToolResultAction};
 
 use super::utils::{get_scrollback_line, parser_push_styled};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_daemon_message(
     msg: ipc_messages::DaemonMessage,
     parser: &mut vt100::Parser,

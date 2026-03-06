@@ -74,7 +74,7 @@ impl BashCoprocess {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         let mut cmd = CommandBuilder::new("bash");
         cmd.args(["--noediting", "--norc", "--noprofile", "-i"]);
@@ -91,7 +91,7 @@ impl BashCoprocess {
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         // Drop slave — we only need master side.
         drop(pair.slave);
@@ -99,17 +99,17 @@ impl BashCoprocess {
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         let (tx, rx) = crossbeam_channel::unbounded();
         let handle = std::thread::Builder::new()
             .name("pty-reader".into())
             .spawn(move || reader_thread(reader, tx))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         let mut coprocess = BashCoprocess {
             writer,
@@ -327,11 +327,8 @@ impl BashCoprocess {
     /// or an empty vec if there is nothing to read right now.
     pub fn try_read(&self) -> Vec<u8> {
         let mut result = Vec::new();
-        loop {
-            match self.reader_rx.try_recv() {
-                Ok(data) => result.extend_from_slice(&data),
-                Err(_) => break,
-            }
+        while let Ok(data) = self.reader_rx.try_recv() {
+            result.extend_from_slice(&data);
         }
         result
     }

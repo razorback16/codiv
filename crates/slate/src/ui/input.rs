@@ -148,7 +148,7 @@ impl InputLine {
         let trimmed = input.trim();
         if !trimmed.is_empty() {
             // Avoid consecutive duplicates in history.
-            if self.history.last().map_or(true, |last| last != trimmed) {
+            if self.history.last().is_none_or(|last| last != trimmed) {
                 self.history.push(trimmed.to_string());
             }
         }

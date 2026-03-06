@@ -108,8 +108,7 @@ impl CompletionPopup {
             .map(|c| c.len())
             .max()
             .unwrap_or(10)
-            .max(10)
-            .min(60);
+            .clamp(10, 60);
 
         let popup_width = max_candidate_width as u16 + 4; // padding + border
         let popup_height = visible_count as u16 + 2; // border top + bottom

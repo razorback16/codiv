@@ -28,6 +28,7 @@ fn completion_anchor_x(term_area_left: u16, cursor_col: usize) -> u16 {
         .saturating_add(cursor_col)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_frame(
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     parser: &mut vt100::Parser,
@@ -223,7 +224,7 @@ pub(crate) fn render_frame(
                         if row >= term_area.top() && row < term_area.bottom() {
                             let is_blank = (term_area.left()..term_area.right()).all(|col| {
                                 let ch = buf[(col, row)].symbol();
-                                ch == " " || ch == ""
+                                ch == " " || ch.is_empty()
                             });
                             if is_blank {
                                 for col in term_area.left()..term_area.right() {
@@ -244,7 +245,7 @@ pub(crate) fn render_frame(
                             let mut text_end = term_area.left();
                             for col in term_area.left()..term_area.right() {
                                 let ch = buf[(col, hint_row)].symbol();
-                                if ch != " " && ch != "" {
+                                if ch != " " && !ch.is_empty() {
                                     text_end = col + 1;
                                 }
                             }
@@ -268,7 +269,7 @@ pub(crate) fn render_frame(
                     if row >= term_area.top() && row < term_area.bottom() {
                         let is_blank = (term_area.left()..term_area.right()).all(|col| {
                             let ch = buf[(col, row)].symbol();
-                            ch == " " || ch == ""
+                            ch == " " || ch.is_empty()
                         });
                         if is_blank {
                             for col in term_area.left()..term_area.right() {
@@ -290,6 +291,7 @@ pub(crate) fn render_frame(
 }
 
 /// Render the status bar at the bottom of the screen.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_status_bar(
     frame: &mut Frame,
     cwd: &str,

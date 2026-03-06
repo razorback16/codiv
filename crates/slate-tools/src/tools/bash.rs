@@ -102,16 +102,13 @@ pub fn execute(value: Value, cwd: &str, env_vars: &[(String, String)]) -> Result
     let timeout_thread = std::thread::Builder::new()
         .name("bash-timeout".into())
         .spawn(move || {
-            match cancel_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    timeout_flag.store(true, Ordering::SeqCst);
-                    if let Ok(mut c) = timeout_child.lock() {
-                        let _ = c.kill();
-                    }
+            if let Err(crossbeam_channel::RecvTimeoutError::Timeout) = cancel_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+                timeout_flag.store(true, Ordering::SeqCst);
+                if let Ok(mut c) = timeout_child.lock() {
+                    let _ = c.kill();
                 }
-                // Cancelled (sender dropped) or received signal — exit cleanly
-                _ => {}
             }
+            // Cancelled (sender dropped) or received signal — exit cleanly
         })
         .map_err(|e| format!("failed to spawn timeout thread: {e}"))?;
 

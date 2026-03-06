@@ -38,17 +38,17 @@ pub fn build_tools(
         make_tool::<read::ReadInput>(
             "read",
             "Read the contents of a file. Returns numbered lines. Use offset and limit for large files.",
-            |v| read::execute(v),
+            read::execute,
         ),
         make_tool::<write::WriteInput>(
             "write",
             "Write content to a file. Creates parent directories if needed. Overwrites existing content.",
-            |v| write::execute(v),
+            write::execute,
         ),
         make_tool::<edit::EditInput>(
             "edit",
             "Replace a unique string in a file. The old_string must appear exactly once in the file.",
-            |v| edit::execute(v),
+            edit::execute,
         ),
         {
             let cwd = Arc::clone(&cwd);

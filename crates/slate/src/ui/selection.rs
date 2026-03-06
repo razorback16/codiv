@@ -102,7 +102,7 @@ impl TextSelection {
                 continue;
             }
 
-            let vt_row = (screen_row - term_area_top) as u16;
+            let vt_row = screen_row - term_area_top;
 
             if vt_row >= screen_size.0 {
                 continue;
