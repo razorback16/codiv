@@ -19,6 +19,7 @@ use crate::ui::input::InputLine;
 use crate::ui::selection::TextSelection;
 use crate::ui::tool_modal::ToolResultModal;
 
+use super::animation::AnimationState;
 use super::daemon;
 use super::input as terminal_input;
 use super::io as terminal_io;
@@ -52,6 +53,9 @@ pub(crate) fn event_loop(
     let mut agent_streaming = false;
     let mut cmd_start_scrollback: Option<u64> = None;
     let mut ai_start_scrollback: Option<u64> = None;
+    let mut thinking_buffer = String::new();
+    let mut thinking_start: Option<Instant> = None;
+    let mut thinking_scrollback: Option<u64> = None;
     let mut git_info = bash.capture_git_info();
     let mut model_alias = String::new();
     let mut context_usage: (usize, usize) = (0, 0);
@@ -63,6 +67,7 @@ pub(crate) fn event_loop(
     let mut tracker = BlockRegistry::new();
     let mut tool_result_modal = ToolResultModal::new();
     let mut was_alt_screen = false;
+    let mut anim = AnimationState::new();
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -70,6 +75,7 @@ pub(crate) fn event_loop(
 
     // Spawn crossterm reader thread for channelized terminal input.
     let crossterm_rx = terminal_io::spawn_crossterm_reader();
+    let tick_rx = terminal_io::spawn_tick_channel(super::animation::TICK_INTERVAL);
 
     let mut needs_render = true;
 
@@ -122,6 +128,7 @@ pub(crate) fn event_loop(
                 prompt_is_live,
                 is_executing,
                 agent_streaming,
+                thinking_start.is_some(),
                 &completion_popup,
                 &selection,
                 git_info.as_ref(),
@@ -129,6 +136,7 @@ pub(crate) fn event_loop(
                 context_usage,
                 &tracker,
                 &tool_result_modal,
+                &anim,
             )?;
             needs_render = false;
         }
@@ -326,15 +334,21 @@ pub(crate) fn event_loop(
                                             KeyCode::Enter,
                                             _,
                                         ) if tracker.focused_index().is_some() && pending_command.is_none() => {
-                                            if let Some(Block::Tool(tb)) = tracker.focused() {
-                                                tool_result_modal.open(
-                                                    &tb.header,
-                                                    &tb.full_content,
-                                                    tb.is_diff,
-                                                    tb.id,
-                                                );
+                                            match tracker.focused() {
+                                                Some(Block::Tool(tb)) => {
+                                                    tool_result_modal.open(
+                                                        &tb.header,
+                                                        &tb.full_content,
+                                                        tb.is_diff,
+                                                        tb.id,
+                                                    );
+                                                }
+                                                Some(Block::Thinking(tb)) => {
+                                                    let title = format!("Thought for {:.0}s", tb.duration_secs);
+                                                    tool_result_modal.open(&title, &tb.full_content, false, tb.id);
+                                                }
+                                                _ => {}
                                             }
-                                            // PromptBlock: future — re-run
                                             block_handled = true;
                                         }
                                         (KeyCode::Esc, _) if tracker.focused_index().is_some() => {
@@ -627,6 +641,9 @@ pub(crate) fn event_loop(
                         cwd,
                         &mut tracker,
                         &mut ai_start_scrollback,
+                        &mut thinking_buffer,
+                        &mut thinking_start,
+                        &mut thinking_scrollback,
                     );
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
@@ -641,8 +658,17 @@ pub(crate) fn event_loop(
                             cwd,
                             &mut tracker,
                             &mut ai_start_scrollback,
+                            &mut thinking_buffer,
+                            &mut thinking_start,
+                            &mut thinking_scrollback,
                         );
                     }
+                    needs_render = true;
+                }
+            }
+            recv(tick_rx) -> _ => {
+                anim.update_active(pending_command.is_some(), agent_streaming, thinking_start.is_some());
+                if anim.tick() {
                     needs_render = true;
                 }
             }

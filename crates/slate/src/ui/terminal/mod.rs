@@ -5,6 +5,7 @@
 //! scroll-down layout consisting of a VT100 pseudoterminal, an input line,
 //! and a status bar.
 
+pub(super) mod animation;
 mod daemon;
 mod event_loop;
 mod input;

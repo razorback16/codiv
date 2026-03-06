@@ -50,10 +50,19 @@ pub struct AiResponseBlock {
     pub line_count: u16,
 }
 
+pub struct ThinkingBlock {
+    pub id: usize,
+    pub scrollback_line: u64,
+    pub line_count: u16,        // 1 (the summary line)
+    pub full_content: String,   // accumulated reasoning text
+    pub duration_secs: f32,
+}
+
 pub enum Block {
     Prompt(PromptBlock),
     CmdResponse(CmdResponseBlock),
     AiResponse(AiResponseBlock),
+    Thinking(ThinkingBlock),
     Tool(ToolBlock),
 }
 
@@ -172,6 +181,18 @@ impl BlockRegistry {
         }));
     }
 
+    /// Record a thinking/reasoning block.
+    pub fn record_thinking(&mut self, scrollback_line: u64, full_content: String, duration_secs: f32) {
+        let id = self.next_id();
+        self.blocks.push(Block::Thinking(ThinkingBlock {
+            id,
+            scrollback_line,
+            line_count: 1,
+            full_content,
+            duration_secs,
+        }));
+    }
+
     // -- accessors ----------------------------------------------------------
 
     pub fn blocks(&self) -> &[Block] {
@@ -181,7 +202,7 @@ impl BlockRegistry {
     // -- focus / navigation -------------------------------------------------
 
     fn is_navigable(block: &Block) -> bool {
-        matches!(block, Block::Prompt(_) | Block::Tool(_))
+        matches!(block, Block::Prompt(_) | Block::Tool(_) | Block::Thinking(_))
     }
 
     pub fn focus_last(&mut self) {

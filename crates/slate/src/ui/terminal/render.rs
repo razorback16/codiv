@@ -40,6 +40,7 @@ pub(crate) fn render_frame(
     prompt_is_live: &mut bool,
     is_executing: bool,
     agent_streaming: bool,
+    is_thinking: bool,
     completion_popup: &CompletionPopup,
     selection: &TextSelection,
     git_info: Option<&GitInfo>,
@@ -47,6 +48,7 @@ pub(crate) fn render_frame(
     context_usage: (usize, usize),
     tracker: &BlockRegistry,
     tool_result_modal: &ToolResultModal,
+    anim: &super::animation::AnimationState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
@@ -127,6 +129,7 @@ pub(crate) fn render_frame(
                         Block::AiResponse(ab) => (ab.scrollback_line, '\u{25CF}', Color::White),
                         Block::Tool(tb) => (tb.scrollback_line, '\u{25CF}', Color::Green),
                         Block::CmdResponse(cb) => (cb.scrollback_line, '$', Color::White),
+                        Block::Thinking(tb) => (tb.scrollback_line, '\u{25E6}', Color::DarkGray),
                     };
                     if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
                         let screen_row = (scrollback_line - abs_top) as u16;
@@ -146,6 +149,46 @@ pub(crate) fn render_frame(
                         buf[(term_area.left(), row)]
                             .set_char('>')
                             .set_fg(Color::Cyan);
+                    }
+                } else if agent_streaming && scroll_offset == 0 {
+                    let (cursor_row, _) = parser.screen().cursor_position();
+                    let row = term_area.top() + cursor_row;
+                    if row < term_area.bottom() {
+                        buf[(term_area.left(), row)]
+                            .set_char(anim.spinner_char())
+                            .set_fg(Color::Yellow);
+                    }
+                } else if is_thinking && scroll_offset == 0 {
+                    let (cursor_row, _) = parser.screen().cursor_position();
+                    let row = term_area.top() + cursor_row;
+                    if row < term_area.bottom() {
+                        buf[(term_area.left(), row)]
+                            .set_char(anim.spinner_char())
+                            .set_fg(Color::Yellow);
+                    }
+                    // Overwrite the placeholder line (one above cursor) with animated dots.
+                    let placeholder_row = row.saturating_sub(1);
+                    if placeholder_row >= term_area.top() && placeholder_row < term_area.bottom() {
+                        let text = format!("Thinking{}", anim.thinking_dots());
+                        for (i, ch) in text.chars().enumerate() {
+                            let col = content_area.left() + i as u16;
+                            if col < content_area.right() {
+                                buf[(col, placeholder_row)]
+                                    .set_char(ch)
+                                    .set_fg(Color::DarkGray);
+                            }
+                        }
+                        // Clear any leftover characters from longer previous text
+                        let clear_start = content_area.left() + text.len() as u16;
+                        for col in clear_start..content_area.right() {
+                            let ch = buf[(col, placeholder_row)].symbol();
+                            if ch == " " || ch.is_empty() {
+                                break;
+                            }
+                            buf[(col, placeholder_row)]
+                                .set_char(' ')
+                                .set_fg(Color::Reset);
+                        }
                     }
                 }
             }
@@ -191,6 +234,7 @@ pub(crate) fn render_frame(
                 git_info,
                 model_alias,
                 context_usage,
+                anim,
             );
 
             // --- Render completion popup ---
@@ -208,6 +252,7 @@ pub(crate) fn render_frame(
                     Block::Prompt(pb) => (pb.scrollback_line, 1),
                     Block::CmdResponse(cb) => (cb.scrollback_line, cb.line_count),
                     Block::AiResponse(ab) => (ab.scrollback_line, ab.line_count),
+                    Block::Thinking(tb) => (tb.scrollback_line, tb.line_count),
                 };
                 let sb_len = true_scrollback_len(parser) as u64;
                 let screen_rows = parser.screen().size().0 as u64;
@@ -236,7 +281,7 @@ pub(crate) fn render_frame(
                         }
                     }
                     // Show "(press Enter to expand)" hint for ToolBlocks
-                    if let Block::Tool(_) = focused {
+                    if matches!(focused, Block::Tool(_) | Block::Thinking(_)) {
                         let hint = " (press Enter to expand)";
                         let hint_row = screen_row + 1; // summary line
                         if hint_row >= term_area.top() && hint_row < term_area.bottom() {
@@ -302,6 +347,7 @@ pub(crate) fn render_status_bar(
     git_info: Option<&GitInfo>,
     model_alias: &str,
     context_usage: (usize, usize),
+    anim: &super::animation::AnimationState,
 ) {
     let width = area.width as usize;
 
@@ -322,7 +368,11 @@ pub(crate) fn render_status_bar(
         "daemon: offline"
     };
 
-    let running_indicator = if is_executing { " [running]" } else { "" };
+    let running_indicator = if is_executing {
+        format!(" {} running", anim.spinner_char())
+    } else {
+        String::new()
+    };
     let model_part = if !model_alias.is_empty() {
         format!(
             "{} {}/{} | ",
@@ -333,7 +383,7 @@ pub(crate) fn render_status_bar(
     } else {
         String::new()
     };
-    let right = format!(" {}{} | {} ", model_part, daemon_status, VERSION);
+    let right = format!(" {}{} | v{} ", model_part, daemon_status, VERSION);
     let left = match git_info {
         Some(info) => {
             let branch_part = format!("({})", info.branch);

@@ -1,8 +1,35 @@
+use std::time::Instant;
+
 use crate::ipc::messages as ipc_messages;
 use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{BlockRegistry, ToolResultAction};
 
 use super::utils::{get_scrollback_line, parser_push_styled};
+
+/// Finalize an in-progress thinking block: overwrite the placeholder line
+/// with a "Thought for Ns" summary and register it in the block tracker.
+fn finalize_thinking(
+    parser: &mut vt100::Parser,
+    tracker: &mut BlockRegistry,
+    thinking_buffer: &mut String,
+    thinking_start: &mut Option<Instant>,
+    thinking_scrollback: &mut Option<u64>,
+) {
+    if let Some(start) = thinking_start.take() {
+        let duration_secs = start.elapsed().as_secs_f32();
+        // Move cursor up one line and clear it (overwrite placeholder)
+        parser.process(b"\x1b[A\r\x1b[K");
+        let summary = format!(
+            "\x1b[90mThought for {:.0}s\x1b[0m\r\n",
+            duration_secs
+        );
+        parser.process(summary.as_bytes());
+        let content = std::mem::take(thinking_buffer);
+        if let Some(sl) = thinking_scrollback.take() {
+            tracker.record_thinking(sl, content, duration_secs);
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_daemon_message(
@@ -16,6 +43,9 @@ pub(crate) fn handle_daemon_message(
     _cwd: &str,
     tracker: &mut BlockRegistry,
     ai_start_scrollback: &mut Option<u64>,
+    thinking_buffer: &mut String,
+    thinking_start: &mut Option<Instant>,
+    thinking_scrollback: &mut Option<u64>,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -24,21 +54,35 @@ pub(crate) fn handle_daemon_message(
         } => {
             match chunk {
                 ipc_messages::StreamChunk::Text(t) => {
-                    if ai_start_scrollback.is_none() {
-                        *ai_start_scrollback = Some(get_scrollback_line(parser));
-                    }
-                    if let Some(ansi) = md_stream.push(&t) {
-                        parser.process(&ansi);
+                    finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                    // Strip leading whitespace from the first text chunk of a response.
+                    let t = if ai_start_scrollback.is_none() {
+                        t.trim_start().to_string()
+                    } else {
+                        t
+                    };
+                    if t.is_empty() {
+                        // Entire chunk was leading whitespace — skip it.
+                    } else {
+                        if ai_start_scrollback.is_none() {
+                            *ai_start_scrollback = Some(get_scrollback_line(parser));
+                        }
+                        if let Some(ansi) = md_stream.push(&t) {
+                            parser.process(&ansi);
+                        }
                     }
                 }
                 ipc_messages::StreamChunk::Reasoning(t) => {
-                    if ai_start_scrollback.is_none() {
-                        *ai_start_scrollback = Some(get_scrollback_line(parser));
+                    if thinking_start.is_none() {
+                        *thinking_start = Some(Instant::now());
+                        *thinking_scrollback = Some(get_scrollback_line(parser));
+                        // Write placeholder line
+                        parser.process(b"\x1b[90mThinking...\x1b[0m\r\n");
                     }
-                    let t = t.replace('\n', "\r\n");
-                    parser.process(t.as_bytes());
+                    thinking_buffer.push_str(&t);
                 }
                 ipc_messages::StreamChunk::ToolCall { name, arguments } => {
+                    finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
                     // Flush any buffered markdown text so it appears before the tool call.
                     let pending = md_stream.finish();
                     if !pending.is_empty() {
@@ -101,6 +145,7 @@ pub(crate) fn handle_daemon_message(
             request_id: _,
             summary: _,
         } => {
+            finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
             if *agent_streaming {
                 let final_bytes = md_stream.finish();
                 if !final_bytes.is_empty() {

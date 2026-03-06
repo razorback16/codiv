@@ -63,6 +63,7 @@ pub(crate) fn scroll_to_focused(
         crate::ui::blocks::Block::Tool(tb) => tb.scrollback_line,
         crate::ui::blocks::Block::CmdResponse(cb) => cb.scrollback_line,
         crate::ui::blocks::Block::AiResponse(ab) => ab.scrollback_line,
+        crate::ui::blocks::Block::Thinking(tb) => tb.scrollback_line,
     };
     let sb_len = true_scrollback_len(parser) as u64;
     let screen_rows = parser.screen().size().0 as u64;

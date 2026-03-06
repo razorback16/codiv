@@ -81,3 +81,18 @@ pub(crate) fn compute_next_timeout(
 
     timeout
 }
+
+/// Spawn a background thread that sends tick events at a fixed interval.
+pub(crate) fn spawn_tick_channel(interval: Duration) -> crossbeam_channel::Receiver<()> {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::Builder::new()
+        .name("tick-timer".into())
+        .spawn(move || loop {
+            std::thread::sleep(interval);
+            if tx.send(()).is_err() {
+                break;
+            }
+        })
+        .expect("spawn tick timer");
+    rx
+}
