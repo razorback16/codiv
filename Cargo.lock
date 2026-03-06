@@ -20,7 +20,7 @@ dependencies = [
 [[package]]
 name = "aisdk"
 version = "0.5.2"
-source = "git+https://github.com/razorback16/aisdk?branch=main#9c429a2c1f4f9ae9fee9e0e0f11b322c2782e6a0"
+source = "git+https://github.com/razorback16/aisdk?branch=main#2590499799ac7304c0166dad45651de7156126fd"
 dependencies = [
  "aisdk-macros",
  "async-trait",
@@ -41,7 +41,7 @@ dependencies = [
 [[package]]
 name = "aisdk-macros"
 version = "0.3.0"
-source = "git+https://github.com/razorback16/aisdk?branch=main#9c429a2c1f4f9ae9fee9e0e0f11b322c2782e6a0"
+source = "git+https://github.com/razorback16/aisdk?branch=main#2590499799ac7304c0166dad45651de7156126fd"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -322,6 +322,16 @@ where
                 )
                 .await?;
             }
+            LanguageModelStreamChunkType::ToolCallDelta { tool_call_id, tool_name, delta } => {
+                send_ipc(
+                    tx,
+                    &DaemonMessage::AgentStreamChunk {
+                        request_id: request_id.to_string(),
+                        chunk: StreamChunk::ToolCallDelta { tool_call_id, tool_name, delta },
+                    },
+                )
+                .await?;
+            }
             LanguageModelStreamChunkType::ToolCallStart(info) => {
                 let args = serde_json::to_string(&info.input).unwrap_or_default();
                 send_ipc(

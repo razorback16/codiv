@@ -660,7 +660,7 @@ pub(crate) fn event_loop(
                 }
             }
             recv(tick_rx) -> _ => {
-                anim.update_active(pending_command.is_some(), agent_streaming, thinking_start.is_some());
+                anim.update_active(pending_command.is_some(), agent_streaming, thinking_start.is_some(), tracker.pending_tool().is_some());
                 if anim.tick() {
                     needs_render = true;
                 }

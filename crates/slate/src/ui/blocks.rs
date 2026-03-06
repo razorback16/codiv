@@ -103,6 +103,7 @@ pub struct BlockRegistry {
     focused_index: Option<usize>,
     next_id: usize,
     pending_tool_call: Option<PendingToolCall>,
+    pending_tool_name: Option<String>,
 }
 
 impl BlockRegistry {
@@ -112,7 +113,12 @@ impl BlockRegistry {
             focused_index: None,
             next_id: 0,
             pending_tool_call: None,
+            pending_tool_name: None,
         }
+    }
+
+    pub fn pending_tool(&self) -> Option<&str> {
+        self.pending_tool_name.as_deref()
     }
 
     // -- recording ----------------------------------------------------------
@@ -120,10 +126,20 @@ impl BlockRegistry {
     /// Save the pending tool call so its arguments are available when
     /// `record_tool_result` is called.
     pub fn record_tool_call(&mut self, name: &str, arguments: &str) {
+        // Do NOT set pending_tool_name here — only record_tool_call_delta does that,
+        // because only that path writes a spinner placeholder to overwrite.
         self.pending_tool_call = Some(PendingToolCall {
             name: name.to_string(),
             arguments: arguments.to_string(),
         });
+    }
+
+    /// Record that a tool call delta has started streaming.
+    /// Sets `pending_tool_name` on the first delta only.
+    pub fn record_tool_call_delta(&mut self, tool_name: &str) {
+        if self.pending_tool_name.is_none() {
+            self.pending_tool_name = Some(tool_name.to_string());
+        }
     }
 
     /// Create (or merge) a [`ToolBlock`] for the given tool result.
@@ -136,6 +152,7 @@ impl BlockRegistry {
         result: &str,
         scrollback_line: u64,
     ) -> ToolResultAction {
+        self.pending_tool_name = None;
         let args_json = self
             .pending_tool_call
             .take()
@@ -262,6 +279,7 @@ impl BlockRegistry {
         self.focused_index = None;
         self.next_id = 0;
         self.pending_tool_call = None;
+        self.pending_tool_name = None;
     }
 
     /// Returns a mutable reference to the last [`ToolBlock`], if any.

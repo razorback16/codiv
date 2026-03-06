@@ -81,33 +81,68 @@ pub(crate) fn handle_daemon_message(
                     }
                     thinking_buffer.push_str(&t);
                 }
-                ipc_messages::StreamChunk::ToolCall { name, arguments } => {
-                    finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
-                    // Flush any buffered markdown text so it appears before the tool call.
-                    let pending = md_stream.finish();
-                    if !pending.is_empty() {
-                        parser.process(&pending);
-                    }
-                    md_stream.reset();
-
-                    // Close the current AI response block if one is open,
-                    // so it doesn't span across tool calls.
-                    let had_ai_content = ai_start_scrollback.is_some();
-                    if let Some(start) = ai_start_scrollback.take() {
-                        let ai_end = get_scrollback_line(parser);
-                        let line_count = (ai_end.saturating_sub(start)) as u16;
-                        if line_count > 0 {
-                            tracker.record_ai_response(start, line_count);
+                ipc_messages::StreamChunk::ToolCallDelta { tool_call_id: _, tool_name, delta: _ } => {
+                    // On the FIRST delta for a tool call, show spinner placeholder
+                    if tracker.pending_tool().is_none() {
+                        finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                        // Flush any buffered markdown
+                        let pending = md_stream.finish();
+                        if !pending.is_empty() {
+                            parser.process(&pending);
                         }
+                        md_stream.reset();
+
+                        // Close AI response block if open
+                        let had_ai_content = ai_start_scrollback.is_some();
+                        if let Some(start) = ai_start_scrollback.take() {
+                            let ai_end = get_scrollback_line(parser);
+                            let line_count = (ai_end.saturating_sub(start)) as u16;
+                            if line_count > 0 {
+                                tracker.record_ai_response(start, line_count);
+                            }
+                        }
+                        if !pending.is_empty() || had_ai_content {
+                            parser.process(b"\r\n");
+                        }
+
+                        // Record and show spinner
+                        tracker.record_tool_call_delta(&tool_name);
+                        let spinner_line = format!("\x1b[33m\u{280b} {}\x1b[0m\r\n", tool_name);
+                        parser.process(spinner_line.as_bytes());
                     }
-                    if !pending.is_empty() || had_ai_content {
-                        parser.process(b"\r\n"); // separator between AI text and tool block
+                    // Subsequent deltas: no-op
+                }
+                ipc_messages::StreamChunk::ToolCall { name, arguments } => {
+                    // If no ToolCallDelta preceded this, do the visual transition now
+                    if tracker.pending_tool().is_none() {
+                        finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                        let pending = md_stream.finish();
+                        if !pending.is_empty() {
+                            parser.process(&pending);
+                        }
+                        md_stream.reset();
+
+                        let had_ai_content = ai_start_scrollback.is_some();
+                        if let Some(start) = ai_start_scrollback.take() {
+                            let ai_end = get_scrollback_line(parser);
+                            let line_count = (ai_end.saturating_sub(start)) as u16;
+                            if line_count > 0 {
+                                tracker.record_ai_response(start, line_count);
+                            }
+                        }
+                        if !pending.is_empty() || had_ai_content {
+                            parser.process(b"\r\n");
+                        }
                     }
 
                     tracker.record_tool_call(&name, &arguments);
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
                     {
+                        // Overwrite spinner placeholder if pending
+                        if tracker.pending_tool().is_some() {
+                            parser.process(b"\x1b[A\r\x1b[K");
+                        }
                         let scrollback_line = get_scrollback_line(parser);
                         match tracker.record_tool_result(&name, &result, scrollback_line) {
                             ToolResultAction::Merged => {

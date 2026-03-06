@@ -82,6 +82,7 @@ pub enum DaemonMessage {
 pub enum StreamChunk {
     Text(String),
     Reasoning(String),
+    ToolCallDelta { tool_call_id: String, tool_name: String, delta: String },
     ToolCall { name: String, arguments: String },
     ToolResult { name: String, result: String },
 }
