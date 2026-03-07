@@ -4,9 +4,13 @@ use aisdk::providers::{Anthropic, Google, OpenAI};
 use futures::StreamExt;
 use serde::Deserialize;
 use slate_common::messages::{frame_message, DaemonMessage, StreamChunk};
+use slate_common::truncate::{truncate_tool_output, MAX_TOOL_OUTPUT_BYTES};
 use slate_common::types::AgentRole;
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::mpsc;
+
+use super::error::classify_error;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -239,8 +243,15 @@ fn build_google_model(
     }
 }
 
+const MAX_RETRIES: u32 = 3;
+const INITIAL_BACKOFF_MS: u64 = 1000;
+
 /// Execute a streaming LLM call, forwarding chunks over IPC.
 /// Returns (response_text, input_tokens, output_tokens).
+///
+/// Retries transient errors (server errors, rate limits) up to `MAX_RETRIES`
+/// times with exponential backoff. Non-retryable errors fail immediately with
+/// a user-friendly message.
 pub async fn stream_from_config(
     assignment: &ModelAssignment,
     provider_config: &ProviderConfig,
@@ -249,20 +260,54 @@ pub async fn stream_from_config(
     tx: &mpsc::Sender<Vec<u8>>,
     tools: Vec<Tool>,
 ) -> Result<(String, usize, usize), DynError> {
-    match assignment.provider.as_str() {
-        "anthropic" => {
-            let model = build_anthropic_model(&assignment.model, provider_config)?;
-            run_stream(model, messages, request_id, tx, assignment, tools).await
+    let mut attempt = 0u32;
+    loop {
+        let result = match assignment.provider.as_str() {
+            "anthropic" => {
+                let model = build_anthropic_model(&assignment.model, provider_config)?;
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone()).await
+            }
+            "openai" => {
+                let model = build_openai_model(&assignment.model, provider_config)?;
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone()).await
+            }
+            "google" => {
+                let model = build_google_model(&assignment.model, provider_config)?;
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone()).await
+            }
+            other => return Err(format!("unsupported provider: {}", other).into()),
+        };
+
+        match result {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let kind = classify_error(&e.to_string());
+                if kind.is_retryable() && attempt < MAX_RETRIES {
+                    attempt += 1;
+                    let backoff = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
+                    tracing::warn!(
+                        "retryable error on attempt {}/{}: {}. Retrying in {}ms",
+                        attempt, MAX_RETRIES, e, backoff
+                    );
+                    let _ = send_ipc(
+                        tx,
+                        &DaemonMessage::AgentStreamChunk {
+                            request_id: request_id.to_string(),
+                            chunk: StreamChunk::Text(format!(
+                                "\n[Retrying request (attempt {}/{}): {}]\n",
+                                attempt + 1,
+                                MAX_RETRIES + 1,
+                                kind.user_message(&e.to_string())
+                            )),
+                        },
+                    )
+                    .await;
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
+                    continue;
+                }
+                return Err(kind.user_message(&e.to_string()).into());
+            }
         }
-        "openai" => {
-            let model = build_openai_model(&assignment.model, provider_config)?;
-            run_stream(model, messages, request_id, tx, assignment, tools).await
-        }
-        "google" => {
-            let model = build_google_model(&assignment.model, provider_config)?;
-            run_stream(model, messages, request_id, tx, assignment, tools).await
-        }
-        other => Err(format!("unsupported provider: {}", other).into()),
     }
 }
 
@@ -354,6 +399,7 @@ where
                     },
                     Err(e) => format!("Error: {e}"),
                 };
+                let output = truncate_tool_output(&output, MAX_TOOL_OUTPUT_BYTES);
                 send_ipc(
                     tx,
                     &DaemonMessage::AgentStreamChunk {
@@ -367,8 +413,9 @@ where
                 .await?;
             }
             LanguageModelStreamChunkType::Failed(err) => {
+                let kind = classify_error(&err.to_string());
                 tracing::error!("stream failed: {err}");
-                return Err(err.into());
+                return Err(kind.user_message(&err.to_string()).into());
             }
             LanguageModelStreamChunkType::Incomplete(reason) => {
                 tracing::warn!("stream incomplete: {reason}");

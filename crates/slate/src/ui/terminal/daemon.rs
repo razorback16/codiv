@@ -230,7 +230,8 @@ pub(crate) fn handle_daemon_message(
         } => {
             *agent_streaming = false;
             md_stream.reset();
-            parser_push_styled(parser, &format!("[daemon] error ({}): {}", request_id, message), "\x1b[31m");
+            let _ = request_id; // suppress unused warning
+            parser_push_styled(parser, &format!("[error] {}", message), "\x1b[31m");
         }
         ipc_messages::DaemonMessage::AgentMeta {
             model_alias: alias,

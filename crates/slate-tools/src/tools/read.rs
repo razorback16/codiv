@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+const DEFAULT_MAX_LINES: usize = 1000;
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ReadInput {
     /// Absolute path to the file to read
@@ -24,13 +26,17 @@ pub fn execute(value: Value) -> Result<String, String> {
     let total = lines.len();
 
     let start = input.offset.unwrap_or(1).saturating_sub(1).min(total);
-    let count = input.limit.unwrap_or(total - start);
+    let count = input.limit.unwrap_or(DEFAULT_MAX_LINES).min(total - start);
     let end = (start + count).min(total);
 
     let mut result = String::new();
     for (i, line) in lines[start..end].iter().enumerate() {
         let line_num = start + i + 1;
         result.push_str(&format!("{line_num:>6}\t{line}\n"));
+    }
+
+    if end < total {
+        result.push_str(&format!("\n[truncated: showing {} of {} lines. Use offset/limit to read more.]\n", end - start, total));
     }
 
     Ok(result)
