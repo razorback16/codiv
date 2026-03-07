@@ -2,7 +2,6 @@ mod agent;
 mod daemon;
 mod ipc;
 mod session;
-mod worker;
 
 use slate_common::config;
 use std::fs;

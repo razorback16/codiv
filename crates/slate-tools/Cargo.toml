@@ -13,3 +13,4 @@ grep-searcher = "0.1"
 ignore = "0.4"
 crossbeam-channel = "0.5"
 tracing = "0.1"
+slate-common = { path = "../slate-common" }

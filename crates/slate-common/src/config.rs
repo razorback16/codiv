@@ -8,17 +8,19 @@ pub fn socket_path() -> String {
     format!("/tmp/slated-{}.sock", unsafe { libc::getuid() })
 }
 
-pub fn pid_file_path() -> PathBuf {
+fn slate_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".slate-agent/slated.pid")
+    PathBuf::from(home).join(".slate-agent")
+}
+
+pub fn pid_file_path() -> PathBuf {
+    slate_dir().join("slated.pid")
 }
 
 pub fn log_file_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".slate-agent/slated.log")
+    slate_dir().join("slated.log")
 }
 
 pub fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".slate-agent")
+    slate_dir()
 }

@@ -59,12 +59,3 @@ pub fn build_command_result(
     };
     frame_message(&msg).ok()
 }
-
-/// Build a framed Shutdown message.
-#[allow(dead_code)] // will be used for graceful shutdown
-pub fn build_shutdown(reason: &str) -> Option<Vec<u8>> {
-    let msg = ClientMessage::Shutdown {
-        reason: reason.to_string(),
-    };
-    frame_message(&msg).ok()
-}

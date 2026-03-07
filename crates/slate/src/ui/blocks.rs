@@ -272,16 +272,6 @@ impl BlockRegistry {
 
     // -- accessors ----------------------------------------------------------
 
-    #[allow(dead_code)]
-    pub fn get_entry(&self, idx: usize) -> Option<&Block> {
-        self.blocks.get(idx)
-    }
-
-    #[allow(dead_code)]
-    pub fn entry_count(&self) -> usize {
-        self.blocks.len()
-    }
-
     pub fn clear(&mut self) {
         self.blocks.clear();
         self.focused_index = None;
@@ -305,6 +295,32 @@ impl BlockRegistry {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// Push a standard (non-merge) tool block and return a `Summary` action.
+    fn push_tool_block(
+        &mut self,
+        tool_name: &str,
+        header: String,
+        summary: String,
+        full_content: String,
+        is_diff: bool,
+        scrollback_line: u64,
+    ) -> ToolResultAction {
+        let id = self.next_id();
+        self.blocks.push(Block::Tool(ToolBlock {
+            id,
+            tool_name: tool_name.to_string(),
+            header: header.clone(),
+            summary: summary.clone(),
+            full_content,
+            is_diff,
+            scrollback_line,
+            line_count: 2,
+            merge_count: 0,
+            edit_file_path: None,
+        }));
+        ToolResultAction::Summary { header, summary }
     }
 
     // -- per-tool recording -------------------------------------------------
@@ -354,73 +370,25 @@ impl BlockRegistry {
         ToolResultAction::Summary { header, summary }
     }
 
-    fn record_read(
-        &mut self,
-        args: &Value,
-        result: &str,
-        scrollback_line: u64,
-    ) -> ToolResultAction {
+    fn record_read(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
         let line_count = result.lines().count();
-
         let header = build_tool_header("Read", args);
         let summary = format!("  \u{2514} Read {} lines", line_count);
-
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: "Read".to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: result.to_string(),
-            is_diff: false,
-            scrollback_line,
-            line_count: 2,
-            merge_count: 0,
-            edit_file_path: None,
-        }));
-
-        ToolResultAction::Summary { header, summary }
+        self.push_tool_block("Read", header, summary, result.to_string(), false, scrollback_line)
     }
 
-    fn record_write(
-        &mut self,
-        args: &Value,
-        result: &str,
-        scrollback_line: u64,
-    ) -> ToolResultAction {
+    fn record_write(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
         let file_path = json_str(args, "file_path").unwrap_or_default();
         let content = json_str(args, "content").unwrap_or_default();
         let line_count = content.lines().count();
         let short_path = short_filename(&file_path);
-
         let header = build_tool_header("Write", args);
         let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
-
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: "Write".to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: result.to_string(),
-            is_diff: false,
-            scrollback_line,
-            line_count: 2,
-            merge_count: 0,
-            edit_file_path: None,
-        }));
-
-        ToolResultAction::Summary { header, summary }
+        self.push_tool_block("Write", header, summary, result.to_string(), false, scrollback_line)
     }
 
-    fn record_bash(
-        &mut self,
-        args: &Value,
-        result: &str,
-        scrollback_line: u64,
-    ) -> ToolResultAction {
+    fn record_bash(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
         let exit_code = parse_bash_exit_code(result);
-
         let header = build_tool_header("Bash", args);
         let summary = if exit_code == 0 {
             "  \u{2514} exit 0".to_string()
@@ -432,107 +400,29 @@ impl BlockRegistry {
                 format!("  \u{2514} exit {}: {}", exit_code, stderr_first)
             }
         };
-
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: "Bash".to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: result.to_string(),
-            is_diff: false,
-            scrollback_line,
-            line_count: 2,
-            merge_count: 0,
-            edit_file_path: None,
-        }));
-
-        ToolResultAction::Summary { header, summary }
+        self.push_tool_block("Bash", header, summary, result.to_string(), false, scrollback_line)
     }
 
-    fn record_grep(
-        &mut self,
-        args: &Value,
-        result: &str,
-        scrollback_line: u64,
-    ) -> ToolResultAction {
+    fn record_grep(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
         let match_count = result.lines().filter(|l| !l.is_empty()).count();
-
         let header = build_tool_header("Grep", args);
         let noun = if match_count == 1 { "line" } else { "lines" };
         let summary = format!("  \u{2514} Found {} {}", match_count, noun);
-
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: "Grep".to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: result.to_string(),
-            is_diff: false,
-            scrollback_line,
-            line_count: 2,
-            merge_count: 0,
-            edit_file_path: None,
-        }));
-
-        ToolResultAction::Summary { header, summary }
+        self.push_tool_block("Grep", header, summary, result.to_string(), false, scrollback_line)
     }
 
-    fn record_glob(
-        &mut self,
-        args: &Value,
-        result: &str,
-        scrollback_line: u64,
-    ) -> ToolResultAction {
+    fn record_glob(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
         let file_count = result.lines().filter(|l| !l.is_empty()).count();
-
         let header = build_tool_header("Glob", args);
         let noun = if file_count == 1 { "file" } else { "files" };
         let summary = format!("  \u{2514} Found {} {}", file_count, noun);
-
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: "Glob".to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: result.to_string(),
-            is_diff: false,
-            scrollback_line,
-            line_count: 2,
-            merge_count: 0,
-            edit_file_path: None,
-        }));
-
-        ToolResultAction::Summary { header, summary }
+        self.push_tool_block("Glob", header, summary, result.to_string(), false, scrollback_line)
     }
 
-    fn record_other(
-        &mut self,
-        tool_name: &str,
-        args: &Value,
-        result: &str,
-        scrollback_line: u64,
-    ) -> ToolResultAction {
+    fn record_other(&mut self, tool_name: &str, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
         let header = build_tool_header(tool_name, args);
         let summary = "  \u{2514} completed".to_string();
-
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: tool_name.to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: result.to_string(),
-            is_diff: false,
-            scrollback_line,
-            line_count: 2,
-            merge_count: 0,
-            edit_file_path: None,
-        }));
-
-        ToolResultAction::Summary { header, summary }
+        self.push_tool_block(tool_name, header, summary, result.to_string(), false, scrollback_line)
     }
 }
 

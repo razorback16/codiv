@@ -5,6 +5,25 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
+const SYSTEM_PROMPT: &str = "You are a helpful coding assistant embedded in a terminal. \
+    You can see the user's recent terminal commands and their output in the conversation history. \
+    Use this context to give relevant, concise answers. \
+    When referencing files or directories, use paths relative to the user's current working directory when possible.";
+
+fn create_agent(cwd: String, env_vars: Vec<(String, String)>) -> crate::agent::agent::Agent {
+    let catalog = crate::agent::config::ModelCatalog::load();
+    let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+    let provider_config = catalog.resolve_provider_config(&assignment);
+    crate::agent::agent::Agent::new(
+        slate_common::types::AgentRole::Engineer,
+        assignment,
+        provider_config,
+        SYSTEM_PROMPT.to_string(),
+        cwd,
+        env_vars,
+    )
+}
+
 pub struct Daemon {
     ipc: IpcServer,
     sessions: HashMap<ClientId, ClientSession>,
@@ -49,14 +68,6 @@ impl Daemon {
                 request_id,
                 context: _,
             } => {
-                use crate::agent;
-
-                let model_catalog = agent::config::ModelCatalog::load();
-                let assignment =
-                    model_catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
-                let provider_config =
-                    model_catalog.resolve_provider_config(&assignment);
-
                 if let Some(client_tx) = self.ipc.client_sender(client_id) {
                     let rid = request_id.clone();
 
@@ -74,17 +85,7 @@ impl Daemon {
                     };
 
                     let mut agent = taken_agent.unwrap_or_else(|| {
-                        agent::agent::Agent::new(
-                            slate_common::types::AgentRole::Engineer,
-                            assignment,
-                            provider_config,
-                            "You are a helpful coding assistant embedded in a terminal. \
-                            You can see the user's recent terminal commands and their output in the conversation history. \
-                            Use this context to give relevant, concise answers. \
-                            When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
-                            cwd.clone(),
-                            env_vars,
-                        )
+                        create_agent(cwd.clone(), env_vars)
                     });
 
                     // Ensure agent uses the session's latest cwd.
@@ -94,7 +95,7 @@ impl Daemon {
                     // We need to put the agent back after the spawn completes.
                     // Use a channel to return it.
                     let (agent_return_tx, agent_return_rx) =
-                        tokio::sync::oneshot::channel::<agent::agent::Agent>();
+                        tokio::sync::oneshot::channel::<crate::agent::agent::Agent>();
 
                     tokio::spawn(async move {
                         // Send model alias before streaming starts (tokens unknown yet).
@@ -199,20 +200,7 @@ impl Daemon {
                     let session_cwd = session.cwd.clone();
                     let session_env_vars = session.env_vars.clone();
                     let agent = session.agent.get_or_insert_with(|| {
-                        let catalog = crate::agent::config::ModelCatalog::load();
-                        let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
-                        let provider_config = catalog.resolve_provider_config(&assignment);
-                        crate::agent::agent::Agent::new(
-                            slate_common::types::AgentRole::Engineer,
-                            assignment,
-                            provider_config,
-                            "You are a helpful coding assistant embedded in a terminal. \
-                            You can see the user's recent terminal commands and their output in the conversation history. \
-                            Use this context to give relevant, concise answers. \
-                            When referencing files or directories, use paths relative to the user's current working directory when possible.".to_string(),
-                            session_cwd,
-                            session_env_vars,
-                        )
+                        create_agent(session_cwd, session_env_vars)
                     });
                     // Update the agent's cwd so tools execute in the right directory.
                     agent.cwd = cwd.clone();

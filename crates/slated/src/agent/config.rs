@@ -43,8 +43,6 @@ pub struct ModelCatalog {
 pub struct ModelAssignment {
     pub provider: String,
     pub model: String,
-    #[allow(dead_code)] // reserved for future aisdk support
-    pub max_tokens: Option<u32>,
     pub temperature: Option<u8>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -123,7 +121,6 @@ impl ModelCatalog {
         self.roles.get(key).cloned().unwrap_or(ModelAssignment {
             provider: self.default_provider.clone(),
             model: self.default_model.clone(),
-            max_tokens: Some(8192),
             temperature: None,
             api_key: None,
             base_url: None,
@@ -333,9 +330,6 @@ where
     for tool in tools {
         builder = builder.with_tool(tool);
     }
-    // Note: aisdk 0.5.x does not expose a max_output_tokens builder method;
-    // the provider's default is used. config.max_tokens is reserved for future use.
-
     let mut response = builder.build().stream_text().await?;
     let mut full_text = String::new();
     let mut chunk_count: u32 = 0;

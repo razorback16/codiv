@@ -3011,6 +3011,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "slate-common",
  "tracing",
 ]
 
@@ -3021,10 +3022,6 @@ dependencies = [
  "aisdk",
  "bincode",
  "futures",
- "glob",
- "grep-regex",
- "grep-searcher",
- "ignore",
  "nix 0.29.0",
  "schemars",
  "serde",

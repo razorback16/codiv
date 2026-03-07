@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
+use slate_common::truncate::truncate_output;
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct BashInput {
@@ -49,24 +50,6 @@ fn read_capped(mut reader: impl std::io::Read, max_bytes: usize) -> String {
     String::from_utf8_lossy(&kept).into_owned()
 }
 
-/// Truncate long output keeping the first `head` and last `tail` lines.
-fn truncate_lines(output: &str, head: usize, tail: usize) -> String {
-    if output.is_empty() {
-        return String::new();
-    }
-    let lines: Vec<&str> = output.lines().collect();
-    let total = lines.len();
-    if total <= head + tail {
-        return output.to_string();
-    }
-    let omitted = total - head - tail;
-    format!(
-        "{}\n... ({} lines omitted) ...\n{}",
-        lines[..head].join("\n"),
-        omitted,
-        lines[total - tail..].join("\n"),
-    )
-}
 
 pub fn execute(value: Value, cwd: &str, env_vars: &[(String, String)]) -> Result<String, String> {
     let input: BashInput =
@@ -169,7 +152,7 @@ pub fn execute(value: Value, cwd: &str, env_vars: &[(String, String)]) -> Result
         result.push_str(&format!("exit code: {code}"));
     }
 
-    let result = truncate_lines(&result, 200, 100);
+    let result = truncate_output(&result, 200, 100);
 
     Ok(result)
 }
