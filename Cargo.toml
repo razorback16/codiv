@@ -3,4 +3,4 @@ members = ["crates/slate", "crates/slate-common", "crates/slated", "crates/slate
 resolver = "2"
 
 [patch.crates-io]
-aisdk = { git = "https://github.com/razorback16/aisdk", branch = "main" }
+aisdk = { git = "https://github.com/razorback16/aisdk.git", branch = "main" }

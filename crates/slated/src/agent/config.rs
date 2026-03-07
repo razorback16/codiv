@@ -66,7 +66,7 @@ default_model = "claude-sonnet-4-5"
 #
 # [providers.anthropic]
 # api_key = "sk-ant-..."          # or set ANTHROPIC_API_KEY env var
-# base_url = "https://custom-endpoint.example.com"
+# base_url = "https://custom-endpoint.example.com"  # /v1 is auto-appended if missing
 #
 # [providers.openai]
 # api_key = "sk-..."              # or set OPENAI_API_KEY env var
@@ -84,7 +84,7 @@ default_model = "claude-sonnet-4-5"
 # max_tokens = 8192
 # temperature = 0
 # api_key = "sk-ant-..."          # overrides provider-level key
-# base_url = "https://..."        # overrides provider-level url
+# base_url = "https://..."        # overrides provider-level url; /v1 auto-appended if missing
 #
 # [roles.reviewer]
 # provider = "openai"
@@ -176,6 +176,73 @@ impl ModelAssignment {
     }
 }
 
+/// Ensure a base URL ends with `/v1` (or `/v1/`).
+/// If the user already supplied it, keep it; otherwise append it.
+fn ensure_v1_suffix(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{}/", trimmed)
+    } else {
+        format!("{}/v1/", trimmed)
+    }
+}
+
+/// Strip a trailing `/v1` (or `/v1/`) from a base URL.
+/// OpenAI SDK already includes `/v1` in the request path, so the base URL
+/// must NOT contain it.
+fn strip_v1_suffix(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.trim_end_matches("/v1").to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Sanitize a tool's JSON Schema for OpenAI strict mode compatibility.
+/// OpenAI strict mode requires:
+/// - All properties listed in `required`
+/// - No unsupported keywords like `format`, `minimum`, `maximum`, `$schema`, `title`, `default`
+fn sanitize_tool_schema_for_openai(mut tool: Tool) -> Tool {
+    let mut val = tool.input_schema.to_value();
+    sanitize_schema_value(&mut val);
+    tool.input_schema = schemars::Schema::try_from(val).unwrap();
+    tool
+}
+
+fn sanitize_schema_value(val: &mut serde_json::Value) {
+    if let Some(obj) = val.as_object_mut() {
+        // Remove unsupported top-level keywords
+        obj.remove("$schema");
+        obj.remove("title");
+
+        // If there are properties, ensure all are in required
+        if let Some(props) = obj.get("properties").cloned() {
+            if let Some(prop_obj) = props.as_object() {
+                let all_keys: Vec<serde_json::Value> = prop_obj
+                    .keys()
+                    .map(|k| serde_json::Value::String(k.clone()))
+                    .collect();
+                obj.insert("required".to_string(), serde_json::Value::Array(all_keys));
+            }
+        }
+
+        // Clean each property's sub-schema
+        if let Some(props) = obj.get_mut("properties") {
+            if let Some(prop_obj) = props.as_object_mut() {
+                for (_key, prop_schema) in prop_obj.iter_mut() {
+                    if let Some(prop) = prop_schema.as_object_mut() {
+                        prop.remove("format");
+                        prop.remove("minimum");
+                        prop.remove("maximum");
+                        prop.remove("default");
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn build_anthropic_model(
     model_name: &str,
     provider_config: &ProviderConfig,
@@ -190,7 +257,7 @@ fn build_anthropic_model(
             builder = builder.api_key(key);
         }
         if let Some(ref url) = provider_config.base_url {
-            builder = builder.base_url(url);
+            builder = builder.base_url(ensure_v1_suffix(url));
         }
         Ok(builder.build()?)
     } else {
@@ -211,7 +278,7 @@ fn build_openai_model(
             builder = builder.api_key(key);
         }
         if let Some(ref url) = provider_config.base_url {
-            builder = builder.base_url(url);
+            builder = builder.base_url(strip_v1_suffix(url));
         }
         Ok(builder.build()?)
     } else {
@@ -266,7 +333,8 @@ pub async fn stream_from_config(
             }
             "openai" => {
                 let model = build_openai_model(&assignment.model, provider_config)?;
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone()).await
+                let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools).await
             }
             "google" => {
                 let model = build_google_model(&assignment.model, provider_config)?;
