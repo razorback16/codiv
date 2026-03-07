@@ -67,7 +67,7 @@ pub(crate) fn event_loop(
     let mut tool_result_modal = ToolResultModal::new();
     let mut was_alt_screen = false;
     let mut anim = AnimationState::new();
-    let mut input_mode = InputMode::Command;
+    let mut input_mode = InputMode::Ai;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
