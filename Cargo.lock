@@ -3065,7 +3065,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "streamdown-ansi"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
+source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
 dependencies = [
  "crossterm 0.28.1",
  "regex",
@@ -3075,7 +3075,7 @@ dependencies = [
 [[package]]
 name = "streamdown-config"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
+source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
 dependencies = [
  "crossterm 0.28.1",
  "directories",
@@ -3088,7 +3088,7 @@ dependencies = [
 [[package]]
 name = "streamdown-core"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
+source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
 dependencies = [
  "regex",
  "serde",
@@ -3098,7 +3098,7 @@ dependencies = [
 [[package]]
 name = "streamdown-parser"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
+source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
 dependencies = [
  "regex",
  "streamdown-ansi",
@@ -3109,7 +3109,7 @@ dependencies = [
 [[package]]
 name = "streamdown-render"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
+source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
 dependencies = [
  "base64",
  "crossterm 0.28.1",
@@ -3125,7 +3125,7 @@ dependencies = [
 [[package]]
 name = "streamdown-syntax"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#4f4a94627aa9796519f79a05f095a08a7a50ffb3"
+source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
 dependencies = [
  "streamdown-core",
  "syntect",
@@ -4051,7 +4051,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
