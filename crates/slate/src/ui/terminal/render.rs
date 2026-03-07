@@ -161,6 +161,20 @@ pub(crate) fn render_frame(
                             .set_char(live_char)
                             .set_fg(live_fg);
                     }
+                } else if tracker.pending_tool().is_some() && scroll_offset == 0 {
+                    // Gutter-only spinner for pending tool (header is in VT100 content)
+                    if let Some(pending_sl) = tracker.pending_tool_scrollback() {
+                        log::debug!("pending_tool gutter: pending_sl={}, abs_top={}, abs_view_bottom={}", pending_sl, abs_top, abs_view_bottom);
+                        if pending_sl >= abs_top && pending_sl < abs_view_bottom {
+                            let screen_row = (pending_sl - abs_top) as u16;
+                            let row = term_area.top() + screen_row;
+                            if row < term_area.bottom() {
+                                buf[(term_area.left(), row)]
+                                    .set_char(anim.spinner_char())
+                                    .set_fg(Color::Yellow);
+                            }
+                        }
+                    }
                 } else if agent_streaming && scroll_offset == 0 {
                     let (cursor_row, _) = parser.screen().cursor_position();
                     let row = term_area.top() + cursor_row;
@@ -190,35 +204,6 @@ pub(crate) fn render_frame(
                             }
                         }
                         // Clear any leftover characters from longer previous text
-                        let clear_start = content_area.left() + text.len() as u16;
-                        for col in clear_start..content_area.right() {
-                            let ch = buf[(col, placeholder_row)].symbol();
-                            if ch == " " || ch.is_empty() {
-                                break;
-                            }
-                            buf[(col, placeholder_row)]
-                                .set_char(' ')
-                                .set_fg(Color::Reset);
-                        }
-                    }
-                } else if tracker.pending_tool().is_some() && scroll_offset == 0 {
-                    // Animate spinner on the pending tool placeholder line
-                    let (cursor_row, _) = parser.screen().cursor_position();
-                    let row = term_area.top() + cursor_row;
-                    // The spinner placeholder is one line above cursor
-                    let placeholder_row = row.saturating_sub(1);
-                    if placeholder_row >= term_area.top() && placeholder_row < term_area.bottom() {
-                        let tool_name = tracker.pending_tool().unwrap_or("...");
-                        let text = format!("{} {}", anim.spinner_char(), tool_name);
-                        for (i, ch) in text.chars().enumerate() {
-                            let col = content_area.left() + i as u16;
-                            if col < content_area.right() {
-                                buf[(col, placeholder_row)]
-                                    .set_char(ch)
-                                    .set_fg(Color::Yellow);
-                            }
-                        }
-                        // Clear any leftover characters
                         let clear_start = content_area.left() + text.len() as u16;
                         for col in clear_start..content_area.right() {
                             let ch = buf[(col, placeholder_row)].symbol();

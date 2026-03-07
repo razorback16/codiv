@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use crate::ipc::messages as ipc_messages;
 use crate::markdown::MarkdownStream;
-use crate::ui::blocks::{BlockRegistry, ToolResultAction};
+use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 
 use super::utils::{get_scrollback_line, parser_push_styled};
 
@@ -105,10 +105,13 @@ pub(crate) fn handle_daemon_message(
                             parser.process(b"\r\n");
                         }
 
-                        // Record and show spinner
-                        tracker.record_tool_call_delta(&tool_name);
-                        let spinner_line = format!("\x1b[33m\u{280b} {}\x1b[0m\r\n", tool_name);
-                        parser.process(spinner_line.as_bytes());
+                        // Record and show yellow bold header (name only, args come later)
+                        let scrollback_line = get_scrollback_line(parser);
+                        let canonical = canonical_tool_name(&tool_name);
+                        log::debug!("ToolCallDelta: scrollback_line={}, tool={}", scrollback_line, canonical);
+                        tracker.record_tool_call_delta(canonical, scrollback_line);
+                        let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", canonical);
+                        parser.process(header_line.as_bytes());
                     }
                     // Subsequent deltas: no-op
                 }
@@ -136,11 +139,20 @@ pub(crate) fn handle_daemon_message(
                     }
 
                     tracker.record_tool_call(&name, &arguments);
+                    // Update header in-place with full args if we had a delta
+                    if tracker.pending_tool().is_some() {
+                        parser.process(b"\x1b[A\r\x1b[K");  // move up, clear header line
+                        let args: serde_json::Value = serde_json::from_str(&arguments).unwrap_or(serde_json::Value::Null);
+                        let header = crate::ui::blocks::build_tool_header(&name, &args);
+                        let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", header);
+                        parser.process(header_line.as_bytes());
+                    }
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
                     {
-                        // Overwrite spinner placeholder if pending
-                        if tracker.pending_tool().is_some() {
+                        let had_pending = tracker.pending_tool().is_some();
+                        if had_pending {
+                            // Move up to overwrite the yellow header line
                             parser.process(b"\x1b[A\r\x1b[K");
                         }
                         let scrollback_line = get_scrollback_line(parser);

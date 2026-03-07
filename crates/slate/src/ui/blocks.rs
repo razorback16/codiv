@@ -104,6 +104,7 @@ pub struct BlockRegistry {
     next_id: usize,
     pending_tool_call: Option<PendingToolCall>,
     pending_tool_name: Option<String>,
+    pending_tool_scrollback: Option<u64>,
 }
 
 impl BlockRegistry {
@@ -114,11 +115,16 @@ impl BlockRegistry {
             next_id: 0,
             pending_tool_call: None,
             pending_tool_name: None,
+            pending_tool_scrollback: None,
         }
     }
 
     pub fn pending_tool(&self) -> Option<&str> {
         self.pending_tool_name.as_deref()
+    }
+
+    pub fn pending_tool_scrollback(&self) -> Option<u64> {
+        self.pending_tool_scrollback
     }
 
     // -- recording ----------------------------------------------------------
@@ -136,9 +142,10 @@ impl BlockRegistry {
 
     /// Record that a tool call delta has started streaming.
     /// Sets `pending_tool_name` on the first delta only.
-    pub fn record_tool_call_delta(&mut self, tool_name: &str) {
+    pub fn record_tool_call_delta(&mut self, tool_name: &str, scrollback_line: u64) {
         if self.pending_tool_name.is_none() {
             self.pending_tool_name = Some(tool_name.to_string());
+            self.pending_tool_scrollback = Some(scrollback_line);
         }
     }
 
@@ -153,6 +160,7 @@ impl BlockRegistry {
         scrollback_line: u64,
     ) -> ToolResultAction {
         self.pending_tool_name = None;
+        self.pending_tool_scrollback = None;
         let args_json = self
             .pending_tool_call
             .take()
@@ -280,6 +288,7 @@ impl BlockRegistry {
         self.next_id = 0;
         self.pending_tool_call = None;
         self.pending_tool_name = None;
+        self.pending_tool_scrollback = None;
     }
 
     /// Returns a mutable reference to the last [`ToolBlock`], if any.
@@ -325,8 +334,7 @@ impl BlockRegistry {
 
         // First edit (or new file) — compute single-edit summary.
         let summary_text = single_edit_summary(&old_string, &new_string);
-        let short_path = short_filename(&file_path);
-        let header = format!("Edit({})", short_path);
+        let header = build_tool_header("Edit", args);
         let summary = format!("  \u{2514} {}", summary_text);
 
         let id = self.next_id();
@@ -352,11 +360,9 @@ impl BlockRegistry {
         result: &str,
         scrollback_line: u64,
     ) -> ToolResultAction {
-        let file_path = json_str(args, "file_path").unwrap_or_default();
         let line_count = result.lines().count();
-        let short_path = short_filename(&file_path);
 
-        let header = format!("Read({})", short_path);
+        let header = build_tool_header("Read", args);
         let summary = format!("  \u{2514} Read {} lines", line_count);
 
         let id = self.next_id();
@@ -387,7 +393,7 @@ impl BlockRegistry {
         let line_count = content.lines().count();
         let short_path = short_filename(&file_path);
 
-        let header = format!("Write({})", short_path);
+        let header = build_tool_header("Write", args);
         let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
 
         let id = self.next_id();
@@ -413,11 +419,9 @@ impl BlockRegistry {
         result: &str,
         scrollback_line: u64,
     ) -> ToolResultAction {
-        let command = json_str(args, "command").unwrap_or_default();
-        let command_preview = truncate_str(&command, 60);
         let exit_code = parse_bash_exit_code(result);
 
-        let header = format!("Bash({})", command_preview);
+        let header = build_tool_header("Bash", args);
         let summary = if exit_code == 0 {
             "  \u{2514} exit 0".to_string()
         } else {
@@ -452,21 +456,9 @@ impl BlockRegistry {
         result: &str,
         scrollback_line: u64,
     ) -> ToolResultAction {
-        let pattern = json_str(args, "pattern").unwrap_or_default();
-        let path = json_str(args, "path").unwrap_or_default();
         let match_count = result.lines().filter(|l| !l.is_empty()).count();
 
-        let args_preview = if path.is_empty() {
-            format!("pattern: \"{}\"", truncate_str(&pattern, 40))
-        } else {
-            format!(
-                "pattern: \"{}\", path: \"{}\"",
-                truncate_str(&pattern, 30),
-                short_filename(&path)
-            )
-        };
-
-        let header = format!("Grep({})", args_preview);
+        let header = build_tool_header("Grep", args);
         let noun = if match_count == 1 { "line" } else { "lines" };
         let summary = format!("  \u{2514} Found {} {}", match_count, noun);
 
@@ -493,21 +485,9 @@ impl BlockRegistry {
         result: &str,
         scrollback_line: u64,
     ) -> ToolResultAction {
-        let pattern = json_str(args, "pattern").unwrap_or_default();
-        let path = json_str(args, "path").unwrap_or_default();
         let file_count = result.lines().filter(|l| !l.is_empty()).count();
 
-        let args_preview = if path.is_empty() {
-            format!("pattern: \"{}\"", truncate_str(&pattern, 40))
-        } else {
-            format!(
-                "pattern: \"{}\", path: \"{}\"",
-                truncate_str(&pattern, 30),
-                short_filename(&path)
-            )
-        };
-
-        let header = format!("Glob({})", args_preview);
+        let header = build_tool_header("Glob", args);
         let noun = if file_count == 1 { "file" } else { "files" };
         let summary = format!("  \u{2514} Found {} {}", file_count, noun);
 
@@ -535,8 +515,7 @@ impl BlockRegistry {
         result: &str,
         scrollback_line: u64,
     ) -> ToolResultAction {
-        let args_preview = summarize_args(args);
-        let header = format!("{}({})", tool_name, args_preview);
+        let header = build_tool_header(tool_name, args);
         let summary = "  \u{2514} completed".to_string();
 
         let id = self.next_id();
@@ -562,7 +541,7 @@ impl BlockRegistry {
 // ---------------------------------------------------------------------------
 
 /// Normalize tool names to a canonical form (e.g. "bash" -> "Bash").
-fn canonical_tool_name(name: &str) -> &str {
+pub(crate) fn canonical_tool_name(name: &str) -> &str {
     match name.to_ascii_lowercase().as_str() {
         "edit" => "Edit",
         "read" => "Read",
@@ -571,6 +550,60 @@ fn canonical_tool_name(name: &str) -> &str {
         "grep" => "Grep",
         "glob" => "Glob",
         _ => name,
+    }
+}
+
+/// Build the header line for a tool block (e.g. `Edit(foo.rs)`).
+pub fn build_tool_header(name: &str, args: &Value) -> String {
+    let canonical = canonical_tool_name(name);
+    match canonical {
+        "Edit" => {
+            let file_path = json_str(args, "file_path").unwrap_or_default();
+            format!("Edit({})", short_filename(&file_path))
+        }
+        "Read" => {
+            let file_path = json_str(args, "file_path").unwrap_or_default();
+            format!("Read({})", short_filename(&file_path))
+        }
+        "Write" => {
+            let file_path = json_str(args, "file_path").unwrap_or_default();
+            format!("Write({})", short_filename(&file_path))
+        }
+        "Bash" => {
+            let command = json_str(args, "command").unwrap_or_default();
+            format!("Bash({})", truncate_str(&command, 60))
+        }
+        "Grep" => {
+            let pattern = json_str(args, "pattern").unwrap_or_default();
+            let path = json_str(args, "path").unwrap_or_default();
+            let args_preview = if path.is_empty() {
+                format!("pattern: \"{}\"", truncate_str(&pattern, 40))
+            } else {
+                format!(
+                    "pattern: \"{}\", path: \"{}\"",
+                    truncate_str(&pattern, 30),
+                    short_filename(&path)
+                )
+            };
+            format!("Grep({})", args_preview)
+        }
+        "Glob" => {
+            let pattern = json_str(args, "pattern").unwrap_or_default();
+            let path = json_str(args, "path").unwrap_or_default();
+            let args_preview = if path.is_empty() {
+                format!("pattern: \"{}\"", truncate_str(&pattern, 40))
+            } else {
+                format!(
+                    "pattern: \"{}\", path: \"{}\"",
+                    truncate_str(&pattern, 30),
+                    short_filename(&path)
+                )
+            };
+            format!("Glob({})", args_preview)
+        }
+        other => {
+            format!("{}({})", other, summarize_args(args))
+        }
     }
 }
 
