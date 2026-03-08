@@ -35,11 +35,13 @@ pub fn build_agent_request(
     prompt: &str,
     request_id: &str,
     context: SessionContext,
+    thinking: bool,
 ) -> Option<Vec<u8>> {
     let msg = ClientMessage::AgentRequest {
         prompt: prompt.to_string(),
         request_id: request_id.to_string(),
         context,
+        thinking,
     };
     frame_message(&msg).ok()
 }

@@ -67,6 +67,7 @@ impl Daemon {
                 prompt,
                 request_id,
                 context: _,
+                thinking,
             } => {
                 if let Some(client_tx) = self.ipc.client_sender(client_id) {
                     let rid = request_id.clone();
@@ -107,7 +108,7 @@ impl Daemon {
                         if let Ok(frame) = slate_common::messages::frame_message(&meta_msg) {
                             let _ = client_tx.send(frame).await;
                         }
-                        match agent.run_streaming(&rid, &client_tx).await {
+                        match agent.run_streaming(&rid, &client_tx, thinking).await {
                             Ok((response, input_tokens, output_tokens)) => {
                                 info!("agent completed request {}: {} bytes", rid, response.len());
                                 agent.add_assistant_message(&response);

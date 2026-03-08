@@ -68,6 +68,7 @@ pub(crate) fn event_loop(
     let mut was_alt_screen = false;
     let mut anim = AnimationState::new();
     let mut input_mode = InputMode::Ai;
+    let mut thinking_enabled = false;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -138,6 +139,7 @@ pub(crate) fn event_loop(
                 &tool_result_modal,
                 &anim,
                 input_mode,
+                thinking_enabled,
             )?;
             needs_render = false;
         }
@@ -389,6 +391,13 @@ pub(crate) fn event_loop(
                                                 break; // exit
                                             }
 
+                                            // --- Ctrl+T: toggle thinking mode ---
+                                            (KeyCode::Char('t'), m)
+                                                if m.contains(KeyModifiers::CONTROL) =>
+                                            {
+                                                thinking_enabled = !thinking_enabled;
+                                            }
+
                                             // --- Enter: submit input ---
                                             (KeyCode::Enter, _) if pending_command.is_none() => {
                                                 let raw_input = input.submit();
@@ -481,7 +490,7 @@ pub(crate) fn event_loop(
                                                                 }
                                                                 InputMode::Ai => {
                                                                     if let Some(ref mut c) = client {
-                                                                        if send_agent_request(c, &raw_input, cwd) {
+                                                                        if send_agent_request(c, &raw_input, cwd, thinking_enabled) {
                                                                             agent_streaming = true;
                                                                         }
                                                                     } else {

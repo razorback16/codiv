@@ -24,6 +24,8 @@ pub enum ClientMessage {
         prompt: String,
         request_id: String,
         context: SessionContext,
+        #[serde(default)]
+        thinking: bool,
     },
     EnvSnapshot {
         env_vars: Vec<(String, String)>,

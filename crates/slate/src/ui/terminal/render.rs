@@ -50,6 +50,7 @@ pub(crate) fn render_frame(
     tool_result_modal: &ToolResultModal,
     anim: &super::animation::AnimationState,
     input_mode: InputMode,
+    thinking_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
@@ -260,6 +261,7 @@ pub(crate) fn render_frame(
                 model_alias,
                 context_usage,
                 anim,
+                thinking_enabled,
             );
 
             // --- Render completion popup ---
@@ -373,6 +375,7 @@ pub(crate) fn render_status_bar(
     model_alias: &str,
     context_usage: (usize, usize),
     anim: &super::animation::AnimationState,
+    thinking_enabled: bool,
 ) {
     let width = area.width as usize;
 
@@ -408,7 +411,8 @@ pub(crate) fn render_status_bar(
     } else {
         String::new()
     };
-    let right = format!(" {}{} | v{} ", model_part, daemon_status, VERSION);
+    let thinking_part = if thinking_enabled { "thinking | " } else { "" };
+    let right = format!(" {}{}{} | v{} ", model_part, thinking_part, daemon_status, VERSION);
     let left = match git_info {
         Some(info) => {
             let branch_part = format!("({})", info.branch);

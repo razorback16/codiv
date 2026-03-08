@@ -129,6 +129,7 @@ impl Agent {
         &self,
         request_id: &str,
         client_tx: &mpsc::Sender<Vec<u8>>,
+        thinking: bool,
     ) -> Result<(String, usize, usize), String> {
         info!(
             "agent {:?} calling {}/{} ({} events in history)",
@@ -144,7 +145,7 @@ impl Agent {
             self.env_vars.clone(),
         );
 
-        config::stream_from_config(&self.model_config, &self.provider_config, messages, request_id, client_tx, tools)
+        config::stream_from_config(&self.model_config, &self.provider_config, messages, request_id, client_tx, tools, thinking)
             .await
             .map_err(|e| e.to_string())
     }

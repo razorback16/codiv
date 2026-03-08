@@ -6,6 +6,7 @@ pub(crate) fn send_agent_request(
     client: &mut SlatedClient,
     query: &str,
     cwd: &str,
+    thinking: bool,
 ) -> bool {
     let request_id = format!("agent-{}", rand::random::<u64>());
     let context = ipc_messages::SessionContext {
@@ -13,7 +14,7 @@ pub(crate) fn send_agent_request(
         recent_commands: Vec::new(),
         env_vars: Vec::new(),
     };
-    if let Some(frame) = ipc_messages::build_agent_request(query, &request_id, context) {
+    if let Some(frame) = ipc_messages::build_agent_request(query, &request_id, context, thinking) {
         client.send(&frame);
         true
     } else {

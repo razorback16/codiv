@@ -323,22 +323,23 @@ pub async fn stream_from_config(
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
     tools: Vec<Tool>,
+    thinking: bool,
 ) -> Result<(String, usize, usize), DynError> {
     let mut attempt = 0u32;
     loop {
         let result = match assignment.provider.as_str() {
             "anthropic" => {
                 let model = build_anthropic_model(&assignment.model, provider_config)?;
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone()).await
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
             }
             "openai" => {
                 let model = build_openai_model(&assignment.model, provider_config)?;
                 let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools).await
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools, thinking).await
             }
             "google" => {
                 let model = build_google_model(&assignment.model, provider_config)?;
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone()).await
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
             }
             other => return Err(format!("unsupported provider: {}", other).into()),
         };
@@ -383,15 +384,19 @@ async fn run_stream<M>(
     tx: &mpsc::Sender<Vec<u8>>,
     config: &ModelAssignment,
     tools: Vec<Tool>,
+    thinking: bool,
 ) -> Result<(String, usize, usize), DynError>
 where
-    M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + Send + Sync + 'static,
+    M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + aisdk::core::capabilities::ReasoningSupport + Send + Sync + 'static,
 {
     let mut builder = LanguageModelRequest::builder()
         .model(model)
         .messages(messages);
 
-    if let Some(temp) = config.temperature {
+    if thinking {
+        // Anthropic API does not allow setting temperature with extended thinking.
+        builder = builder.reasoning_effort(aisdk::core::language_model::ReasoningEffort::Medium);
+    } else if let Some(temp) = config.temperature {
         builder = builder.temperature(temp as u32);
     }
 
