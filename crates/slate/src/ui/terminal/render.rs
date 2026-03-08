@@ -11,7 +11,7 @@ use crate::ui::input::InputLine;
 use crate::ui::selection::TextSelection;
 use crate::ui::tool_modal::ToolResultModal;
 use crate::{
-    ui::blocks::{Block, BlockRegistry, InputMode},
+    ui::blocks::{AiResponseBlock, Block, BlockRegistry, InputMode},
     VERSION,
 };
 
@@ -134,10 +134,15 @@ pub(crate) fn render_frame(
                             };
                             (pb.scrollback_line, ch, fg)
                         }
-                        Block::AiResponse(ab) => (ab.scrollback_line, '\u{25CF}', Color::White),
+                        Block::AiResponse(ab) => {
+                            if ab.thinking_content.is_some() {
+                                (ab.scrollback_line, '\u{25E6}', Color::DarkGray)
+                            } else {
+                                (ab.scrollback_line, '\u{25CF}', Color::White)
+                            }
+                        }
                         Block::Tool(tb) => (tb.scrollback_line, '\u{25CF}', Color::Green),
                         Block::CmdResponse(cb) => (cb.scrollback_line, '$', Color::White),
-                        Block::Thinking(tb) => (tb.scrollback_line, '\u{25E6}', Color::DarkGray),
                     };
                     if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
                         let screen_row = (scrollback_line - abs_top) as u16;
@@ -279,7 +284,6 @@ pub(crate) fn render_frame(
                     Block::Prompt(pb) => (pb.scrollback_line, 1),
                     Block::CmdResponse(cb) => (cb.scrollback_line, cb.line_count),
                     Block::AiResponse(ab) => (ab.scrollback_line, ab.line_count),
-                    Block::Thinking(tb) => (tb.scrollback_line, tb.line_count),
                 };
                 let sb_len = true_scrollback_len(parser) as u64;
                 let screen_rows = parser.screen().size().0 as u64;
@@ -307,10 +311,16 @@ pub(crate) fn render_frame(
                             }
                         }
                     }
-                    // Show "(press Enter to expand)" hint for ToolBlocks
-                    if matches!(focused, Block::Tool(_) | Block::Thinking(_)) {
+                    // Show "(press Enter to expand)" hint for ToolBlocks and thinking
+                    if matches!(focused, Block::Tool(_) | Block::AiResponse(AiResponseBlock { thinking_content: Some(_), .. })) {
                         let hint = " (press Enter to expand)";
-                        let hint_row = screen_row + 1; // summary line
+                        // For tools: hint on the summary line (row+1).
+                        // For thinking: hint on the "Thought for Ns" line (row+0).
+                        let hint_row = if matches!(focused, Block::AiResponse(_)) {
+                            screen_row
+                        } else {
+                            screen_row + 1
+                        };
                         if hint_row >= term_area.top() && hint_row < term_area.bottom() {
                             // Find end of existing text
                             let buf = frame.buffer_mut();

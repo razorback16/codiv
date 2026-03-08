@@ -55,21 +55,14 @@ pub struct AiResponseBlock {
     pub id: usize,
     pub scrollback_line: u64,
     pub line_count: u16,
-}
-
-pub struct ThinkingBlock {
-    pub id: usize,
-    pub scrollback_line: u64,
-    pub line_count: u16,        // 1 (the summary line)
-    pub full_content: String,   // accumulated reasoning text
-    pub duration_secs: f32,
+    pub thinking_content: Option<String>,
+    pub thinking_duration_secs: Option<f32>,
 }
 
 pub enum Block {
     Prompt(PromptBlock),
     CmdResponse(CmdResponseBlock),
     AiResponse(AiResponseBlock),
-    Thinking(ThinkingBlock),
     Tool(ToolBlock),
 }
 
@@ -105,6 +98,9 @@ pub struct BlockRegistry {
     pending_tool_call: Option<PendingToolCall>,
     pending_tool_name: Option<String>,
     pending_tool_scrollback: Option<u64>,
+    pending_thinking_content: Option<String>,
+    pending_thinking_duration: Option<f32>,
+    pending_thinking_scrollback: Option<u64>,
 }
 
 impl BlockRegistry {
@@ -116,6 +112,9 @@ impl BlockRegistry {
             pending_tool_call: None,
             pending_tool_name: None,
             pending_tool_scrollback: None,
+            pending_thinking_content: None,
+            pending_thinking_duration: None,
+            pending_thinking_scrollback: None,
         }
     }
 
@@ -204,26 +203,53 @@ impl BlockRegistry {
         }));
     }
 
-    /// Record an AI response block.
+    /// Stash thinking data to be consumed by the next `record_ai_response` call.
+    pub fn record_pending_thinking(&mut self, content: String, duration_secs: f32, scrollback_line: u64) {
+        self.pending_thinking_content = Some(content);
+        self.pending_thinking_duration = Some(duration_secs);
+        self.pending_thinking_scrollback = Some(scrollback_line);
+    }
+
+    /// Record an AI response block, consuming any pending thinking data.
     pub fn record_ai_response(&mut self, scrollback_line: u64, line_count: u16) {
         let id = self.next_id();
+        let thinking_content = self.pending_thinking_content.take();
+        let thinking_duration_secs = self.pending_thinking_duration.take();
+        // If thinking preceded this response, start from the thinking line
+        // and include the thinking summary line in the count.
+        let (effective_scrollback, effective_count) =
+            if let Some(thinking_sl) = self.pending_thinking_scrollback.take() {
+                let extra = scrollback_line.saturating_sub(thinking_sl) as u16;
+                (thinking_sl, line_count + extra)
+            } else {
+                (scrollback_line, line_count)
+            };
         self.blocks.push(Block::AiResponse(AiResponseBlock {
             id,
-            scrollback_line,
-            line_count,
+            scrollback_line: effective_scrollback,
+            line_count: effective_count,
+            thinking_content,
+            thinking_duration_secs,
         }));
     }
 
-    /// Record a thinking/reasoning block.
-    pub fn record_thinking(&mut self, scrollback_line: u64, full_content: String, duration_secs: f32) {
-        let id = self.next_id();
-        self.blocks.push(Block::Thinking(ThinkingBlock {
-            id,
-            scrollback_line,
-            line_count: 1,
-            full_content,
-            duration_secs,
-        }));
+    /// Flush pending thinking that was never consumed by `record_ai_response`
+    /// (i.e. a thinking-only response with no text). Creates an AiResponseBlock
+    /// with just the thinking data.
+    pub fn flush_pending_thinking(&mut self) {
+        if self.pending_thinking_content.is_some() {
+            let id = self.next_id();
+            let thinking_content = self.pending_thinking_content.take();
+            let thinking_duration_secs = self.pending_thinking_duration.take();
+            let scrollback_line = self.pending_thinking_scrollback.take().unwrap_or(0);
+            self.blocks.push(Block::AiResponse(AiResponseBlock {
+                id,
+                scrollback_line,
+                line_count: 1,
+                thinking_content,
+                thinking_duration_secs,
+            }));
+        }
     }
 
     // -- accessors ----------------------------------------------------------
@@ -235,7 +261,7 @@ impl BlockRegistry {
     // -- focus / navigation -------------------------------------------------
 
     fn is_navigable(block: &Block) -> bool {
-        matches!(block, Block::Prompt(_) | Block::Tool(_) | Block::Thinking(_))
+        matches!(block, Block::Prompt(_) | Block::Tool(_) | Block::AiResponse(_))
     }
 
     pub fn focus_last(&mut self) {
@@ -279,6 +305,9 @@ impl BlockRegistry {
         self.pending_tool_call = None;
         self.pending_tool_name = None;
         self.pending_tool_scrollback = None;
+        self.pending_thinking_content = None;
+        self.pending_thinking_duration = None;
+        self.pending_thinking_scrollback = None;
     }
 
     /// Returns a mutable reference to the last [`ToolBlock`], if any.

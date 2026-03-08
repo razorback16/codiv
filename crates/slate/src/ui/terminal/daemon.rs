@@ -26,7 +26,7 @@ fn finalize_thinking(
         parser.process(summary.as_bytes());
         let content = std::mem::take(thinking_buffer);
         if let Some(sl) = thinking_scrollback.take() {
-            tracker.record_thinking(sl, content, duration_secs);
+            tracker.record_pending_thinking(content, duration_secs, sl);
         }
     }
 }
@@ -206,6 +206,9 @@ pub(crate) fn handle_daemon_message(
                         tracker.record_ai_response(start, line_count);
                     }
                 }
+                // Flush any pending thinking that was never consumed by record_ai_response
+                // (thinking-only response with no text content).
+                tracker.flush_pending_thinking();
                 if !final_bytes.is_empty() || had_ai_content {
                     parser.process(b"\r\n"); // AI block trailing separator
                 }
