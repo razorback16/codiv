@@ -2,11 +2,15 @@ use aisdk::core::tools::Tool;
 use aisdk::core::{LanguageModel, LanguageModelRequest, LanguageModelStreamChunkType};
 use aisdk::providers::{Anthropic, Google, OpenAI};
 use futures::StreamExt;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use slate_common::messages::{frame_message, DaemonMessage, StreamChunk};
+use slate_common::permissions::PermissionMode;
 use slate_common::truncate::{truncate_tool_output, MAX_TOOL_OUTPUT_BYTES};
 use slate_common::types::AgentRole;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -29,7 +33,7 @@ impl std::fmt::Debug for ProviderConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ModelCatalog {
     pub default_provider: String,
     pub default_model: String,
@@ -48,65 +52,130 @@ pub struct ModelAssignment {
     pub base_url: Option<String>,
 }
 
-const DEFAULT_MODELS_TOML: &str = r#"# Slate Agent — Model Configuration
-#
-# This file controls which LLM provider and model is used.
-# Edit the values below to switch providers or models.
+const DEFAULT_CONFIG_TOML: &str = include_str!("../../config.default.toml");
 
-# The provider used when a role doesn't specify one.
-# Supported: "anthropic", "openai", "google"
-default_provider = "anthropic"
+// ---------------------------------------------------------------------------
+// AppConfig — unified configuration (permissions + model catalog)
+// ---------------------------------------------------------------------------
 
-# The model used when a role doesn't specify one.
-default_model = "claude-sonnet-4-5"
+#[derive(Debug, Deserialize)]
+pub struct AppConfig {
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
+    #[serde(flatten)]
+    pub models: ModelCatalog,
+}
 
-# ── Provider-level settings ──────────────────────────────────────────
-# API keys and base URLs set here apply to all roles using that provider.
-# Per-role settings (below) take precedence over these.
-#
-# [providers.anthropic]
-# api_key = "sk-ant-..."          # or set ANTHROPIC_API_KEY env var
-# base_url = "https://custom-endpoint.example.com"  # /v1 is auto-appended if missing
-#
-# [providers.openai]
-# api_key = "sk-..."              # or set OPENAI_API_KEY env var
-#
-# [providers.google]
-# api_key = "..."                 # or set GOOGLE_API_KEY env var
+#[derive(Debug, Clone, Deserialize)]
+pub struct PermissionsConfig {
+    #[serde(default)]
+    pub mode: PermissionMode,
+}
 
-# ── Per-role overrides ───────────────────────────────────────────────
-# Assign a specific provider/model to each agent role.
-# Available roles: engineer, team_lead, reviewer, researcher, security
-#
-# [roles.engineer]
-# provider = "anthropic"
-# model = "claude-sonnet-4-5"
-# max_tokens = 8192
-# temperature = 0
-# api_key = "sk-ant-..."          # overrides provider-level key
-# base_url = "https://..."        # overrides provider-level url; /v1 auto-appended if missing
-#
-# [roles.reviewer]
-# provider = "openai"
-# model = "gpt-4o"
-"#;
+impl Default for PermissionsConfig {
+    fn default() -> Self {
+        Self {
+            mode: PermissionMode::default(),
+        }
+    }
+}
 
-impl ModelCatalog {
+impl AppConfig {
+    /// Resolve the canonical config file path (`~/.slate-agent/config.toml`).
+    #[allow(dead_code)]
+    pub fn config_path() -> PathBuf {
+        slate_common::config::config_dir().join("config.toml")
+    }
+
+    /// Load configuration, trying (in order):
+    /// 1. `~/.slate-agent/config.toml`
+    /// 2. `~/.slate-agent/models.toml` (backward compat — parsed as ModelCatalog)
+    /// 3. Embedded default template (also written to `config.toml` for discoverability)
     pub fn load() -> Self {
         let config_dir = slate_common::config::config_dir();
-        let config_path = config_dir.join("models.toml");
+        let config_path = config_dir.join("config.toml");
 
         if let Ok(contents) = std::fs::read_to_string(&config_path) {
-            if let Ok(catalog) = toml::from_str(&contents) {
-                return catalog;
+            if let Ok(cfg) = toml::from_str::<AppConfig>(&contents) {
+                return cfg;
             }
         }
 
-        // Create the default config file so users can discover and edit it.
+        // Create default config.toml so users can discover and edit it.
         let _ = std::fs::create_dir_all(&config_dir);
-        let _ = std::fs::write(&config_path, DEFAULT_MODELS_TOML);
+        let _ = std::fs::write(&config_path, DEFAULT_CONFIG_TOML);
 
-        toml::from_str(DEFAULT_MODELS_TOML).expect("default models.toml must parse")
+        toml::from_str(DEFAULT_CONFIG_TOML).expect("default config.toml must parse")
+    }
+
+    /// Wrap this config in an `Arc<RwLock<>>` and start a filesystem watcher
+    /// that automatically re-parses on changes.
+    /// Returns the shared handle and a guard that keeps the watcher alive.
+    #[allow(dead_code)]
+    pub fn into_watched(self) -> (Arc<RwLock<AppConfig>>, ConfigWatcherGuard) {
+        let shared = Arc::new(RwLock::new(self));
+        let guard = ConfigWatcherGuard::start(Arc::clone(&shared));
+        (shared, guard)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem watcher
+// ---------------------------------------------------------------------------
+
+/// Holds the `notify` watcher so it stays alive as long as needed.
+#[allow(dead_code)]
+pub struct ConfigWatcherGuard {
+    _watcher: RecommendedWatcher,
+}
+
+impl ConfigWatcherGuard {
+    fn start(shared: Arc<RwLock<AppConfig>>) -> Self {
+        let config_path = AppConfig::config_path();
+        let watch_dir = config_path
+            .parent()
+            .expect("config path must have parent")
+            .to_path_buf();
+
+        let target_file = config_path.clone();
+        let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                // Only react to writes/creates that touch our config file.
+                let dominated = event.paths.iter().any(|p| p == &target_file);
+                if !dominated {
+                    return;
+                }
+                match event.kind {
+                    notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
+                        tracing::info!("config file changed, reloading");
+                        let new_cfg = AppConfig::load();
+                        if let Ok(mut guard) = shared.write() {
+                            *guard = new_cfg;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .expect("failed to create config file watcher");
+
+        watcher
+            .watch(&watch_dir, RecursiveMode::NonRecursive)
+            .expect("failed to watch config directory");
+
+        Self { _watcher: watcher }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ModelCatalog
+// ---------------------------------------------------------------------------
+
+impl ModelCatalog {
+    /// Load a `ModelCatalog` (delegates to `AppConfig::load()`).
+    #[allow(dead_code)]
+    pub fn load() -> Self {
+        AppConfig::load().models
     }
 
     pub fn assignment_for(&self, role: &AgentRole) -> ModelAssignment {
@@ -241,6 +310,30 @@ fn sanitize_schema_value(val: &mut serde_json::Value) {
             }
         }
     }
+}
+
+/// Public wrapper for building an Anthropic model (used by llm_evaluator).
+pub fn build_anthropic_model_pub(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::Anthropic<aisdk::core::DynamicModel>, DynError> {
+    build_anthropic_model(model_name, provider_config)
+}
+
+/// Public wrapper for building an OpenAI model (used by llm_evaluator).
+pub fn build_openai_model_pub(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::OpenAI<aisdk::core::DynamicModel>, DynError> {
+    build_openai_model(model_name, provider_config)
+}
+
+/// Public wrapper for building a Google model (used by llm_evaluator).
+pub fn build_google_model_pub(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::Google<aisdk::core::DynamicModel>, DynError> {
+    build_google_model(model_name, provider_config)
 }
 
 fn build_anthropic_model(

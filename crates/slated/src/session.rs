@@ -1,4 +1,6 @@
 use crate::agent::agent::Agent;
+use crate::agent::permissions::PermissionContext;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
 
@@ -9,6 +11,7 @@ pub struct ClientSession {
     pub last_heartbeat: Instant,
     pub agent: Option<Agent>,
     pub agent_return_rx: Option<oneshot::Receiver<Agent>>,
+    pub permission_ctx: Option<Arc<PermissionContext>>,
 }
 
 impl ClientSession {
@@ -20,6 +23,7 @@ impl ClientSession {
             last_heartbeat: Instant::now(),
             agent: None,
             agent_return_rx: None,
+            permission_ctx: None,
         }
     }
 

@@ -10,6 +10,8 @@ use crate::ui::completion_popup::CompletionPopup;
 use crate::ui::input::InputLine;
 use crate::ui::selection::TextSelection;
 use crate::ui::tool_modal::ToolResultModal;
+use slate_common::permissions::PermissionMode;
+
 use crate::{
     ui::blocks::{AiResponseBlock, Block, BlockRegistry, InputMode},
     VERSION,
@@ -51,6 +53,7 @@ pub(crate) fn render_frame(
     anim: &super::animation::AnimationState,
     input_mode: InputMode,
     thinking_enabled: bool,
+    permission_mode: PermissionMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
@@ -267,6 +270,7 @@ pub(crate) fn render_frame(
                 context_usage,
                 anim,
                 thinking_enabled,
+                permission_mode,
             );
 
             // --- Render completion popup ---
@@ -386,6 +390,7 @@ pub(crate) fn render_status_bar(
     context_usage: (usize, usize),
     anim: &super::animation::AnimationState,
     thinking_enabled: bool,
+    permission_mode: PermissionMode,
 ) {
     let width = area.width as usize;
 
@@ -422,7 +427,12 @@ pub(crate) fn render_status_bar(
         String::new()
     };
     let thinking_part = if thinking_enabled { "thinking | " } else { "" };
-    let right = format!(" {}{}{} | v{} ", model_part, thinking_part, daemon_status, VERSION);
+    let mode_part = match permission_mode {
+        PermissionMode::Auto => "AUTO | ",
+        PermissionMode::Manual => "MANUAL | ",
+        PermissionMode::Bypass => "BYPASS | ",
+    };
+    let right = format!(" {}{}{}{} | v{} ", model_part, thinking_part, mode_part, daemon_status, VERSION);
     let left = match git_info {
         Some(info) => {
             let branch_part = format!("({})", info.branch);

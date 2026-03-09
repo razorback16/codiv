@@ -1,9 +1,12 @@
 use std::time::Instant;
 
+use slate_common::permissions::PermissionMode;
+
 use crate::ipc::messages as ipc_messages;
 use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 
+use super::state::PendingConfirmation;
 use super::utils::{get_scrollback_line, parser_push_styled};
 
 /// Finalize an in-progress thinking block: overwrite the placeholder line
@@ -46,6 +49,9 @@ pub(crate) fn handle_daemon_message(
     thinking_buffer: &mut String,
     thinking_start: &mut Option<Instant>,
     thinking_scrollback: &mut Option<u64>,
+    pending_confirmation: &mut Option<PendingConfirmation>,
+    permission_mode: &mut PermissionMode,
+    last_permission_outcome: &mut Option<(String, bool, String)>,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -139,14 +145,9 @@ pub(crate) fn handle_daemon_message(
                     }
 
                     tracker.record_tool_call(&name, &arguments);
-                    // Update header in-place with full args if we had a delta
-                    if tracker.pending_tool().is_some() {
-                        parser.process(b"\x1b[A\r\x1b[K");  // move up, clear header line
-                        let args: serde_json::Value = serde_json::from_str(&arguments).unwrap_or(serde_json::Value::Null);
-                        let header = crate::ui::blocks::build_tool_header(&name, &args);
-                        let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", header);
-                        parser.process(header_line.as_bytes());
-                    }
+                    // Don't update header here — the ConfirmationRequest (if permission-gated)
+                    // or ToolResult handler will render the final header with full args.
+                    // This avoids a double-render when ConfirmationRequest follows immediately.
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
                     {
@@ -158,6 +159,10 @@ pub(crate) fn handle_daemon_message(
                         let scrollback_line = get_scrollback_line(parser);
                         match tracker.record_tool_result(&name, &result, scrollback_line) {
                             ToolResultAction::Merged => {
+                                // Consume any pending permission outcome if it matches this tool
+                                if last_permission_outcome.as_ref().is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name)) {
+                                    let _ = last_permission_outcome.take();
+                                }
                                 // Block merged into previous — update the summary
                                 // line in the VT100 buffer by moving cursor up and
                                 // rewriting the line.
@@ -171,17 +176,44 @@ pub(crate) fn handle_daemon_message(
                                 }
                             }
                             ToolResultAction::Summary { header, summary } => {
-                                // Write 2-line block to VT100.
-                                // Header: bold green ● ToolName(args)
-                                let header_line = format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
-                                parser.process(header_line.as_bytes());
-                                // Summary: colored based on tool
-                                let is_bash_error = name.eq_ignore_ascii_case("bash")
-                                    && !summary.contains("exit 0");
-                                let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
-                                let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
-                                parser.process(summary_line.as_bytes());
-                                parser.process(b"\r\n"); // trailing separator after tool block
+                                // Check if there's a permission outcome matching this tool
+                                let perm = if last_permission_outcome.as_ref().is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name)) {
+                                    last_permission_outcome.take()
+                                } else {
+                                    None
+                                };
+
+                                if let Some((ref _perm_tool, granted, ref reason)) = perm {
+                                    if granted {
+                                        // Green header + "└ {reason}" + green summary
+                                        let header_line = format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                        parser.process(header_line.as_bytes());
+                                        let perm_line = format!("\x1b[32m  \u{2514} {}\x1b[0m\r\n", reason);
+                                        parser.process(perm_line.as_bytes());
+                                        // Normal summary line
+                                        let is_bash_error = name.eq_ignore_ascii_case("bash")
+                                            && !summary.contains("exit 0");
+                                        let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
+                                        let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
+                                        parser.process(summary_line.as_bytes());
+                                    } else {
+                                        // Red header + "└ {reason}" (no tool summary since tool wasn't executed)
+                                        let header_line = format!("\x1b[1m\x1b[31m{}\x1b[0m\r\n", header);
+                                        parser.process(header_line.as_bytes());
+                                        let perm_line = format!("\x1b[31m  \u{2514} {}\x1b[0m\r\n", reason);
+                                        parser.process(perm_line.as_bytes());
+                                    }
+                                } else {
+                                    // No permission check — render as before (green header + summary)
+                                    let header_line = format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                    parser.process(header_line.as_bytes());
+                                    let is_bash_error = name.eq_ignore_ascii_case("bash")
+                                        && !summary.contains("exit 0");
+                                    let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
+                                    let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
+                                    parser.process(summary_line.as_bytes());
+                                }
+                                parser.process(b"\r\n"); // trailing separator
                             }
                         }
                     }
@@ -219,13 +251,93 @@ pub(crate) fn handle_daemon_message(
         ipc_messages::DaemonMessage::ConfirmationRequest {
             request_id,
             description,
-            risk: _,
+            risk,
+            tool_name,
+            tool_args,
         } => {
-            parser_push_styled(
-                parser,
-                &format!("[daemon] confirm ({}): {}", request_id, description),
-                "\x1b[33m",
-            );
+            // Overwrite the yellow placeholder header with the full tool call details.
+            // The ToolCallDelta rendered just the tool name (e.g. "Bash"); now we have
+            // the full args from the ConfirmationRequest and can show the complete header.
+            let args: serde_json::Value = serde_json::from_str(&tool_args).unwrap_or(serde_json::Value::Null);
+            let header_lines = crate::ui::blocks::build_tool_header_lines(&tool_name, &args, 10);
+
+            // Move cursor up to overwrite the placeholder header line
+            if tracker.pending_tool().is_some() {
+                parser.process(b"\x1b[A\r\x1b[K");
+            }
+
+            let mut prompt_lines: u16 = 0;
+
+            // Render multi-line yellow header
+            for (i, line) in header_lines.iter().enumerate() {
+                if i == 0 {
+                    let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", line);
+                    parser.process(header_line.as_bytes());
+                } else {
+                    let content_line = format!("\x1b[33m{}\x1b[0m\r\n", line);
+                    parser.process(content_line.as_bytes());
+                }
+                prompt_lines += 1;
+            }
+
+            // Render risk label with ⎿
+            let risk_label = match risk {
+                slate_common::messages::RiskLevel::Critical => "\x1b[31m\x1b[1m\u{1F534} CRITICAL\x1b[0m",
+                slate_common::messages::RiskLevel::High => "\x1b[33m\x1b[1m\u{26A0}\u{FE0F}  HIGH RISK\x1b[0m",
+                slate_common::messages::RiskLevel::Medium => "\x1b[33m\u{26A0}\u{FE0F}  MEDIUM\x1b[0m",
+                slate_common::messages::RiskLevel::Low => "\x1b[32mLOW\x1b[0m",
+            };
+            parser.process(format!("  \u{23BF} {}\r\n", risk_label).as_bytes());
+            prompt_lines += 1;
+
+            // Build options (extra indent, no ⎿)
+            let options: Vec<&str> = if risk == slate_common::messages::RiskLevel::Critical {
+                vec![
+                    "1. Yes, allow this action",
+                    "2. No, reject",
+                    "3. No, and never allow (session)",
+                ]
+            } else {
+                vec![
+                    "1. Yes, allow this action",
+                    "2. Yes, and always allow (session)",
+                    "3. No, reject",
+                    "4. No, and never allow (session)",
+                ]
+            };
+            let option_count = options.len();
+
+            // Render options with first one selected
+            for (i, option) in options.iter().enumerate() {
+                let (prefix, color) = if i == 0 {
+                    ("\u{203a}", "\x1b[1;37m")  // › bold white for selected
+                } else {
+                    (" ", "\x1b[37m")  // normal white
+                };
+                parser.process(format!("    {}{} {}\x1b[0m\r\n", color, prefix, option).as_bytes());
+                prompt_lines += 1;
+            }
+
+            *pending_confirmation = Some(PendingConfirmation {
+                request_id,
+                description,
+                risk,
+                tool_name,
+                tool_args,
+                prompt_lines,
+                selected_index: 0,
+                option_count,
+            });
+        }
+        ipc_messages::DaemonMessage::PermissionModeChanged { mode } => {
+            *permission_mode = mode;
+        }
+        ipc_messages::DaemonMessage::PermissionOutcome {
+            tool_name,
+            granted,
+            reason,
+        } => {
+            *last_permission_outcome = Some((tool_name, granted, reason));
         }
         ipc_messages::DaemonMessage::Error {
             request_id,

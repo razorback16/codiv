@@ -1,0 +1,45 @@
+# Slate Agent — Configuration
+#
+# This file controls permissions, LLM providers, and model assignments.
+# Edit the values below to customize behavior.
+
+# ── Models ──────────────────────────────────────────────────────────
+# The provider used when a role doesn't specify one.
+# Supported: "anthropic", "openai", "google"
+default_provider = "anthropic"
+
+# The model used when a role doesn't specify one.
+default_model = "claude-sonnet-4-5"
+
+# ── Permissions ─────────────────────────────────────────────────────
+[permissions]
+mode = "auto"  # "auto" | "manual" | "bypass"
+
+# ── Provider-level settings ──────────────────────────────────────────
+# API keys and base URLs set here apply to all roles using that provider.
+# Per-role settings (below) take precedence over these.
+#
+# [providers.anthropic]
+# api_key = "sk-ant-..."          # or set ANTHROPIC_API_KEY env var
+# base_url = "https://custom-endpoint.example.com"  # /v1 is auto-appended if missing
+#
+# [providers.openai]
+# api_key = "sk-..."              # or set OPENAI_API_KEY env var
+#
+# [providers.google]
+# api_key = "..."                 # or set GOOGLE_API_KEY env var
+
+# ── Per-role overrides ───────────────────────────────────────────────
+# Assign a specific provider/model to each agent role.
+# Available roles: engineer, team_lead, reviewer, researcher, security
+#
+# [roles.engineer]
+# provider = "anthropic"
+# model = "claude-sonnet-4-5"
+# temperature = 0
+# api_key = "sk-ant-..."          # overrides provider-level key
+# base_url = "https://..."        # overrides provider-level url
+
+[roles.permission_evaluator]
+provider = "anthropic"
+model = "claude-haiku-3-5"

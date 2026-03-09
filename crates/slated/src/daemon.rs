@@ -1,7 +1,9 @@
+use crate::agent::permissions::PermissionContext;
 use crate::ipc::server::{ClientId, IpcServer};
 use crate::session::ClientSession;
 use slate_common::messages::{ClientMessage, DaemonMessage};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
@@ -11,9 +13,9 @@ const SYSTEM_PROMPT: &str = "You are a helpful coding assistant embedded in a te
     When referencing files or directories, use paths relative to the user's current working directory when possible.";
 
 fn create_agent(cwd: String, env_vars: Vec<(String, String)>) -> crate::agent::agent::Agent {
-    let catalog = crate::agent::config::ModelCatalog::load();
-    let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
-    let provider_config = catalog.resolve_provider_config(&assignment);
+    let config = crate::agent::config::AppConfig::load();
+    let assignment = config.models.assignment_for(&slate_common::types::AgentRole::Engineer);
+    let provider_config = config.models.resolve_provider_config(&assignment);
     crate::agent::agent::Agent::new(
         slate_common::types::AgentRole::Engineer,
         assignment,
@@ -93,6 +95,28 @@ impl Daemon {
                     agent.cwd = cwd;
                     agent.add_user_message(&prompt);
 
+                    // Create or reuse permission context for this session
+                    let permission_ctx = if let Some(ref s) = self.sessions.get(&client_id) {
+                        s.permission_ctx.clone()
+                    } else {
+                        None
+                    };
+                    let permission_ctx = match permission_ctx {
+                        Some(ctx) => Some(ctx),
+                        None => {
+                            let config = crate::agent::config::AppConfig::load();
+                            let ctx = Arc::new(PermissionContext::new(
+                                config.permissions.mode,
+                                client_tx.clone(),
+                                config.models,
+                            ));
+                            if let Some(session) = self.sessions.get_mut(&client_id) {
+                                session.permission_ctx = Some(Arc::clone(&ctx));
+                            }
+                            Some(ctx)
+                        }
+                    };
+
                     // We need to put the agent back after the spawn completes.
                     // Use a channel to return it.
                     let (agent_return_tx, agent_return_rx) =
@@ -108,7 +132,7 @@ impl Daemon {
                         if let Ok(frame) = slate_common::messages::frame_message(&meta_msg) {
                             let _ = client_tx.send(frame).await;
                         }
-                        match agent.run_streaming(&rid, &client_tx, thinking).await {
+                        match agent.run_streaming(&rid, &client_tx, thinking, permission_ctx).await {
                             Ok((response, input_tokens, output_tokens)) => {
                                 info!("agent completed request {}: {} bytes", rid, response.len());
                                 agent.add_assistant_message(&response);
@@ -184,8 +208,52 @@ impl Daemon {
                 std::process::exit(0);
             }
 
-            ClientMessage::Confirmation { .. } => {
-                // Phase 2 step 2: safety confirmation (Task 7+)
+            ClientMessage::Confirmation { request_id, approved, add_to_allowlist, add_to_denylist, comment } => {
+                if let Some(session) = self.sessions.get(&client_id) {
+                    if let Some(ref pctx) = session.permission_ctx {
+                        let mut pending = pctx.pending.lock().unwrap();
+                        if let Some(sender) = pending.remove(&request_id) {
+                            let result = crate::agent::permissions::ConfirmationResult {
+                                approved,
+                                add_to_allowlist,
+                                add_to_denylist,
+                                comment,
+                            };
+                            let _ = sender.send(result);
+                        }
+                    }
+                }
+            }
+
+            ClientMessage::SetPermissionMode { mode } => {
+                info!("permission mode change requested: {}", mode);
+                if let Some(session) = self.sessions.get_mut(&client_id) {
+                    match session.permission_ctx {
+                        Some(ref pctx) => {
+                            pctx.set_mode(mode);
+                        }
+                        None => {
+                            // Create PermissionContext eagerly so the mode is
+                            // applied even before the first AgentRequest.
+                            if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                                let config = crate::agent::config::AppConfig::load();
+                                let ctx = Arc::new(PermissionContext::new(
+                                    mode,
+                                    client_tx,
+                                    config.models,
+                                ));
+                                session.permission_ctx = Some(ctx);
+                            }
+                        }
+                    }
+                }
+                // Acknowledge the mode change back to the client.
+                if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                    let msg = DaemonMessage::PermissionModeChanged { mode };
+                    if let Ok(frame) = slate_common::messages::frame_message(&msg) {
+                        let _ = client_tx.send(frame).await;
+                    }
+                }
             }
 
             ClientMessage::CommandResult {
