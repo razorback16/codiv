@@ -6,3 +6,5 @@ target/
 .claude-octopus/
 slated/.cache/
 references/
+!.claude/skills/*/references/
+!.claude/skills/*/references/**
