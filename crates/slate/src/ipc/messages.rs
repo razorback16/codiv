@@ -61,3 +61,27 @@ pub fn build_command_result(
     };
     frame_message(&msg).ok()
 }
+
+/// Build a framed Confirmation response message.
+pub fn build_confirmation(
+    request_id: &str,
+    approved: bool,
+    add_to_allowlist: bool,
+    add_to_denylist: bool,
+    comment: Option<String>,
+) -> Option<Vec<u8>> {
+    let msg = ClientMessage::Confirmation {
+        request_id: request_id.to_string(),
+        approved,
+        add_to_allowlist,
+        add_to_denylist,
+        comment,
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed SetPermissionMode message.
+pub fn build_set_permission_mode(mode: slate_common::permissions::PermissionMode) -> Option<Vec<u8>> {
+    let msg = ClientMessage::SetPermissionMode { mode };
+    frame_message(&msg).ok()
+}

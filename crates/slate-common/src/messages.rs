@@ -1,3 +1,4 @@
+use crate::permissions::PermissionMode;
 use serde::{Deserialize, Serialize};
 
 /// A record of a recently executed command, provided by the client as context.
@@ -35,6 +36,15 @@ pub enum ClientMessage {
     Confirmation {
         request_id: String,
         approved: bool,
+        #[serde(default)]
+        add_to_allowlist: bool,
+        #[serde(default)]
+        add_to_denylist: bool,
+        #[serde(default)]
+        comment: Option<String>,
+    },
+    SetPermissionMode {
+        mode: PermissionMode,
     },
     Heartbeat {
         timestamp: u64,
@@ -65,6 +75,16 @@ pub enum DaemonMessage {
         request_id: String,
         description: String,
         risk: RiskLevel,
+        tool_name: String,
+        tool_args: String,
+    },
+    PermissionOutcome {
+        tool_name: String,
+        granted: bool,
+        reason: String,
+    },
+    PermissionModeChanged {
+        mode: PermissionMode,
     },
     Heartbeat {
         timestamp: u64,

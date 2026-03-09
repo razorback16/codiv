@@ -473,6 +473,7 @@ pub(crate) fn canonical_tool_name(name: &str) -> &str {
 }
 
 /// Build the header line for a tool block (e.g. `Edit(foo.rs)`).
+/// Returns a single-line summary suitable for the green/red result header.
 pub fn build_tool_header(name: &str, args: &Value) -> String {
     let canonical = canonical_tool_name(name);
     match canonical {
@@ -522,6 +523,72 @@ pub fn build_tool_header(name: &str, args: &Value) -> String {
         }
         other => {
             format!("{}({})", other, summarize_args(args))
+        }
+    }
+}
+
+/// Build a multi-line header for a tool block, showing up to `max_lines` of content.
+/// Returns a Vec of lines (first line is the header, subsequent lines are indented content).
+/// Used for the yellow "in-progress" header where we want to show full command details.
+pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize) -> Vec<String> {
+    let canonical = canonical_tool_name(name);
+    match canonical {
+        "Bash" => {
+            let command = json_str(args, "command").unwrap_or_default();
+            let cmd_lines: Vec<&str> = command.lines().collect();
+            if cmd_lines.len() <= 1 {
+                // Single line: show inline
+                vec![format!("Bash({})", command)]
+            } else {
+                // Multi-line: header + indented lines
+                let mut result = vec!["Bash".to_string()];
+                let show = cmd_lines.len().min(max_lines);
+                for line in &cmd_lines[..show] {
+                    result.push(format!("  {}", line));
+                }
+                if cmd_lines.len() > max_lines {
+                    result.push(format!("  ... ({} more lines)", cmd_lines.len() - max_lines));
+                }
+                result
+            }
+        }
+        "Edit" => {
+            let file_path = json_str(args, "file_path").unwrap_or_default();
+            let old_string = json_str(args, "old_string").unwrap_or_default();
+            let new_string = json_str(args, "new_string").unwrap_or_default();
+            let old_lines: Vec<&str> = old_string.lines().collect();
+            let new_lines: Vec<&str> = new_string.lines().collect();
+            let total = old_lines.len() + new_lines.len();
+            if total <= 2 {
+                vec![format!("Edit({})", short_filename(&file_path))]
+            } else {
+                let mut result = vec![format!("Edit({})", short_filename(&file_path))];
+                let show_old = old_lines.len().min(max_lines / 2);
+                let show_new = new_lines.len().min(max_lines - show_old);
+                for line in &old_lines[..show_old] {
+                    result.push(format!("  \x1b[31m- {}\x1b[33m", truncate_str(line, 100)));
+                }
+                if old_lines.len() > show_old {
+                    result.push(format!("  ... ({} more removed)", old_lines.len() - show_old));
+                }
+                for line in &new_lines[..show_new] {
+                    result.push(format!("  \x1b[32m+ {}\x1b[33m", truncate_str(line, 100)));
+                }
+                if new_lines.len() > show_new {
+                    result.push(format!("  ... ({} more added)", new_lines.len() - show_new));
+                }
+                result
+            }
+        }
+        "Write" => {
+            let file_path = json_str(args, "file_path").unwrap_or_default();
+            let content = json_str(args, "content").unwrap_or_default();
+            let line_count = content.lines().count();
+            vec![format!("Write({}) — {} lines", short_filename(&file_path), line_count)]
+        }
+        _ => {
+            // For other tools, just use the single-line header
+            vec![build_tool_header(name, args)]
         }
     }
 }

@@ -1,9 +1,24 @@
+use std::sync::Arc;
+
 use crate::agent::config::{self, ModelAssignment, ProviderConfig};
 use aisdk::core::messages::{Message, Messages};
 use slate_common::truncate::truncate_output;
 use slate_common::types::AgentRole;
 use tokio::sync::mpsc;
 use tracing::info;
+
+fn truncate_str(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        s
+    } else {
+        // Find a char boundary at or before max
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+}
 
 /// Maximum number of events to keep in the session timeline.
 const MAX_HISTORY_EVENTS: usize = 100;
@@ -80,6 +95,29 @@ impl Agent {
         }
     }
 
+    /// Build a compact context summary for the LLM permission evaluator.
+    /// Includes the last few user queries and assistant responses so the
+    /// evaluator understands what the user asked for.
+    fn build_context_summary(&self) -> String {
+        let mut lines = Vec::new();
+        // Take the last 6 events to keep it concise
+        let start = self.history.len().saturating_sub(6);
+        for event in &self.history[start..] {
+            match event {
+                SessionEvent::UserQuery(text) => {
+                    lines.push(format!("User: {}", truncate_str(text, 200)));
+                }
+                SessionEvent::AssistantResponse(text) => {
+                    lines.push(format!("Assistant: {}", truncate_str(text, 200)));
+                }
+                SessionEvent::ShellCommand { command, exit_code, .. } => {
+                    lines.push(format!("Shell: {} (exit {})", command, exit_code));
+                }
+            }
+        }
+        lines.join("\n")
+    }
+
     /// Build aisdk Messages from the session timeline.
     ///
     /// ShellCommands become assistant + user message pairs representing
@@ -130,6 +168,7 @@ impl Agent {
         request_id: &str,
         client_tx: &mpsc::Sender<Vec<u8>>,
         thinking: bool,
+        permission_ctx: Option<Arc<super::permissions::PermissionContext>>,
     ) -> Result<(String, usize, usize), String> {
         info!(
             "agent {:?} calling {}/{} ({} events in history)",
@@ -139,10 +178,18 @@ impl Agent {
             self.history.len()
         );
 
+        // Update the permission context with recent conversation history
+        // so the LLM evaluator can make informed decisions.
+        if let Some(ref ctx) = permission_ctx {
+            ctx.set_context(self.build_context_summary());
+        }
+
         let messages = self.build_messages();
+
         let tools = super::tools::build_tools(
             self.cwd.clone(),
             self.env_vars.clone(),
+            permission_ctx,
         );
 
         config::stream_from_config(&self.model_config, &self.provider_config, messages, request_id, client_tx, tools, thinking)

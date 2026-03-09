@@ -144,12 +144,18 @@ pub fn execute(value: Value, cwd: &str, env_vars: &[(String, String)]) -> Result
         result.push_str(&format!("[timed out after {}ms]", timeout_ms));
     }
 
+    let code = status.code().unwrap_or(-1);
     if !status.success() {
-        let code = status.code().unwrap_or(-1);
-        if !result.is_empty() && !result.ends_with('\n') {
-            result.push('\n');
+        if result.is_empty() {
+            result.push_str(&format!("failed with exit code: {code}"));
+        } else {
+            if !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(&format!("exit code: {code}"));
         }
-        result.push_str(&format!("exit code: {code}"));
+    } else if result.is_empty() {
+        result.push_str(&format!("success, exit code: {code}"));
     }
 
     let result = truncate_output(&result, 200, 100);

@@ -8,5 +8,18 @@ pub(crate) struct PendingCommand {
     pub(crate) last_activity: Instant,
 }
 
+/// Tracks a pending permission confirmation prompt from the daemon.
+#[allow(dead_code)]
+pub(crate) struct PendingConfirmation {
+    pub(crate) request_id: String,
+    pub(crate) description: String,
+    pub(crate) risk: slate_common::messages::RiskLevel,
+    pub(crate) tool_name: String,
+    pub(crate) tool_args: String,
+    pub(crate) prompt_lines: u16,
+    pub(crate) selected_index: usize,
+    pub(crate) option_count: usize,
+}
+
 /// Default scrollback limit (number of lines retained).
 pub(crate) const MAX_SCROLLBACK: usize = 10_000;
