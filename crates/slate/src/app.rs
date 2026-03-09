@@ -19,6 +19,11 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
     let cwd = bash.capture_cwd();
     log::debug!("initial cwd: {}", cwd);
 
+    // 3. Query terminal colors (before raw mode)
+    log::debug!("querying terminal colors");
+    let terminal_colors = ui::terminal::io::query_terminal_colors();
+    log::debug!("terminal colors: fg={}, bg={}", terminal_colors.fg, terminal_colors.bg);
+
     // 4. Connect to daemon
     log::debug!("connecting to daemon");
     let client = connect_to_daemon(&mut bash, &cwd);
@@ -26,7 +31,7 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
 
     // 5. Run the terminal UI (blocks until exit)
     log::debug!("entering terminal UI");
-    ui::terminal::run(&mut bash, shutdown, cwd, client)
+    ui::terminal::run(&mut bash, shutdown, cwd, client, terminal_colors)
 }
 
 fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<SlatedClient> {

@@ -7,12 +7,13 @@ pub(crate) fn send_agent_request(
     query: &str,
     cwd: &str,
     thinking: bool,
+    env_vars: &[(String, String)],
 ) -> bool {
     let request_id = format!("agent-{}", rand::random::<u64>());
     let context = ipc_messages::SessionContext {
         cwd: cwd.to_string(),
         recent_commands: Vec::new(),
-        env_vars: Vec::new(),
+        env_vars: env_vars.to_vec(),
     };
     if let Some(frame) = ipc_messages::build_agent_request(query, &request_id, context, thinking) {
         client.send(&frame);

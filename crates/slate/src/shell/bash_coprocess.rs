@@ -85,6 +85,10 @@ impl BashCoprocess {
         cmd.env("PS1", "");
         cmd.env("HISTFILE", "/dev/null");
         cmd.env("TERM", "xterm-256color");
+        // Note: portable-pty's CommandBuilder inherits the full parent
+        // environment via std::env::vars_os(), so COLORTERM, CLICOLOR,
+        // LS_COLORS, LANG, PAGER, etc. are already available.
+
         // Unset PROMPT_COMMAND to avoid spurious output.
         cmd.env_remove("PROMPT_COMMAND");
 

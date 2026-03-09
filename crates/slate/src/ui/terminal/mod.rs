@@ -9,7 +9,7 @@ pub(super) mod animation;
 mod daemon;
 mod event_loop;
 mod input;
-mod io;
+pub(crate) mod io;
 mod render;
 mod state;
 mod utils;
@@ -30,6 +30,8 @@ use crate::ipc::client::SlatedClient;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::ui::input::InputLine;
 use crate::VERSION;
+
+pub use self::io::TerminalColors;
 
 pub(super) const STATUS_BAR_HEIGHT: u16 = 1;
 pub(super) const PROMPT_GUTTER_WIDTH: u16 = 2;
@@ -53,6 +55,7 @@ pub fn run(
     shutdown: Arc<AtomicBool>,
     initial_cwd: String,
     client: Option<SlatedClient>,
+    terminal_colors: TerminalColors,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Terminal setup ---
     terminal::enable_raw_mode()?;
@@ -93,6 +96,7 @@ pub fn run(
         &mut cwd,
         &mut client,
         &mut prompt_is_live,
+        &terminal_colors,
     );
 
     // --- Cleanup (always runs) ---
