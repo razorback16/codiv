@@ -23,6 +23,7 @@ use super::animation::AnimationState;
 use super::daemon;
 use super::input as terminal_input;
 use super::io as terminal_io;
+use super::io::TerminalColors;
 use super::render::render_frame;
 use slate_common::permissions::PermissionMode;
 
@@ -43,6 +44,7 @@ pub(crate) fn event_loop(
     cwd: &mut String,
     client: &mut Option<SlatedClient>,
     prompt_is_live: &mut bool,
+    terminal_colors: &TerminalColors,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_heartbeat_sent = Instant::now();
     let mut last_daemon_timestamp: u64 = 0;
@@ -58,6 +60,7 @@ pub(crate) fn event_loop(
     let mut thinking_start: Option<Instant> = None;
     let mut thinking_scrollback: Option<u64> = None;
     let mut git_info = bash.capture_git_info();
+    let mut cached_env_vars = bash.capture_env();
     let mut model_alias = String::new();
     let mut context_usage: (usize, usize) = (0, 0);
     let mut md_stream = MarkdownStream::new(
@@ -177,7 +180,7 @@ pub(crate) fn event_loop(
             recv(pty_rx) -> msg => {
                 if let Ok(bytes) = msg {
                     if let Some(ref mut pending) = pending_command {
-                        terminal_io::process_pty_bytes(&bytes, pending, parser);
+                        terminal_io::process_pty_bytes(&bytes, pending, parser, bash, terminal_colors);
                     }
                     needs_render = true;
                 }
@@ -687,7 +690,7 @@ pub(crate) fn event_loop(
                                                                 }
                                                                 InputMode::Ai => {
                                                                     if let Some(ref mut c) = client {
-                                                                        if send_agent_request(c, &raw_input, cwd, thinking_enabled) {
+                                                                        if send_agent_request(c, &raw_input, cwd, thinking_enabled, &cached_env_vars) {
                                                                             agent_streaming = true;
                                                                         }
                                                                     } else {
@@ -885,10 +888,17 @@ pub(crate) fn event_loop(
 
         // --- Post-select: drain additional PTY data ---
         if pending_command.is_some() {
-            let pty_rx = bash.pty_receiver();
-            while let Ok(bytes) = pty_rx.try_recv() {
+            let drain: Vec<Vec<u8>> = {
+                let pty_rx = bash.pty_receiver();
+                let mut collected = Vec::new();
+                while let Ok(bytes) = pty_rx.try_recv() {
+                    collected.push(bytes);
+                }
+                collected
+            };
+            for bytes in &drain {
                 if let Some(ref mut pending) = pending_command {
-                    terminal_io::process_pty_bytes(&bytes, pending, parser);
+                    terminal_io::process_pty_bytes(bytes, pending, parser, bash, terminal_colors);
                 }
             }
         }
@@ -911,6 +921,7 @@ pub(crate) fn event_loop(
                 }
                 *cwd = bash.capture_cwd();
                 git_info = bash.capture_git_info();
+                cached_env_vars = bash.capture_env();
                 if let Some(ref mut c) = client {
                     if let Some(frame) = ipc_messages::build_command_result(
                         &pending.command,
