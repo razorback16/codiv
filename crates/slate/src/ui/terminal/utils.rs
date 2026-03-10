@@ -60,21 +60,21 @@ pub(crate) fn scroll_to_focused(
             return;
         }
     };
-    let scrollback_line = match focused {
-        crate::ui::blocks::Block::Prompt(pb) => pb.scrollback_line,
-        crate::ui::blocks::Block::Tool(tb) => tb.scrollback_line,
-        crate::ui::blocks::Block::CmdResponse(cb) => cb.scrollback_line,
-        crate::ui::blocks::Block::AiResponse(ab) => ab.scrollback_line,
+    let start_index = match focused {
+        crate::ui::blocks::Block::Prompt(pb) => pb.start_index,
+        crate::ui::blocks::Block::Tool(tb) => tb.start_index,
+        crate::ui::blocks::Block::CmdResponse(cb) => cb.start_index,
+        crate::ui::blocks::Block::AiResponse(ab) => ab.start_index,
     };
     let sb_len = true_scrollback_len(parser) as u64;
     let screen_rows = parser.screen().size().0 as u64;
     // abs_bottom at scroll_offset==0: sb_len + screen_rows
-    // To bring scrollback_line to the middle of screen, we want:
-    //   abs_top = scrollback_line - screen_rows/2
+    // To bring start_index to the middle of screen, we want:
+    //   abs_top = start_index - screen_rows/2
     //   scroll_offset = sb_len + screen_rows - screen_rows - abs_top
     //                 = sb_len - abs_top
     let half = screen_rows / 2;
-    let desired_abs_top = scrollback_line.saturating_sub(half);
+    let desired_abs_top = start_index.saturating_sub(half);
     // scroll_offset = how far from the natural bottom we are
     let natural_abs_top = sb_len; // abs_top when scroll_offset==0 is sb_len (cursor at bottom)
     let new_offset = if desired_abs_top >= natural_abs_top {

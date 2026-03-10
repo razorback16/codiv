@@ -17,7 +17,7 @@ fn finalize_thinking(
     thinking_buffer: &mut String,
     thinking_start: &mut Option<Instant>,
     thinking_scrollback: &mut Option<u64>,
-) {
+) -> bool {
     if let Some(start) = thinking_start.take() {
         let duration_secs = start.elapsed().as_secs_f32();
         // Move cursor up one line and clear it (overwrite placeholder)
@@ -31,6 +31,9 @@ fn finalize_thinking(
         if let Some(sl) = thinking_scrollback.take() {
             tracker.record_pending_thinking(content, duration_secs, sl);
         }
+        true
+    } else {
+        false
     }
 }
 
@@ -90,7 +93,7 @@ pub(crate) fn handle_daemon_message(
                 ipc_messages::StreamChunk::ToolCallDelta { tool_call_id: _, tool_name, delta: _ } => {
                     // On the FIRST delta for a tool call, show spinner placeholder
                     if tracker.pending_tool().is_none() {
-                        finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                        let had_thinking = finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
                         // Flush any buffered markdown
                         let pending = md_stream.finish();
                         if !pending.is_empty() {
@@ -107,7 +110,7 @@ pub(crate) fn handle_daemon_message(
                                 tracker.record_ai_response(start, line_count);
                             }
                         }
-                        if !pending.is_empty() || had_ai_content {
+                        if !pending.is_empty() || had_ai_content || had_thinking {
                             parser.process(b"\r\n");
                         }
 
@@ -124,7 +127,7 @@ pub(crate) fn handle_daemon_message(
                 ipc_messages::StreamChunk::ToolCall { name, arguments } => {
                     // If no ToolCallDelta preceded this, do the visual transition now
                     if tracker.pending_tool().is_none() {
-                        finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                        let had_thinking = finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
                         let pending = md_stream.finish();
                         if !pending.is_empty() {
                             parser.process(&pending);
@@ -139,7 +142,7 @@ pub(crate) fn handle_daemon_message(
                                 tracker.record_ai_response(start, line_count);
                             }
                         }
-                        if !pending.is_empty() || had_ai_content {
+                        if !pending.is_empty() || had_ai_content || had_thinking {
                             parser.process(b"\r\n");
                         }
                     }
