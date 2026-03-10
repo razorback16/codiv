@@ -135,17 +135,17 @@ pub(crate) fn render_frame(
                                 InputMode::Command => ('$', Color::White),
                                 InputMode::Ai => ('>', Color::Cyan),
                             };
-                            (pb.scrollback_line, ch, fg)
+                            (pb.start_index, ch, fg)
                         }
                         Block::AiResponse(ab) => {
                             if ab.thinking_content.is_some() {
-                                (ab.scrollback_line, '\u{25E6}', Color::DarkGray)
+                                (ab.start_index, '\u{25E6}', Color::DarkGray)
                             } else {
-                                (ab.scrollback_line, '\u{25CF}', Color::White)
+                                (ab.start_index, '\u{25CF}', Color::White)
                             }
                         }
-                        Block::Tool(tb) => (tb.scrollback_line, '\u{25CF}', Color::Green),
-                        Block::CmdResponse(cb) => (cb.scrollback_line, '$', Color::White),
+                        Block::Tool(tb) => (tb.start_index, '\u{25CF}', Color::Green),
+                        Block::CmdResponse(cb) => (cb.start_index, '$', Color::White),
                     };
                     if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
                         let screen_row = (scrollback_line - abs_top) as u16;
@@ -172,7 +172,7 @@ pub(crate) fn render_frame(
                     }
                 } else if tracker.pending_tool().is_some() && scroll_offset == 0 {
                     // Gutter-only spinner for pending tool (header is in VT100 content)
-                    if let Some(pending_sl) = tracker.pending_tool_scrollback() {
+                    if let Some(pending_sl) = tracker.pending_tool_start_index() {
                         log::debug!("pending_tool gutter: pending_sl={}, abs_top={}, abs_view_bottom={}", pending_sl, abs_top, abs_view_bottom);
                         if pending_sl >= abs_top && pending_sl < abs_view_bottom {
                             let screen_row = (pending_sl - abs_top) as u16;
@@ -283,11 +283,11 @@ pub(crate) fn render_frame(
 
             // --- Render block selection overlay ---
             if let Some(focused) = tracker.focused() {
-                let (scrollback_line, line_count) = match focused {
-                    Block::Tool(tb) => (tb.scrollback_line, tb.line_count),
-                    Block::Prompt(pb) => (pb.scrollback_line, 1),
-                    Block::CmdResponse(cb) => (cb.scrollback_line, cb.line_count),
-                    Block::AiResponse(ab) => (ab.scrollback_line, ab.line_count),
+                let (start_index, height) = match focused {
+                    Block::Tool(tb) => (tb.start_index, tb.height),
+                    Block::Prompt(pb) => (pb.start_index, pb.height),
+                    Block::CmdResponse(cb) => (cb.start_index, cb.height),
+                    Block::AiResponse(ab) => (ab.start_index, ab.height),
                 };
                 let sb_len = true_scrollback_len(parser) as u64;
                 let screen_rows = parser.screen().size().0 as u64;
@@ -295,10 +295,10 @@ pub(crate) fn render_frame(
                 let abs_top = abs_bottom
                     .saturating_sub(screen_rows)
                     .saturating_sub(scroll_offset as u64);
-                if scrollback_line >= abs_top && scrollback_line < abs_bottom {
-                    let screen_row = (scrollback_line - abs_top) as u16 + term_area.top();
+                if start_index >= abs_top && start_index < abs_bottom {
+                    let screen_row = (start_index - abs_top) as u16 + term_area.top();
                     let top_rule = screen_row.saturating_sub(1);
-                    let bottom_rule = screen_row + line_count;
+                    let bottom_rule = screen_row + height;
                     let buf = frame.buffer_mut();
                     for row in [top_rule, bottom_rule] {
                         if row >= term_area.top() && row < term_area.bottom() {
@@ -323,7 +323,7 @@ pub(crate) fn render_frame(
                         let hint_row = if matches!(focused, Block::AiResponse(_)) {
                             screen_row
                         } else {
-                            screen_row + 1
+                            screen_row + height - 1
                         };
                         if hint_row >= term_area.top() && hint_row < term_area.bottom() {
                             // Find end of existing text

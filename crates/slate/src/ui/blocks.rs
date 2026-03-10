@@ -19,8 +19,8 @@ pub struct ToolBlock {
     pub summary: String,
     pub full_content: String,
     pub is_diff: bool,
-    pub scrollback_line: u64,
-    pub line_count: u16,
+    pub start_index: u64,
+    pub height: u16,
     /// Track the number of merged edits for consecutive-edit merging.
     merge_count: usize,
     /// Stores the file_path for Edit blocks so we can detect consecutive edits.
@@ -37,7 +37,8 @@ pub enum InputMode {
 pub struct PromptBlock {
     pub id: usize,
     pub text: String,
-    pub scrollback_line: u64,
+    pub start_index: u64,
+    pub height: u16,
     pub mode: InputMode,
 }
 
@@ -45,16 +46,16 @@ pub struct PromptBlock {
 pub struct CmdResponseBlock {
     pub id: usize,
     pub command: String,
-    pub scrollback_line: u64,
-    pub line_count: u16,
+    pub start_index: u64,
+    pub height: u16,
     pub exit_code: i32,
 }
 
 #[allow(dead_code)]
 pub struct AiResponseBlock {
     pub id: usize,
-    pub scrollback_line: u64,
-    pub line_count: u16,
+    pub start_index: u64,
+    pub height: u16,
     pub thinking_content: Option<String>,
     pub thinking_duration_secs: Option<f32>,
 }
@@ -97,7 +98,7 @@ pub struct BlockRegistry {
     next_id: usize,
     pending_tool_call: Option<PendingToolCall>,
     pending_tool_name: Option<String>,
-    pending_tool_scrollback: Option<u64>,
+    pending_tool_start_index: Option<u64>,
     pending_thinking_content: Option<String>,
     pending_thinking_duration: Option<f32>,
     pending_thinking_scrollback: Option<u64>,
@@ -111,7 +112,7 @@ impl BlockRegistry {
             next_id: 0,
             pending_tool_call: None,
             pending_tool_name: None,
-            pending_tool_scrollback: None,
+            pending_tool_start_index: None,
             pending_thinking_content: None,
             pending_thinking_duration: None,
             pending_thinking_scrollback: None,
@@ -122,8 +123,8 @@ impl BlockRegistry {
         self.pending_tool_name.as_deref()
     }
 
-    pub fn pending_tool_scrollback(&self) -> Option<u64> {
-        self.pending_tool_scrollback
+    pub fn pending_tool_start_index(&self) -> Option<u64> {
+        self.pending_tool_start_index
     }
 
     // -- recording ----------------------------------------------------------
@@ -141,10 +142,10 @@ impl BlockRegistry {
 
     /// Record that a tool call delta has started streaming.
     /// Sets `pending_tool_name` on the first delta only.
-    pub fn record_tool_call_delta(&mut self, tool_name: &str, scrollback_line: u64) {
+    pub fn record_tool_call_delta(&mut self, tool_name: &str, start_index: u64) {
         if self.pending_tool_name.is_none() {
             self.pending_tool_name = Some(tool_name.to_string());
-            self.pending_tool_scrollback = Some(scrollback_line);
+            self.pending_tool_start_index = Some(start_index);
         }
     }
 
@@ -156,10 +157,10 @@ impl BlockRegistry {
         &mut self,
         name: &str,
         result: &str,
-        scrollback_line: u64,
+        start_index: u64,
     ) -> ToolResultAction {
         self.pending_tool_name = None;
-        self.pending_tool_scrollback = None;
+        self.pending_tool_start_index = None;
         let args_json = self
             .pending_tool_call
             .take()
@@ -170,35 +171,36 @@ impl BlockRegistry {
         let canonical = canonical_tool_name(name);
 
         match canonical {
-            "Edit" => self.record_edit(&args, result, scrollback_line),
-            "Read" => self.record_read(&args, result, scrollback_line),
-            "Write" => self.record_write(&args, result, scrollback_line),
-            "Bash" => self.record_bash(&args, result, scrollback_line),
-            "Grep" => self.record_grep(&args, result, scrollback_line),
-            "Glob" => self.record_glob(&args, result, scrollback_line),
-            other => self.record_other(other, &args, result, scrollback_line),
+            "Edit" => self.record_edit(&args, result, start_index),
+            "Read" => self.record_read(&args, result, start_index),
+            "Write" => self.record_write(&args, result, start_index),
+            "Bash" => self.record_bash(&args, result, start_index),
+            "Grep" => self.record_grep(&args, result, start_index),
+            "Glob" => self.record_glob(&args, result, start_index),
+            other => self.record_other(other, &args, result, start_index),
         }
     }
 
     /// Record a user prompt.
-    pub fn record_prompt(&mut self, text: &str, scrollback_line: u64, mode: InputMode) {
+    pub fn record_prompt(&mut self, text: &str, start_index: u64, mode: InputMode) {
         let id = self.next_id();
         self.blocks.push(Block::Prompt(PromptBlock {
             id,
             text: text.to_string(),
-            scrollback_line,
+            start_index,
+            height: 1,
             mode,
         }));
     }
 
     /// Record a shell command response block.
-    pub fn record_cmd_response(&mut self, command: &str, scrollback_line: u64, line_count: u16, exit_code: i32) {
+    pub fn record_cmd_response(&mut self, command: &str, start_index: u64, height: u16, exit_code: i32) {
         let id = self.next_id();
         self.blocks.push(Block::CmdResponse(CmdResponseBlock {
             id,
             command: command.to_string(),
-            scrollback_line,
-            line_count,
+            start_index,
+            height,
             exit_code,
         }));
     }
@@ -211,23 +213,23 @@ impl BlockRegistry {
     }
 
     /// Record an AI response block, consuming any pending thinking data.
-    pub fn record_ai_response(&mut self, scrollback_line: u64, line_count: u16) {
+    pub fn record_ai_response(&mut self, start_index: u64, height: u16) {
         let id = self.next_id();
         let thinking_content = self.pending_thinking_content.take();
         let thinking_duration_secs = self.pending_thinking_duration.take();
         // If thinking preceded this response, start from the thinking line
         // and include the thinking summary line in the count.
-        let (effective_scrollback, effective_count) =
+        let (effective_start, effective_height) =
             if let Some(thinking_sl) = self.pending_thinking_scrollback.take() {
-                let extra = scrollback_line.saturating_sub(thinking_sl) as u16;
-                (thinking_sl, line_count + extra)
+                let extra = start_index.saturating_sub(thinking_sl) as u16;
+                (thinking_sl, height + extra)
             } else {
-                (scrollback_line, line_count)
+                (start_index, height)
             };
         self.blocks.push(Block::AiResponse(AiResponseBlock {
             id,
-            scrollback_line: effective_scrollback,
-            line_count: effective_count,
+            start_index: effective_start,
+            height: effective_height,
             thinking_content,
             thinking_duration_secs,
         }));
@@ -241,11 +243,11 @@ impl BlockRegistry {
             let id = self.next_id();
             let thinking_content = self.pending_thinking_content.take();
             let thinking_duration_secs = self.pending_thinking_duration.take();
-            let scrollback_line = self.pending_thinking_scrollback.take().unwrap_or(0);
+            let start_index = self.pending_thinking_scrollback.take().unwrap_or(0);
             self.blocks.push(Block::AiResponse(AiResponseBlock {
                 id,
-                scrollback_line,
-                line_count: 1,
+                start_index,
+                height: 1,
                 thinking_content,
                 thinking_duration_secs,
             }));
@@ -304,7 +306,7 @@ impl BlockRegistry {
         self.next_id = 0;
         self.pending_tool_call = None;
         self.pending_tool_name = None;
-        self.pending_tool_scrollback = None;
+        self.pending_tool_start_index = None;
         self.pending_thinking_content = None;
         self.pending_thinking_duration = None;
         self.pending_thinking_scrollback = None;
@@ -334,8 +336,19 @@ impl BlockRegistry {
         summary: String,
         full_content: String,
         is_diff: bool,
-        scrollback_line: u64,
+        start_index: u64,
     ) -> ToolResultAction {
+        // Consume pending thinking to extend block upward
+        let (effective_start, extra_height) =
+            if let Some(thinking_sl) = self.pending_thinking_scrollback.take() {
+                let _ = self.pending_thinking_content.take();
+                let _ = self.pending_thinking_duration.take();
+                let extra = start_index.saturating_sub(thinking_sl) as u16;
+                (thinking_sl, extra)
+            } else {
+                (start_index, 0)
+            };
+
         let id = self.next_id();
         self.blocks.push(Block::Tool(ToolBlock {
             id,
@@ -344,8 +357,8 @@ impl BlockRegistry {
             summary: summary.clone(),
             full_content,
             is_diff,
-            scrollback_line,
-            line_count: 2,
+            start_index: effective_start,
+            height: 2 + extra_height,
             merge_count: 0,
             edit_file_path: None,
         }));
@@ -358,7 +371,7 @@ impl BlockRegistry {
         &mut self,
         args: &Value,
         _result: &str,
-        scrollback_line: u64,
+        start_index: u64,
     ) -> ToolResultAction {
         let file_path = json_str(args, "file_path").unwrap_or_default();
         let old_string = json_str(args, "old_string").unwrap_or_default();
@@ -382,6 +395,17 @@ impl BlockRegistry {
         let header = build_tool_header("Edit", args);
         let summary = format!("  \u{2514} {}", summary_text);
 
+        // For new edit blocks, consume pending thinking
+        let (effective_start, extra_height) =
+            if let Some(thinking_sl) = self.pending_thinking_scrollback.take() {
+                let _ = self.pending_thinking_content.take();
+                let _ = self.pending_thinking_duration.take();
+                let extra = start_index.saturating_sub(thinking_sl) as u16;
+                (thinking_sl, extra)
+            } else {
+                (start_index, 0)
+            };
+
         let id = self.next_id();
         self.blocks.push(Block::Tool(ToolBlock {
             id,
@@ -390,8 +414,8 @@ impl BlockRegistry {
             summary: summary.clone(),
             full_content: diff,
             is_diff: true,
-            scrollback_line,
-            line_count: 2,
+            start_index: effective_start,
+            height: 2 + extra_height,
             merge_count: 1,
             edit_file_path: Some(file_path),
         }));
@@ -399,24 +423,24 @@ impl BlockRegistry {
         ToolResultAction::Summary { header, summary }
     }
 
-    fn record_read(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
+    fn record_read(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let line_count = result.lines().count();
         let header = build_tool_header("Read", args);
         let summary = format!("  \u{2514} Read {} lines", line_count);
-        self.push_tool_block("Read", header, summary, result.to_string(), false, scrollback_line)
+        self.push_tool_block("Read", header, summary, result.to_string(), false, start_index)
     }
 
-    fn record_write(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
+    fn record_write(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let file_path = json_str(args, "file_path").unwrap_or_default();
         let content = json_str(args, "content").unwrap_or_default();
         let line_count = content.lines().count();
         let short_path = short_filename(&file_path);
         let header = build_tool_header("Write", args);
         let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
-        self.push_tool_block("Write", header, summary, result.to_string(), false, scrollback_line)
+        self.push_tool_block("Write", header, summary, result.to_string(), false, start_index)
     }
 
-    fn record_bash(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
+    fn record_bash(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let exit_code = parse_bash_exit_code(result);
         let header = build_tool_header("Bash", args);
         let summary = if exit_code == 0 {
@@ -429,29 +453,29 @@ impl BlockRegistry {
                 format!("  \u{2514} exit {}: {}", exit_code, stderr_first)
             }
         };
-        self.push_tool_block("Bash", header, summary, result.to_string(), false, scrollback_line)
+        self.push_tool_block("Bash", header, summary, result.to_string(), false, start_index)
     }
 
-    fn record_grep(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
+    fn record_grep(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let match_count = result.lines().filter(|l| !l.is_empty()).count();
         let header = build_tool_header("Grep", args);
         let noun = if match_count == 1 { "line" } else { "lines" };
         let summary = format!("  \u{2514} Found {} {}", match_count, noun);
-        self.push_tool_block("Grep", header, summary, result.to_string(), false, scrollback_line)
+        self.push_tool_block("Grep", header, summary, result.to_string(), false, start_index)
     }
 
-    fn record_glob(&mut self, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
+    fn record_glob(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let file_count = result.lines().filter(|l| !l.is_empty()).count();
         let header = build_tool_header("Glob", args);
         let noun = if file_count == 1 { "file" } else { "files" };
         let summary = format!("  \u{2514} Found {} {}", file_count, noun);
-        self.push_tool_block("Glob", header, summary, result.to_string(), false, scrollback_line)
+        self.push_tool_block("Glob", header, summary, result.to_string(), false, start_index)
     }
 
-    fn record_other(&mut self, tool_name: &str, args: &Value, result: &str, scrollback_line: u64) -> ToolResultAction {
+    fn record_other(&mut self, tool_name: &str, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let header = build_tool_header(tool_name, args);
         let summary = "  \u{2514} completed".to_string();
-        self.push_tool_block(tool_name, header, summary, result.to_string(), false, scrollback_line)
+        self.push_tool_block(tool_name, header, summary, result.to_string(), false, start_index)
     }
 }
 
