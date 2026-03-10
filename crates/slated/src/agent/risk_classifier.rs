@@ -1,6 +1,4 @@
 use slate_common::messages::RiskLevel;
-use std::sync::LazyLock;
-use regex::Regex;
 
 /// Classify the risk level of a tool call based on tool name and arguments.
 pub fn classify_risk(tool_name: &str, args: &serde_json::Value) -> RiskLevel {
@@ -15,88 +13,14 @@ pub fn classify_risk(tool_name: &str, args: &serde_json::Value) -> RiskLevel {
 
 /// Check if a bash command is read-only (used for Manual mode allowlisting).
 pub fn is_readonly_bash(command: &str) -> bool {
-    // Read-only commands that are safe in Manual mode
-    static READONLY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(?:ls|cat|head|tail|git\s+(?:status|log|diff|branch|show)|pwd|echo|which|env|find|tree|file|stat|wc|date|uname|hostname|whoami|id|groups|df|du|free|uptime|printenv|realpath|basename|dirname|readlink|test|true|false|\[)(?:\s|$)").unwrap()
-    });
-    let trimmed = command.trim();
-    READONLY_PATTERN.is_match(trimmed)
+    super::ast_classifier::is_readonly(command)
 }
 
 fn classify_bash_risk(args: &serde_json::Value) -> RiskLevel {
     let command = args.get("command")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-
-    if command.trim().is_empty() {
-        return RiskLevel::Low;
-    }
-
-    // Critical patterns - destructive/irreversible operations
-    static CRITICAL_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
-        Regex::new(r"rm\s+-rf\s").unwrap(),
-        Regex::new(r"rm\s+-fr\s").unwrap(),
-        Regex::new(r"rm\s+(-[a-z]*r[a-z]*\s+)?(-[a-z]*f[a-z]*\s+)").unwrap(),
-        Regex::new(r"git\s+push\s+--force").unwrap(),
-        Regex::new(r"git\s+push\s+-f\b").unwrap(),
-        Regex::new(r"git\s+reset\s+--hard").unwrap(),
-        Regex::new(r"(?i)DROP\s+(TABLE|DATABASE)").unwrap(),
-        Regex::new(r"(?i)TRUNCATE\s").unwrap(),
-        Regex::new(r"sudo\s+").unwrap(),
-        Regex::new(r"\bsu\s+-").unwrap(),
-        Regex::new(r"mkfs\.").unwrap(),
-        Regex::new(r"dd\s+if=").unwrap(),
-        Regex::new(r">\s*/dev/").unwrap(),
-        Regex::new(r"chmod\s+-R\s").unwrap(),
-        Regex::new(r"chown\s+-R\s").unwrap(),
-    ]);
-
-    // High patterns - potentially dangerous but not necessarily destructive
-    static HIGH_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| vec![
-        Regex::new(r"\brm\s+").unwrap(),
-        Regex::new(r"git\s+push\b").unwrap(),
-        Regex::new(r"git\s+reset\b").unwrap(),
-        Regex::new(r"git\s+clean\b").unwrap(),
-        Regex::new(r"git\s+checkout\s+--\s").unwrap(),
-        Regex::new(r"git\s+restore\s").unwrap(),
-        Regex::new(r"chmod\s+777").unwrap(),
-        Regex::new(r"curl.*-X\s*(POST|PUT|DELETE|PATCH)").unwrap(),
-        Regex::new(r"wget\s").unwrap(),
-        Regex::new(r"pip\s+install\b").unwrap(),
-        Regex::new(r"npm\s+install\b").unwrap(),
-        Regex::new(r"cargo\s+install\b").unwrap(),
-        Regex::new(r"brew\s+install\b").unwrap(),
-        Regex::new(r"apt\s+install\b").unwrap(),
-        Regex::new(r"mv\s+").unwrap(),
-        Regex::new(r"cp\s+-r").unwrap(),
-    ]);
-
-    // Low patterns - safe/readonly operations
-    static LOW_PATTERNS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(?:ls|cat|head|tail|less|more|git\s+(?:status|log|diff|branch|show|stash\s+list)|pwd|echo|printf|which|where|env|printenv|find|tree|file|stat|wc|date|uname|hostname|whoami|id|groups|df|du|free|uptime|realpath|basename|dirname|readlink|test|true|false|\[|cargo\s+(?:build|test|check|clippy|fmt|doc|bench)|npm\s+(?:test|run|start)|yarn\s+(?:test|run|start)|make(?:\s|$)|cmake\s|python\s+-c|node\s+-e|grep|rg|ag|sed\s+-n|awk|sort|uniq|cut|tr|tee|diff|comm|join|paste|column|fold|fmt|expand|unexpand|nl|pr|od|xxd|hexdump|strings|md5|sha\d*sum|shasum|cksum|base64|rev|seq|yes|cal|bc|expr|factor|numfmt)(?:\s|$)").unwrap()
-    });
-
-    // Check critical first
-    for pat in CRITICAL_PATTERNS.iter() {
-        if pat.is_match(command) {
-            return RiskLevel::Critical;
-        }
-    }
-
-    // Then high
-    for pat in HIGH_PATTERNS.iter() {
-        if pat.is_match(command) {
-            return RiskLevel::High;
-        }
-    }
-
-    // Then low (known-safe commands)
-    if LOW_PATTERNS.is_match(command) {
-        return RiskLevel::Low;
-    }
-
-    // Unknown bash commands default to Medium
-    RiskLevel::Medium
+    super::ast_classifier::classify_command(command)
 }
 
 #[cfg(test)]
@@ -187,8 +111,13 @@ mod tests {
     #[test]
     fn bash_unknown_command_is_medium() {
         assert_eq!(classify_risk("bash", &json!({"command": "python script.py"})), RiskLevel::Medium);
-        assert_eq!(classify_risk("bash", &json!({"command": "docker ps"})), RiskLevel::Medium);
         assert_eq!(classify_risk("bash", &json!({"command": "node malicious.js"})), RiskLevel::Medium);
+    }
+
+    #[test]
+    fn bash_docker_safe_subcommands_are_low() {
+        assert_eq!(classify_risk("bash", &json!({"command": "docker ps"})), RiskLevel::Low);
+        assert_eq!(classify_risk("bash", &json!({"command": "docker images"})), RiskLevel::Low);
     }
 
     #[test]
