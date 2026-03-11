@@ -98,6 +98,16 @@ pub enum DaemonMessage {
         total_tokens: usize,
         context_window: usize,
     },
+    /// Sent when a new SQLite session is created for this client.
+    SessionCreated {
+        session_id: String,
+        name: Option<String>,
+    },
+    /// Sent when the background LLM name generation completes.
+    SessionNameUpdated {
+        session_id: String,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

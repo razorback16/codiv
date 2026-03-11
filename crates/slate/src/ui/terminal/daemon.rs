@@ -55,6 +55,8 @@ pub(crate) fn handle_daemon_message(
     pending_confirmation: &mut Option<PendingConfirmation>,
     permission_mode: &mut PermissionMode,
     last_permission_outcome: &mut Option<(String, bool, String)>,
+    session_id: &mut Option<String>,
+    session_name: &mut Option<String>,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -361,6 +363,19 @@ pub(crate) fn handle_daemon_message(
         }
         ipc_messages::DaemonMessage::Heartbeat { timestamp } => {
             *last_daemon_timestamp = timestamp;
+        }
+        ipc_messages::DaemonMessage::SessionCreated {
+            session_id: sid,
+            name,
+        } => {
+            *session_id = Some(sid);
+            *session_name = name;
+        }
+        ipc_messages::DaemonMessage::SessionNameUpdated {
+            session_id: _,
+            name,
+        } => {
+            *session_name = Some(name);
         }
     }
 }

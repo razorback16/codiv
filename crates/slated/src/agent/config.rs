@@ -4,6 +4,7 @@ use aisdk::providers::{Anthropic, Google, OpenAI};
 use futures::StreamExt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
+use slate_common::conversation::ConversationEvent;
 use slate_common::messages::{frame_message, DaemonMessage, StreamChunk};
 use slate_common::permissions::PermissionMode;
 use slate_common::truncate::{truncate_tool_output, MAX_TOOL_OUTPUT_BYTES};
@@ -404,7 +405,7 @@ const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 
 /// Execute a streaming LLM call, forwarding chunks over IPC.
-/// Returns (response_text, input_tokens, output_tokens).
+/// Returns (response_text, input_tokens, output_tokens, collected_events).
 ///
 /// Retries transient errors (server errors, rate limits) up to `MAX_RETRIES`
 /// times with exponential backoff. Non-retryable errors fail immediately with
@@ -417,7 +418,7 @@ pub async fn stream_from_config(
     tx: &mpsc::Sender<Vec<u8>>,
     tools: Vec<Tool>,
     thinking: bool,
-) -> Result<(String, usize, usize), DynError> {
+) -> Result<(String, usize, usize, Vec<ConversationEvent>), DynError> {
     let mut attempt = 0u32;
     loop {
         let result = match assignment.provider.as_str() {
@@ -478,7 +479,7 @@ async fn run_stream<M>(
     config: &ModelAssignment,
     tools: Vec<Tool>,
     thinking: bool,
-) -> Result<(String, usize, usize), DynError>
+) -> Result<(String, usize, usize, Vec<ConversationEvent>), DynError>
 where
     M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + aisdk::core::capabilities::ReasoningSupport + Send + Sync + 'static,
 {
@@ -499,6 +500,8 @@ where
     let mut response = builder.build().stream_text().await?;
     let mut full_text = String::new();
     let mut chunk_count: u32 = 0;
+    let mut collected_events: Vec<ConversationEvent> = Vec::new();
+    let mut reasoning_buffer = String::new();
 
     tracing::debug!("stream started for request {}", request_id);
 
@@ -518,6 +521,7 @@ where
                 .await?;
             }
             LanguageModelStreamChunkType::Reasoning(text) => {
+                reasoning_buffer.push_str(&text);
                 send_ipc(
                     tx,
                     &DaemonMessage::AgentStreamChunk {
@@ -539,6 +543,11 @@ where
             }
             LanguageModelStreamChunkType::ToolCallStart(info) => {
                 let args = serde_json::to_string(&info.input).unwrap_or_default();
+                collected_events.push(ConversationEvent::ToolCall {
+                    request_id: request_id.to_string(),
+                    tool_name: info.tool.name.clone(),
+                    arguments: args.clone(),
+                });
                 send_ipc(
                     tx,
                     &DaemonMessage::AgentStreamChunk {
@@ -560,6 +569,11 @@ where
                     Err(e) => format!("Error: {e}"),
                 };
                 let output = truncate_tool_output(&output, MAX_TOOL_OUTPUT_BYTES);
+                collected_events.push(ConversationEvent::ToolResult {
+                    request_id: request_id.to_string(),
+                    tool_name: info.tool.name.clone(),
+                    result: output.clone(),
+                });
                 send_ipc(
                     tx,
                     &DaemonMessage::AgentStreamChunk {
@@ -584,6 +598,14 @@ where
         }
     }
 
+    // Flush accumulated reasoning into a single event.
+    if !reasoning_buffer.is_empty() {
+        collected_events.push(ConversationEvent::AssistantReasoning {
+            request_id: request_id.to_string(),
+            text: reasoning_buffer,
+        });
+    }
+
     tracing::info!(
         "stream ended for request {}: {} chunks, {} bytes of text",
         request_id, chunk_count, full_text.len()
@@ -597,7 +619,7 @@ where
     let input_tokens = usage.input_tokens.unwrap_or(0);
     let output_tokens = usage.output_tokens.unwrap_or(0);
 
-    Ok((full_text, input_tokens, output_tokens))
+    Ok((full_text, input_tokens, output_tokens, collected_events))
 }
 
 async fn send_ipc(tx: &mpsc::Sender<Vec<u8>>, msg: &DaemonMessage) -> Result<(), DynError> {

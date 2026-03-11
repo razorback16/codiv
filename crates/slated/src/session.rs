@@ -1,5 +1,6 @@
 use crate::agent::agent::Agent;
 use crate::agent::permissions::PermissionContext;
+use slate_common::conversation::ConversationEvent;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -10,8 +11,15 @@ pub struct ClientSession {
     pub cwd: String,
     pub last_heartbeat: Instant,
     pub agent: Option<Agent>,
-    pub agent_return_rx: Option<oneshot::Receiver<Agent>>,
+    pub agent_return_rx: Option<oneshot::Receiver<(Agent, Vec<ConversationEvent>)>>,
     pub permission_ctx: Option<Arc<PermissionContext>>,
+    /// SQLite session ID (UUID v4), assigned on first AgentRequest.
+    pub session_id: Option<String>,
+    /// Monotonically increasing event sequence number for this session.
+    pub event_seq: u32,
+    /// First prompt text, set when the session is created so that background
+    /// LLM name generation can be deferred until the agent completes.
+    pub pending_name_gen: Option<String>,
 }
 
 impl ClientSession {
@@ -24,6 +32,9 @@ impl ClientSession {
             agent: None,
             agent_return_rx: None,
             permission_ctx: None,
+            session_id: None,
+            event_seq: 0,
+            pending_name_gen: None,
         }
     }
 
@@ -31,4 +42,10 @@ impl ClientSession {
         self.last_heartbeat.elapsed().as_secs() > timeout_secs
     }
 
+    /// Allocate the next event sequence number and bump the counter.
+    pub fn next_seq(&mut self) -> u32 {
+        let seq = self.event_seq;
+        self.event_seq += 1;
+        seq
+    }
 }
