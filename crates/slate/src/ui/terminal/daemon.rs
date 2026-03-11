@@ -8,7 +8,7 @@ use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 
 use super::state::{PendingConfirmation, PendingSessionPicker};
-use super::utils::{get_scrollback_line, parser_push_styled};
+use super::utils::{get_scrollback_line, parser_push_notice, NoticeKind};
 
 /// Finalize an in-progress thinking block: overwrite the placeholder line
 /// with a "Thought for Ns" summary and register it in the block tracker.
@@ -23,10 +23,7 @@ fn finalize_thinking(
         let duration_secs = start.elapsed().as_secs_f32();
         // Move cursor up one line and clear it (overwrite placeholder)
         parser.process(b"\x1b[A\r\x1b[K");
-        let summary = format!(
-            "\x1b[90mThought for {:.0}s\x1b[0m\r\n",
-            duration_secs
-        );
+        let summary = format!("\x1b[90mThought for {:.0}s\x1b[0m\r\n", duration_secs);
         parser.process(summary.as_bytes());
         let content = std::mem::take(thinking_buffer);
         if let Some(sl) = thinking_scrollback.take() {
@@ -44,7 +41,11 @@ enum ReplayItem {
     /// User prompt — rendered directly (not a DaemonMessage).
     UserPrompt { text: String },
     /// Shell command — rendered directly (not a DaemonMessage).
-    ShellCommand { command: String, output: String, exit_code: i32 },
+    ShellCommand {
+        command: String,
+        output: String,
+        exit_code: i32,
+    },
     /// Set agent_streaming = true so AgentComplete knows to flush.
     SetAgentStreaming,
     /// Backdate `thinking_start` so `finalize_thinking` computes the right duration.
@@ -61,14 +62,23 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
         ConversationEvent::UserPrompt { text, .. } => {
             vec![ReplayItem::UserPrompt { text: text.clone() }]
         }
-        ConversationEvent::ShellCommand { command, output, exit_code, .. } => {
+        ConversationEvent::ShellCommand {
+            command,
+            output,
+            exit_code,
+            ..
+        } => {
             vec![ReplayItem::ShellCommand {
                 command: command.clone(),
                 output: output.clone(),
                 exit_code: *exit_code,
             }]
         }
-        ConversationEvent::AssistantReasoning { text, duration_secs, .. } => {
+        ConversationEvent::AssistantReasoning {
+            text,
+            duration_secs,
+            ..
+        } => {
             vec![
                 ReplayItem::SetAgentStreaming,
                 ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -91,7 +101,11 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
                 }),
             ]
         }
-        ConversationEvent::ToolCall { tool_name, arguments, .. } => {
+        ConversationEvent::ToolCall {
+            tool_name,
+            arguments,
+            ..
+        } => {
             let canonical = canonical_tool_name(tool_name);
             vec![
                 ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -111,16 +125,23 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
                 }),
             ]
         }
-        ConversationEvent::ToolResult { tool_name, result, .. } => {
-            vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
-                request_id: String::new(),
-                chunk: ipc_messages::StreamChunk::ToolResult {
-                    name: tool_name.clone(),
-                    result: result.clone(),
+        ConversationEvent::ToolResult {
+            tool_name, result, ..
+        } => {
+            vec![ReplayItem::Daemon(
+                ipc_messages::DaemonMessage::AgentStreamChunk {
+                    request_id: String::new(),
+                    chunk: ipc_messages::StreamChunk::ToolResult {
+                        name: tool_name.clone(),
+                        result: result.clone(),
+                    },
                 },
-            })]
+            )]
         }
-        ConversationEvent::Error { request_id, message } => {
+        ConversationEvent::Error {
+            request_id,
+            message,
+        } => {
             vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::Error {
                 request_id: request_id.clone(),
                 message: message.clone(),
@@ -158,7 +179,13 @@ fn handle_single_message(
         } => {
             match chunk {
                 ipc_messages::StreamChunk::Text(t) => {
-                    finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                    finalize_thinking(
+                        parser,
+                        tracker,
+                        thinking_buffer,
+                        thinking_start,
+                        thinking_scrollback,
+                    );
                     // Strip leading whitespace from the first text chunk of a response.
                     let t = if ai_start_scrollback.is_none() {
                         t.trim_start().to_string()
@@ -185,10 +212,20 @@ fn handle_single_message(
                     }
                     thinking_buffer.push_str(&t);
                 }
-                ipc_messages::StreamChunk::ToolCallDelta { tool_call_id: _, tool_name, delta: _ } => {
+                ipc_messages::StreamChunk::ToolCallDelta {
+                    tool_call_id: _,
+                    tool_name,
+                    delta: _,
+                } => {
                     // On the FIRST delta for a tool call, show spinner placeholder
                     if tracker.pending_tool().is_none() {
-                        let had_thinking = finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                        let had_thinking = finalize_thinking(
+                            parser,
+                            tracker,
+                            thinking_buffer,
+                            thinking_start,
+                            thinking_scrollback,
+                        );
                         // Flush any buffered markdown
                         let pending = md_stream.finish();
                         if !pending.is_empty() {
@@ -212,7 +249,11 @@ fn handle_single_message(
                         // Record and show yellow bold header (name only, args come later)
                         let scrollback_line = get_scrollback_line(parser);
                         let canonical = canonical_tool_name(&tool_name);
-                        log::debug!("ToolCallDelta: scrollback_line={}, tool={}", scrollback_line, canonical);
+                        log::debug!(
+                            "ToolCallDelta: scrollback_line={}, tool={}",
+                            scrollback_line,
+                            canonical
+                        );
                         tracker.record_tool_call_delta(canonical, scrollback_line);
                         let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", canonical);
                         parser.process(header_line.as_bytes());
@@ -222,7 +263,13 @@ fn handle_single_message(
                 ipc_messages::StreamChunk::ToolCall { name, arguments } => {
                     // If no ToolCallDelta preceded this, do the visual transition now
                     if tracker.pending_tool().is_none() {
-                        let had_thinking = finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+                        let had_thinking = finalize_thinking(
+                            parser,
+                            tracker,
+                            thinking_buffer,
+                            thinking_start,
+                            thinking_scrollback,
+                        );
                         let pending = md_stream.finish();
                         if !pending.is_empty() {
                             parser.process(&pending);
@@ -258,15 +305,17 @@ fn handle_single_message(
                         match tracker.record_tool_result(&name, &result, scrollback_line) {
                             ToolResultAction::Merged => {
                                 // Consume any pending permission outcome if it matches this tool
-                                if last_permission_outcome.as_ref().is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name)) {
+                                if last_permission_outcome
+                                    .as_ref()
+                                    .is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name))
+                                {
                                     let _ = last_permission_outcome.take();
                                 }
                                 // Block merged into previous — update the summary
                                 // line in the VT100 buffer by moving cursor up and
                                 // rewriting the line.
-                                let summary = tracker
-                                    .last_tool_block_mut()
-                                    .map(|tb| tb.summary.clone());
+                                let summary =
+                                    tracker.last_tool_block_mut().map(|tb| tb.summary.clone());
                                 if let Some(summary) = summary {
                                     parser.process(b"\x1b[A\r\x1b[K");
                                     let line = format!("\x1b[32m{}\x1b[0m\r\n", summary);
@@ -275,7 +324,10 @@ fn handle_single_message(
                             }
                             ToolResultAction::Summary { header, summary } => {
                                 // Check if there's a permission outcome matching this tool
-                                let perm = if last_permission_outcome.as_ref().is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name)) {
+                                let perm = if last_permission_outcome
+                                    .as_ref()
+                                    .is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name))
+                                {
                                     last_permission_outcome.take()
                                 } else {
                                     None
@@ -284,30 +336,44 @@ fn handle_single_message(
                                 if let Some((ref _perm_tool, granted, ref reason)) = perm {
                                     if granted {
                                         // Green header + "└ {reason}" + green summary
-                                        let header_line = format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                        let header_line =
+                                            format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
                                         parser.process(header_line.as_bytes());
-                                        let perm_line = format!("\x1b[32m  \u{2514} {}\x1b[0m\r\n", reason);
+                                        let perm_line =
+                                            format!("\x1b[32m  \u{2514} {}\x1b[0m\r\n", reason);
                                         parser.process(perm_line.as_bytes());
                                         // Normal summary line
                                         let is_bash_error = name.eq_ignore_ascii_case("bash")
                                             && !summary.contains("exit 0");
-                                        let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
-                                        let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
+                                        let color = if is_bash_error {
+                                            "\x1b[31m"
+                                        } else {
+                                            "\x1b[32m"
+                                        };
+                                        let summary_line =
+                                            format!("{}{}\x1b[0m\r\n", color, summary);
                                         parser.process(summary_line.as_bytes());
                                     } else {
                                         // Red header + "└ {reason}" (no tool summary since tool wasn't executed)
-                                        let header_line = format!("\x1b[1m\x1b[31m{}\x1b[0m\r\n", header);
+                                        let header_line =
+                                            format!("\x1b[1m\x1b[31m{}\x1b[0m\r\n", header);
                                         parser.process(header_line.as_bytes());
-                                        let perm_line = format!("\x1b[31m  \u{2514} {}\x1b[0m\r\n", reason);
+                                        let perm_line =
+                                            format!("\x1b[31m  \u{2514} {}\x1b[0m\r\n", reason);
                                         parser.process(perm_line.as_bytes());
                                     }
                                 } else {
                                     // No permission check — render as before (green header + summary)
-                                    let header_line = format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                    let header_line =
+                                        format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
                                     parser.process(header_line.as_bytes());
                                     let is_bash_error = name.eq_ignore_ascii_case("bash")
                                         && !summary.contains("exit 0");
-                                    let color = if is_bash_error { "\x1b[31m" } else { "\x1b[32m" };
+                                    let color = if is_bash_error {
+                                        "\x1b[31m"
+                                    } else {
+                                        "\x1b[32m"
+                                    };
                                     let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
                                     parser.process(summary_line.as_bytes());
                                 }
@@ -322,7 +388,13 @@ fn handle_single_message(
             request_id: _,
             summary: _,
         } => {
-            finalize_thinking(parser, tracker, thinking_buffer, thinking_start, thinking_scrollback);
+            finalize_thinking(
+                parser,
+                tracker,
+                thinking_buffer,
+                thinking_start,
+                thinking_scrollback,
+            );
             if *agent_streaming {
                 let final_bytes = md_stream.finish();
                 if !final_bytes.is_empty() {
@@ -356,7 +428,8 @@ fn handle_single_message(
             // Overwrite the yellow placeholder header with the full tool call details.
             // The ToolCallDelta rendered just the tool name (e.g. "Bash"); now we have
             // the full args from the ConfirmationRequest and can show the complete header.
-            let args: serde_json::Value = serde_json::from_str(&tool_args).unwrap_or(serde_json::Value::Null);
+            let args: serde_json::Value =
+                serde_json::from_str(&tool_args).unwrap_or(serde_json::Value::Null);
             let header_lines = crate::ui::blocks::build_tool_header_lines(&tool_name, &args, 10);
 
             // Move cursor up to overwrite the placeholder header line
@@ -380,9 +453,15 @@ fn handle_single_message(
 
             // Render risk label with ⎿
             let risk_label = match risk {
-                slate_common::messages::RiskLevel::Critical => "\x1b[31m\x1b[1m\u{1F534} CRITICAL\x1b[0m",
-                slate_common::messages::RiskLevel::High => "\x1b[33m\x1b[1m\u{26A0}\u{FE0F}  HIGH RISK\x1b[0m",
-                slate_common::messages::RiskLevel::Medium => "\x1b[33m\u{26A0}\u{FE0F}  MEDIUM\x1b[0m",
+                slate_common::messages::RiskLevel::Critical => {
+                    "\x1b[31m\x1b[1m\u{1F534} CRITICAL\x1b[0m"
+                }
+                slate_common::messages::RiskLevel::High => {
+                    "\x1b[33m\x1b[1m\u{26A0}\u{FE0F}  HIGH RISK\x1b[0m"
+                }
+                slate_common::messages::RiskLevel::Medium => {
+                    "\x1b[33m\u{26A0}\u{FE0F}  MEDIUM\x1b[0m"
+                }
                 slate_common::messages::RiskLevel::Low => "\x1b[32mLOW\x1b[0m",
             };
             parser.process(format!("  \u{23BF} {}\r\n", risk_label).as_bytes());
@@ -408,9 +487,9 @@ fn handle_single_message(
             // Render options with first one selected
             for (i, option) in options.iter().enumerate() {
                 let (prefix, color) = if i == 0 {
-                    ("\u{203a}", "\x1b[1;37m")  // › bold white for selected
+                    ("\u{203a}", "\x1b[1;37m") // › bold white for selected
                 } else {
-                    (" ", "\x1b[37m")  // normal white
+                    (" ", "\x1b[37m") // normal white
                 };
                 parser.process(format!("    {}{} {}\x1b[0m\r\n", color, prefix, option).as_bytes());
                 prompt_lines += 1;
@@ -444,7 +523,7 @@ fn handle_single_message(
             *agent_streaming = false;
             md_stream.reset();
             let _ = request_id; // suppress unused warning
-            parser_push_styled(parser, &format!("[error] {}", message), "\x1b[31m");
+            parser_push_notice(parser, NoticeKind::Error, &format!("[error] {}", message));
         }
         ipc_messages::DaemonMessage::AgentMeta {
             model_alias: alias,
@@ -503,7 +582,7 @@ pub(crate) fn handle_daemon_message(
     match msg {
         ipc_messages::DaemonMessage::SessionList { sessions } => {
             if sessions.is_empty() {
-                parser_push_styled(parser, "No saved sessions.", "\x1b[90m");
+                parser_push_notice(parser, NoticeKind::Notice, "No saved sessions.");
             } else {
                 let mut prompt_lines: u16 = 0;
                 // Session entries (no header — the select line below is sufficient)
@@ -515,12 +594,22 @@ pub(crate) fn handle_daemon_message(
                     } else {
                         (" ", "\x1b[37m")
                     };
-                    let line = format!("{}  {}[{}] {} \x1b[90m({})\x1b[0m\r\n", color, prefix, i + 1, name, time);
+                    let line = format!(
+                        "{}  {}[{}] {} \x1b[90m({})\x1b[0m\r\n",
+                        color,
+                        prefix,
+                        i + 1,
+                        name,
+                        time
+                    );
                     parser.process(line.as_bytes());
                     prompt_lines += 1;
                 }
                 // Select prompt (blank line + instruction)
-                let select_line = format!("\r\nSelect session [1-{}] or Esc to cancel:\r\n", sessions.len());
+                let select_line = format!(
+                    "\r\nSelect session [1-{}] or Esc to cancel:\r\n",
+                    sessions.len()
+                );
                 parser.process(select_line.as_bytes());
                 prompt_lines += 2; // blank line + select line
 
@@ -567,10 +656,18 @@ pub(crate) fn handle_daemon_message(
                             let scrollback_line = get_scrollback_line(parser);
                             let prompt_display = format!("\x1b[1m{}\x1b[0m\r\n", text);
                             parser.process(prompt_display.as_bytes());
-                            tracker.record_prompt(&text, scrollback_line, crate::ui::blocks::InputMode::Ai);
+                            tracker.record_prompt(
+                                &text,
+                                scrollback_line,
+                                crate::ui::blocks::InputMode::Ai,
+                            );
                             parser.process(b"\r\n");
                         }
-                        ReplayItem::ShellCommand { command, output, exit_code } => {
+                        ReplayItem::ShellCommand {
+                            command,
+                            output,
+                            exit_code,
+                        } => {
                             let scrollback_line = get_scrollback_line(parser);
                             let cmd_display = format!("\x1b[1m{}\x1b[0m\r\n", command);
                             parser.process(cmd_display.as_bytes());
@@ -581,17 +678,29 @@ pub(crate) fn handle_daemon_message(
                                 output.clone()
                             };
                             if !out_preview.is_empty() {
-                                let normalized = out_preview.replace("\r\n", "\n").replace('\n', "\r\n");
+                                let normalized =
+                                    out_preview.replace("\r\n", "\n").replace('\n', "\r\n");
                                 parser.process(normalized.as_bytes());
                                 if !out_preview.ends_with('\n') {
                                     parser.process(b"\r\n");
                                 }
                             }
-                            let color = if exit_code == 0 { "\x1b[32m" } else { "\x1b[31m" };
-                            parser.process(format!("{}exit {}\x1b[0m\r\n", color, exit_code).as_bytes());
+                            let color = if exit_code == 0 {
+                                "\x1b[32m"
+                            } else {
+                                "\x1b[31m"
+                            };
+                            parser.process(
+                                format!("{}exit {}\x1b[0m\r\n", color, exit_code).as_bytes(),
+                            );
                             let end = get_scrollback_line(parser);
                             let line_count = (end.saturating_sub(scrollback_line)) as u16;
-                            tracker.record_cmd_response(&command, scrollback_line, line_count, exit_code);
+                            tracker.record_cmd_response(
+                                &command,
+                                scrollback_line,
+                                line_count,
+                                exit_code,
+                            );
                             parser.process(b"\r\n");
                         }
                         ReplayItem::SetAgentStreaming => {
@@ -600,7 +709,8 @@ pub(crate) fn handle_daemon_message(
                         ReplayItem::SetThinkingDuration(d) => {
                             // Backdate thinking_start so finalize_thinking computes the stored duration
                             if replay_thinking_start.is_some() {
-                                replay_thinking_start = Some(Instant::now() - Duration::from_secs_f32(d));
+                                replay_thinking_start =
+                                    Some(Instant::now() - Duration::from_secs_f32(d));
                             }
                         }
                         ReplayItem::Daemon(daemon_msg) => {
