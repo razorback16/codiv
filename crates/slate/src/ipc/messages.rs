@@ -85,3 +85,17 @@ pub fn build_set_permission_mode(mode: slate_common::permissions::PermissionMode
     let msg = ClientMessage::SetPermissionMode { mode };
     frame_message(&msg).ok()
 }
+
+/// Build a framed ListSessions message.
+pub fn build_list_sessions() -> Option<Vec<u8>> {
+    let msg = ClientMessage::ListSessions;
+    frame_message(&msg).ok()
+}
+
+/// Build a framed LoadSession message.
+pub fn build_load_session(session_id: &str) -> Option<Vec<u8>> {
+    let msg = ClientMessage::LoadSession {
+        session_id: session_id.to_string(),
+    };
+    frame_message(&msg).ok()
+}

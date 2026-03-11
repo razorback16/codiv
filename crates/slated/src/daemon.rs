@@ -406,6 +406,59 @@ impl Daemon {
                 }
             }
 
+            ClientMessage::ListSessions => {
+                if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                    let sessions = self.store.list_sessions(20).unwrap_or_default();
+                    let msg = DaemonMessage::SessionList { sessions };
+                    if let Ok(frame) = slate_common::messages::frame_message(&msg) {
+                        let _ = client_tx.send(frame).await;
+                    }
+                }
+            }
+
+            ClientMessage::LoadSession { session_id: target_sid } => {
+                if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                    // Load all events for the target session
+                    let events = self.store.load_events(&target_sid, None).unwrap_or_default();
+
+                    // Look up session info for the name
+                    let session_name = self.store.list_sessions(100)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|s| s.id == target_sid)
+                        .and_then(|s| s.name);
+
+                    // Update the client session to point at the loaded session
+                    if let Some(session) = self.sessions.get_mut(&client_id) {
+                        // Clear agent history and reload from events
+                        let cwd = session.cwd.clone();
+                        let env_vars = session.env_vars.clone();
+                        let mut agent = create_agent(cwd, env_vars);
+                        agent.add_tool_events(&events);
+                        session.agent = Some(agent);
+                        session.session_id = Some(target_sid.clone());
+                        // Set event_seq to the number of persisted events so new
+                        // events continue from the correct sequence number.
+                        session.event_seq = events.len() as u32;
+                    }
+
+                    // Confirm session switch
+                    let created_msg = DaemonMessage::SessionCreated {
+                        session_id: target_sid.clone(),
+                        name: session_name,
+                    };
+                    if let Ok(frame) = slate_common::messages::frame_message(&created_msg) {
+                        let _ = client_tx.send(frame).await;
+                    }
+
+                    // Send full event replay
+                    let replay_msg = DaemonMessage::SessionReplay { events };
+                    if let Ok(frame) = slate_common::messages::frame_message(&replay_msg) {
+                        let _ = client_tx.send(frame).await;
+                    }
+                }
+            }
+
             ClientMessage::CommandResult {
                 command,
                 output,

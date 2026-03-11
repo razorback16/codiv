@@ -21,5 +21,12 @@ pub(crate) struct PendingConfirmation {
     pub(crate) option_count: usize,
 }
 
+/// Tracks a pending session picker (inline list of saved sessions).
+pub(crate) struct PendingSessionPicker {
+    pub(crate) sessions: Vec<slate_common::conversation::SessionInfo>,
+    pub(crate) selected_index: usize,
+    pub(crate) prompt_lines: u16,
+}
+
 /// Default scrollback limit (number of lines retained).
 pub(crate) const MAX_SCROLLBACK: usize = 10_000;
