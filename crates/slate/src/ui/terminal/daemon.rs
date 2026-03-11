@@ -1,12 +1,13 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use slate_common::conversation::ConversationEvent;
 use slate_common::permissions::PermissionMode;
 
 use crate::ipc::messages as ipc_messages;
 use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 
-use super::state::PendingConfirmation;
+use super::state::{PendingConfirmation, PendingSessionPicker};
 use super::utils::{get_scrollback_line, parser_push_styled};
 
 /// Finalize an in-progress thinking block: overwrite the placeholder line
@@ -37,8 +38,101 @@ fn finalize_thinking(
     }
 }
 
+/// Items produced by converting a `ConversationEvent` for replay through the
+/// live rendering path.
+enum ReplayItem {
+    /// User prompt — rendered directly (not a DaemonMessage).
+    UserPrompt { text: String },
+    /// Shell command — rendered directly (not a DaemonMessage).
+    ShellCommand { command: String, output: String, exit_code: i32 },
+    /// Set agent_streaming = true so AgentComplete knows to flush.
+    SetAgentStreaming,
+    /// Backdate `thinking_start` so `finalize_thinking` computes the right duration.
+    SetThinkingDuration(f32),
+    /// A synthetic DaemonMessage to feed through `handle_single_message`.
+    Daemon(ipc_messages::DaemonMessage),
+}
+
+/// Convert a single `ConversationEvent` into one or more `ReplayItem`s that,
+/// when processed sequentially, reproduce the same visual output as the live
+/// streaming path.
+fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
+    match event {
+        ConversationEvent::UserPrompt { text, .. } => {
+            vec![ReplayItem::UserPrompt { text: text.clone() }]
+        }
+        ConversationEvent::ShellCommand { command, output, exit_code, .. } => {
+            vec![ReplayItem::ShellCommand {
+                command: command.clone(),
+                output: output.clone(),
+                exit_code: *exit_code,
+            }]
+        }
+        ConversationEvent::AssistantReasoning { text, duration_secs, .. } => {
+            vec![
+                ReplayItem::SetAgentStreaming,
+                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
+                    request_id: String::new(),
+                    chunk: ipc_messages::StreamChunk::Reasoning(text.clone()),
+                }),
+                ReplayItem::SetThinkingDuration(*duration_secs),
+            ]
+        }
+        ConversationEvent::AssistantText { text, .. } => {
+            vec![
+                ReplayItem::SetAgentStreaming,
+                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
+                    request_id: String::new(),
+                    chunk: ipc_messages::StreamChunk::Text(text.clone()),
+                }),
+                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentComplete {
+                    request_id: String::new(),
+                    summary: String::new(),
+                }),
+            ]
+        }
+        ConversationEvent::ToolCall { tool_name, arguments, .. } => {
+            let canonical = canonical_tool_name(tool_name);
+            vec![
+                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
+                    request_id: String::new(),
+                    chunk: ipc_messages::StreamChunk::ToolCallDelta {
+                        tool_call_id: String::new(),
+                        tool_name: canonical.to_string(),
+                        delta: String::new(),
+                    },
+                }),
+                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
+                    request_id: String::new(),
+                    chunk: ipc_messages::StreamChunk::ToolCall {
+                        name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                }),
+            ]
+        }
+        ConversationEvent::ToolResult { tool_name, result, .. } => {
+            vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
+                request_id: String::new(),
+                chunk: ipc_messages::StreamChunk::ToolResult {
+                    name: tool_name.clone(),
+                    result: result.clone(),
+                },
+            })]
+        }
+        ConversationEvent::Error { request_id, message } => {
+            vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::Error {
+                request_id: request_id.clone(),
+                message: message.clone(),
+            })]
+        }
+    }
+}
+
+/// Handle a single `DaemonMessage` — all match arms except `SessionList` and
+/// `SessionReplay`, which are handled in the outer `handle_daemon_message`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn handle_daemon_message(
+fn handle_single_message(
     msg: ipc_messages::DaemonMessage,
     parser: &mut vt100::Parser,
     md_stream: &mut MarkdownStream,
@@ -46,7 +140,6 @@ pub(crate) fn handle_daemon_message(
     last_daemon_timestamp: &mut u64,
     model_alias: &mut String,
     context_usage: &mut (usize, usize),
-    _cwd: &str,
     tracker: &mut BlockRegistry,
     ai_start_scrollback: &mut Option<u64>,
     thinking_buffer: &mut String,
@@ -376,6 +469,188 @@ pub(crate) fn handle_daemon_message(
             name,
         } => {
             *session_name = Some(name);
+        }
+        // SessionList and SessionReplay are handled in handle_daemon_message
+        ipc_messages::DaemonMessage::SessionList { .. }
+        | ipc_messages::DaemonMessage::SessionReplay { .. } => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_daemon_message(
+    msg: ipc_messages::DaemonMessage,
+    parser: &mut vt100::Parser,
+    md_stream: &mut MarkdownStream,
+    agent_streaming: &mut bool,
+    last_daemon_timestamp: &mut u64,
+    model_alias: &mut String,
+    context_usage: &mut (usize, usize),
+    _cwd: &str,
+    tracker: &mut BlockRegistry,
+    ai_start_scrollback: &mut Option<u64>,
+    thinking_buffer: &mut String,
+    thinking_start: &mut Option<Instant>,
+    thinking_scrollback: &mut Option<u64>,
+    pending_confirmation: &mut Option<PendingConfirmation>,
+    permission_mode: &mut PermissionMode,
+    last_permission_outcome: &mut Option<(String, bool, String)>,
+    session_id: &mut Option<String>,
+    session_name: &mut Option<String>,
+    pending_session_picker: &mut Option<PendingSessionPicker>,
+    scroll_offset: &mut usize,
+    md_stream_width: u16,
+) {
+    match msg {
+        ipc_messages::DaemonMessage::SessionList { sessions } => {
+            if sessions.is_empty() {
+                parser_push_styled(parser, "No saved sessions.", "\x1b[90m");
+            } else {
+                let mut prompt_lines: u16 = 0;
+                // Session entries (no header — the select line below is sufficient)
+                for (i, s) in sessions.iter().enumerate() {
+                    let name = s.name.as_deref().unwrap_or("(unnamed)");
+                    let time = slate_common::conversation::relative_time(&s.updated_at);
+                    let (prefix, color) = if i == 0 {
+                        ("\u{203a}", "\x1b[1;37m")
+                    } else {
+                        (" ", "\x1b[37m")
+                    };
+                    let line = format!("{}  {}[{}] {} \x1b[90m({})\x1b[0m\r\n", color, prefix, i + 1, name, time);
+                    parser.process(line.as_bytes());
+                    prompt_lines += 1;
+                }
+                // Select prompt (blank line + instruction)
+                let select_line = format!("\r\nSelect session [1-{}] or Esc to cancel:\r\n", sessions.len());
+                parser.process(select_line.as_bytes());
+                prompt_lines += 2; // blank line + select line
+
+                *pending_session_picker = Some(PendingSessionPicker {
+                    sessions,
+                    selected_index: 0,
+                    prompt_lines,
+                });
+            }
+        }
+        ipc_messages::DaemonMessage::SessionReplay { events } => {
+            // 1. Clear screen
+            let screen = parser.screen();
+            let rows = screen.size().0;
+            let cols = screen.size().1;
+            *parser = vt100::Parser::new(rows, cols, super::state::MAX_SCROLLBACK);
+            *scroll_offset = 0;
+            tracker.clear();
+
+            // 2. Create fresh local replay state
+            let mut replay_md = MarkdownStream::new(md_stream_width);
+            let mut replay_agent_streaming = false;
+            let mut replay_timestamp: u64 = 0;
+            let mut replay_model = String::new();
+            let mut replay_context: (usize, usize) = (0, 0);
+            let mut replay_ai_start: Option<u64> = None;
+            let mut replay_thinking_buffer = String::new();
+            let mut replay_thinking_start: Option<Instant> = None;
+            let mut replay_thinking_scrollback: Option<u64> = None;
+            let mut replay_pending_confirmation: Option<PendingConfirmation> = None;
+            let mut replay_permission_mode = PermissionMode::default();
+            let mut replay_last_perm: Option<(String, bool, String)> = None;
+            // Use the real session_id/session_name (already set by SessionCreated)
+            // so replayed state doesn't clobber them — pass dummies to handle_single_message.
+            let mut replay_session_id: Option<String> = None;
+            let mut replay_session_name: Option<String> = None;
+
+            // 3. Convert each event and process through handle_single_message
+            for event in &events {
+                let items = convert_event_to_replay_items(event);
+                for item in items {
+                    match item {
+                        ReplayItem::UserPrompt { text } => {
+                            let scrollback_line = get_scrollback_line(parser);
+                            let prompt_display = format!("\x1b[1m{}\x1b[0m\r\n", text);
+                            parser.process(prompt_display.as_bytes());
+                            tracker.record_prompt(&text, scrollback_line, crate::ui::blocks::InputMode::Ai);
+                            parser.process(b"\r\n");
+                        }
+                        ReplayItem::ShellCommand { command, output, exit_code } => {
+                            let scrollback_line = get_scrollback_line(parser);
+                            let cmd_display = format!("\x1b[1m{}\x1b[0m\r\n", command);
+                            parser.process(cmd_display.as_bytes());
+                            // Show truncated output, converting bare \n to \r\n for vt100
+                            let out_preview = if output.len() > 200 {
+                                format!("{}...", &output[..200])
+                            } else {
+                                output.clone()
+                            };
+                            if !out_preview.is_empty() {
+                                let normalized = out_preview.replace("\r\n", "\n").replace('\n', "\r\n");
+                                parser.process(normalized.as_bytes());
+                                if !out_preview.ends_with('\n') {
+                                    parser.process(b"\r\n");
+                                }
+                            }
+                            let color = if exit_code == 0 { "\x1b[32m" } else { "\x1b[31m" };
+                            parser.process(format!("{}exit {}\x1b[0m\r\n", color, exit_code).as_bytes());
+                            let end = get_scrollback_line(parser);
+                            let line_count = (end.saturating_sub(scrollback_line)) as u16;
+                            tracker.record_cmd_response(&command, scrollback_line, line_count, exit_code);
+                            parser.process(b"\r\n");
+                        }
+                        ReplayItem::SetAgentStreaming => {
+                            replay_agent_streaming = true;
+                        }
+                        ReplayItem::SetThinkingDuration(d) => {
+                            // Backdate thinking_start so finalize_thinking computes the stored duration
+                            if replay_thinking_start.is_some() {
+                                replay_thinking_start = Some(Instant::now() - Duration::from_secs_f32(d));
+                            }
+                        }
+                        ReplayItem::Daemon(daemon_msg) => {
+                            handle_single_message(
+                                daemon_msg,
+                                parser,
+                                &mut replay_md,
+                                &mut replay_agent_streaming,
+                                &mut replay_timestamp,
+                                &mut replay_model,
+                                &mut replay_context,
+                                tracker,
+                                &mut replay_ai_start,
+                                &mut replay_thinking_buffer,
+                                &mut replay_thinking_start,
+                                &mut replay_thinking_scrollback,
+                                &mut replay_pending_confirmation,
+                                &mut replay_permission_mode,
+                                &mut replay_last_perm,
+                                &mut replay_session_id,
+                                &mut replay_session_name,
+                            );
+                        }
+                    }
+                }
+            }
+            // Final separator before returning to normal input
+            parser.process(b"\r\n");
+        }
+        // All other messages delegate to the core handler
+        other => {
+            handle_single_message(
+                other,
+                parser,
+                md_stream,
+                agent_streaming,
+                last_daemon_timestamp,
+                model_alias,
+                context_usage,
+                tracker,
+                ai_start_scrollback,
+                thinking_buffer,
+                thinking_start,
+                thinking_scrollback,
+                pending_confirmation,
+                permission_mode,
+                last_permission_outcome,
+                session_id,
+                session_name,
+            );
         }
     }
 }

@@ -77,7 +77,6 @@ impl SessionStore {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<SessionInfo>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, parent_id, cwd, created_at, updated_at
@@ -156,7 +155,6 @@ impl SessionStore {
     }
 
     /// Load all events for a session, optionally up to (inclusive) a given seq.
-    #[allow(dead_code)]
     pub fn load_events(
         &self,
         session_id: &str,

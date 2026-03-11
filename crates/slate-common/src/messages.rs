@@ -1,3 +1,4 @@
+use crate::conversation::{ConversationEvent, SessionInfo};
 use crate::permissions::PermissionMode;
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,10 @@ pub enum ClientMessage {
         exit_code: i32,
         cwd: String,
     },
+    ListSessions,
+    LoadSession {
+        session_id: String,
+    },
 }
 
 /// Messages sent from the slated daemon to the slate client.
@@ -107,6 +112,14 @@ pub enum DaemonMessage {
     SessionNameUpdated {
         session_id: String,
         name: String,
+    },
+    /// Response to ListSessions with up to 20 recent sessions.
+    SessionList {
+        sessions: Vec<SessionInfo>,
+    },
+    /// Full event batch for visual replay of a loaded session.
+    SessionReplay {
+        events: Vec<ConversationEvent>,
     },
 }
 

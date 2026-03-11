@@ -12,7 +12,7 @@ use slate_common::types::AgentRole;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::error::classify_error;
@@ -502,6 +502,7 @@ where
     let mut chunk_count: u32 = 0;
     let mut collected_events: Vec<ConversationEvent> = Vec::new();
     let mut reasoning_buffer = String::new();
+    let mut reasoning_start: Option<Instant> = None;
 
     tracing::debug!("stream started for request {}", request_id);
 
@@ -521,6 +522,7 @@ where
                 .await?;
             }
             LanguageModelStreamChunkType::Reasoning(text) => {
+                reasoning_start.get_or_insert(Instant::now());
                 reasoning_buffer.push_str(&text);
                 send_ipc(
                     tx,
@@ -600,9 +602,11 @@ where
 
     // Flush accumulated reasoning into a single event.
     if !reasoning_buffer.is_empty() {
+        let duration = reasoning_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
         collected_events.push(ConversationEvent::AssistantReasoning {
             request_id: request_id.to_string(),
             text: reasoning_buffer,
+            duration_secs: duration,
         });
     }
 
