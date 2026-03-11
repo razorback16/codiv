@@ -19,3 +19,5 @@ futures = "0.3"
 schemars = "1"
 notify = "7"
 brush-parser = "0.3"
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }

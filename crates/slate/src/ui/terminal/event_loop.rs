@@ -77,6 +77,8 @@ pub(crate) fn event_loop(
     let mut permission_mode = PermissionMode::default();
     let mut pending_confirmation: Option<PendingConfirmation> = None;
     let mut last_permission_outcome: Option<(String, bool, String)> = None; // (tool_name, granted, reason)
+    let mut session_id: Option<String> = None;
+    let mut session_name: Option<String> = None;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -149,6 +151,7 @@ pub(crate) fn event_loop(
                 input_mode,
                 thinking_enabled,
                 permission_mode,
+                session_name.as_deref(),
             )?;
             needs_render = false;
         }
@@ -849,6 +852,8 @@ pub(crate) fn event_loop(
                         &mut pending_confirmation,
                         &mut permission_mode,
                         &mut last_permission_outcome,
+                        &mut session_id,
+                        &mut session_name,
                     );
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
@@ -869,6 +874,8 @@ pub(crate) fn event_loop(
                             &mut pending_confirmation,
                             &mut permission_mode,
                             &mut last_permission_outcome,
+                            &mut session_id,
+                            &mut session_name,
                         );
                     }
                     needs_render = true;

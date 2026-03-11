@@ -54,6 +54,7 @@ pub(crate) fn render_frame(
     input_mode: InputMode,
     thinking_enabled: bool,
     permission_mode: PermissionMode,
+    session_name: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
@@ -271,6 +272,7 @@ pub(crate) fn render_frame(
                 anim,
                 thinking_enabled,
                 permission_mode,
+                session_name,
             );
 
             // --- Render completion popup ---
@@ -391,6 +393,7 @@ pub(crate) fn render_status_bar(
     anim: &super::animation::AnimationState,
     thinking_enabled: bool,
     permission_mode: PermissionMode,
+    session_name: Option<&str>,
 ) {
     let width = area.width as usize;
 
@@ -432,7 +435,11 @@ pub(crate) fn render_status_bar(
         PermissionMode::Manual => "MANUAL | ",
         PermissionMode::Bypass => "BYPASS | ",
     };
-    let right = format!(" {}{}{}{} | v{} ", model_part, thinking_part, mode_part, daemon_status, VERSION);
+    let session_part = match session_name {
+        Some(name) => format!("{} | ", name),
+        None => String::new(),
+    };
+    let right = format!(" {}{}{}{}{} | v{} ", session_part, model_part, thinking_part, mode_part, daemon_status, VERSION);
     let left = match git_info {
         Some(info) => {
             let branch_part = format!("({})", info.branch);
