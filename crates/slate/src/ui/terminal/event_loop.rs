@@ -29,7 +29,7 @@ use slate_common::permissions::PermissionMode;
 
 use super::state::{PendingCommand, PendingConfirmation, PendingSessionPicker, MAX_SCROLLBACK};
 use super::utils::scroll_to_focused;
-use super::utils::{get_scrollback_line, parser_push_styled, send_agent_request};
+use super::utils::{get_scrollback_line, parser_push_notice, send_agent_request, NoticeKind};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height, PROMPT_GUTTER_WIDTH};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
@@ -350,7 +350,7 @@ pub(crate) fn event_loop(
                                             for _ in 0..picker.prompt_lines {
                                                 parser.process(b"\x1b[A\r\x1b[K");
                                             }
-                                            parser_push_styled(parser, "Cancelled.", "\x1b[90m");
+                                            parser_push_notice(parser, NoticeKind::Notice, "Cancelled.");
                                         }
                                         key_handled = true;
                                     }
@@ -754,15 +754,14 @@ pub(crate) fn event_loop(
                                                             selection.clear();
                                                             tracker.clear();
                                                             tool_result_modal.close();
-                                                            parser_push_styled(
+                                                            parser_push_notice(
                                                                 parser,
+                                                                NoticeKind::Notice,
                                                                 &format!(
                                                                     "slate v{} — type 'exit' to quit",
                                                                     crate::VERSION
                                                                 ),
-                                                                "\x1b[90m",
                                                             );
-                                                            parser.process(b"\r\n\r\n");
                                                         }
 
                                                         InputAction::Sessions => {
@@ -771,19 +770,19 @@ pub(crate) fn event_loop(
                                                                     c.send(&frame);
                                                                 }
                                                             } else {
-                                                                parser_push_styled(
+                                                                parser_push_notice(
                                                                     parser,
+                                                                    NoticeKind::Error,
                                                                     "Sessions not available (daemon not connected)",
-                                                                    "\x1b[31m",
                                                                 );
                                                             }
                                                         }
 
                                                         InputAction::UnknownCommand(ref cmd) => {
-                                                            parser_push_styled(
+                                                            parser_push_notice(
                                                                 parser,
+                                                                NoticeKind::Error,
                                                                 &format!("Unknown command: {}", cmd),
-                                                                "\x1b[31m",
                                                             );
                                                         }
 
@@ -801,10 +800,10 @@ pub(crate) fn event_loop(
                                                                             });
                                                                         }
                                                                         None => {
-                                                                            parser_push_styled(
+                                                                            parser_push_notice(
                                                                                 parser,
+                                                                                NoticeKind::Error,
                                                                                 "failed to send command to shell",
-                                                                                "\x1b[31m",
                                                                             );
                                                                         }
                                                                     }
@@ -815,10 +814,10 @@ pub(crate) fn event_loop(
                                                                             agent_streaming = true;
                                                                         }
                                                                     } else {
-                                                                        parser_push_styled(
+                                                                        parser_push_notice(
                                                                             parser,
+                                                                            NoticeKind::Error,
                                                                             "AI mode not available (daemon not connected)",
-                                                                            "\x1b[31m",
                                                                         );
                                                                     }
                                                                 }
@@ -1044,10 +1043,10 @@ pub(crate) fn event_loop(
                 // Erase the sentinel result line from the parser display.
                 parser.process(b"\x1b[A\x1b[2K");
                 if result.exit_code != 0 {
-                    parser_push_styled(
+                    parser_push_notice(
                         parser,
+                        NoticeKind::Error,
                         &format!("exit code: {}", result.exit_code),
-                        "\x1b[31m",
                     );
                 }
                 *cwd = bash.capture_cwd();
@@ -1083,7 +1082,11 @@ pub(crate) fn event_loop(
             } else if pending.last_activity.elapsed() > std::time::Duration::from_secs(300) {
                 bash.send_interrupt();
                 bash.drain_for(100);
-                parser_push_styled(parser, "command timed out (no activity for 5m)", "\x1b[31m");
+                parser_push_notice(
+                    parser,
+                    NoticeKind::Error,
+                    "command timed out (no activity for 5m)",
+                );
                 let cmd_end = get_scrollback_line(parser);
                 if let Some(start) = cmd_start_scrollback.take() {
                     let line_count = (cmd_end.saturating_sub(start)) as u16;

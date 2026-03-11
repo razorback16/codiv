@@ -30,6 +30,7 @@ use crate::ipc::client::SlatedClient;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::ui::input::InputLine;
 use crate::VERSION;
+use utils::{parser_push_notice, NoticeKind};
 
 pub use self::io::TerminalColors;
 
@@ -77,12 +78,10 @@ pub fn run(
     let mut prompt_is_live = false;
 
     // Welcome message.
-    parser.process(
-        format!(
-            "\x1b[90mslate v{} — type 'exit' to quit\x1b[0m\r\n\r\n",
-            VERSION
-        )
-        .as_bytes(),
+    parser_push_notice(
+        &mut parser,
+        NoticeKind::Notice,
+        &format!("slate v{} — type 'exit' to quit", VERSION),
     );
 
     // --- Event loop ---
