@@ -40,6 +40,15 @@ impl NoticeKind {
     }
 }
 
+/// Render the welcome header: "slate v{VERSION} — type 'exit' to quit".
+pub(crate) fn push_intro(parser: &mut vt100::Parser) {
+    parser_push_notice(
+        parser,
+        NoticeKind::Notice,
+        &format!("slate v{} — type 'exit' to quit", crate::VERSION),
+    );
+}
+
 /// Helper: write a terminal notice line with a blank separator after it.
 pub(crate) fn parser_push_notice(parser: &mut vt100::Parser, kind: NoticeKind, text: &str) {
     let line = format!("  {}{}\x1b[0m\r\n\r\n", kind.ansi_prefix(), text);
@@ -82,6 +91,7 @@ pub(crate) fn scroll_to_focused(
         crate::ui::blocks::Block::Tool(tb) => tb.start_index,
         crate::ui::blocks::Block::CmdResponse(cb) => cb.start_index,
         crate::ui::blocks::Block::AiResponse(ab) => ab.start_index,
+        crate::ui::blocks::Block::Thinking(tk) => tk.start_index,
     };
     let sb_len = true_scrollback_len(parser) as u64;
     let screen_rows = parser.screen().size().0 as u64;

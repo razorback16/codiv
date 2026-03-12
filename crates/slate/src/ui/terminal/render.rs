@@ -13,7 +13,7 @@ use crate::ui::tool_modal::ToolResultModal;
 use slate_common::permissions::PermissionMode;
 
 use crate::{
-    ui::blocks::{AiResponseBlock, Block, BlockRegistry, InputMode},
+    ui::blocks::{Block, BlockRegistry, InputMode},
     VERSION,
 };
 
@@ -139,12 +139,9 @@ pub(crate) fn render_frame(
                             (pb.start_index, ch, fg)
                         }
                         Block::AiResponse(ab) => {
-                            if ab.thinking_content.is_some() {
-                                (ab.start_index, '\u{25E6}', Color::DarkGray)
-                            } else {
-                                (ab.start_index, '\u{25CF}', Color::White)
-                            }
+                            (ab.start_index, '\u{25CF}', Color::White)
                         }
+                        Block::Thinking(tk) => (tk.start_index, '\u{25CB}', Color::DarkGray),
                         Block::Tool(tb) => (tb.start_index, '\u{25CF}', Color::Green),
                         Block::CmdResponse(cb) => (cb.start_index, '$', Color::White),
                     };
@@ -295,6 +292,7 @@ pub(crate) fn render_frame(
                     Block::Prompt(pb) => (pb.start_index, pb.height),
                     Block::CmdResponse(cb) => (cb.start_index, cb.height),
                     Block::AiResponse(ab) => (ab.start_index, ab.height),
+                    Block::Thinking(tk) => (tk.start_index, tk.height),
                 };
                 let sb_len = true_scrollback_len(parser) as u64;
                 let screen_rows = parser.screen().size().0 as u64;
@@ -325,16 +323,12 @@ pub(crate) fn render_frame(
                     // Show "(press Enter to expand)" hint for ToolBlocks and thinking
                     if matches!(
                         focused,
-                        Block::Tool(_)
-                            | Block::AiResponse(AiResponseBlock {
-                                thinking_content: Some(_),
-                                ..
-                            })
+                        Block::Tool(_) | Block::Thinking(_)
                     ) {
                         let hint = " (press Enter to expand)";
-                        // For tools: hint on the summary line (row+1).
+                        // For tools: hint on the summary line (row+height-1).
                         // For thinking: hint on the "Thought for Ns" line (row+0).
-                        let hint_row = if matches!(focused, Block::AiResponse(_)) {
+                        let hint_row = if matches!(focused, Block::Thinking(_)) {
                             screen_row
                         } else {
                             screen_row + height - 1

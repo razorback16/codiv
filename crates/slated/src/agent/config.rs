@@ -544,6 +544,16 @@ where
                 .await?;
             }
             LanguageModelStreamChunkType::ToolCallStart(info) => {
+                // Flush pre-tool-call reasoning as its own event
+                if !reasoning_buffer.is_empty() {
+                    let duration = reasoning_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+                    collected_events.push(ConversationEvent::AssistantReasoning {
+                        request_id: request_id.to_string(),
+                        text: std::mem::take(&mut reasoning_buffer),
+                        duration_secs: duration,
+                    });
+                    reasoning_start = None;
+                }
                 let args = serde_json::to_string(&info.input).unwrap_or_default();
                 collected_events.push(ConversationEvent::ToolCall {
                     request_id: request_id.to_string(),
