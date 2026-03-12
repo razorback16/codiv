@@ -2,14 +2,14 @@ mod agent;
 mod daemon;
 mod ipc;
 mod session;
+mod store;
 
 use slate_common::config;
 use std::fs;
 use std::process;
 use tracing::{error, info};
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--version") {
@@ -19,7 +19,14 @@ async fn main() {
 
     let foreground = args.iter().any(|a| a == "--foreground" || a == "-f");
 
-    // Set up logging
+    // Fork BEFORE creating the tokio runtime.  After fork() the child
+    // inherits only the calling thread — tokio worker threads are lost,
+    // which breaks the runtime if it was already started.
+    if !foreground {
+        daemonize();
+    }
+
+    // Set up logging (after fork so the child writes to the log)
     let log_path = config::log_file_path();
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).ok();
@@ -39,10 +46,15 @@ async fn main() {
         })
         .init();
 
-    if !foreground {
-        daemonize();
-    }
+    // Now build the tokio runtime and run the async entry point.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime")
+        .block_on(async_main());
+}
 
+async fn async_main() {
     // Check for existing daemon
     let pid_path = config::pid_file_path();
     if let Ok(contents) = fs::read_to_string(&pid_path) {

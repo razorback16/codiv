@@ -27,9 +27,9 @@ use super::io::TerminalColors;
 use super::render::render_frame;
 use slate_common::permissions::PermissionMode;
 
-use super::state::{PendingCommand, PendingConfirmation, MAX_SCROLLBACK};
+use super::state::{PendingCommand, PendingConfirmation, PendingSessionPicker, MAX_SCROLLBACK};
 use super::utils::scroll_to_focused;
-use super::utils::{get_scrollback_line, parser_push_styled, send_agent_request};
+use super::utils::{get_scrollback_line, parser_push_notice, send_agent_request, NoticeKind};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height, PROMPT_GUTTER_WIDTH};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
@@ -77,6 +77,9 @@ pub(crate) fn event_loop(
     let mut permission_mode = PermissionMode::default();
     let mut pending_confirmation: Option<PendingConfirmation> = None;
     let mut last_permission_outcome: Option<(String, bool, String)> = None; // (tool_name, granted, reason)
+    let mut session_id: Option<String> = None;
+    let mut session_name: Option<String> = None;
+    let mut pending_session_picker: Option<PendingSessionPicker> = None;
 
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
@@ -149,6 +152,7 @@ pub(crate) fn event_loop(
                 input_mode,
                 thinking_enabled,
                 permission_mode,
+                session_name.as_deref(),
             )?;
             needs_render = false;
         }
@@ -259,6 +263,101 @@ pub(crate) fn event_loop(
                                     _ => {} // consume everything else
                                 }
                                 key_handled = true;
+                            }
+
+                            // --- Session picker key interception ---
+                            if pending_session_picker.is_some() && !key_handled {
+                                let redraw_picker = |picker: &PendingSessionPicker, p: &mut vt100::Parser| {
+                                    // Erase all picker lines (must match prompt_lines exactly)
+                                    for _ in 0..picker.prompt_lines {
+                                        p.process(b"\x1b[A\r\x1b[K");
+                                    }
+                                    // Re-render session entries
+                                    for (i, s) in picker.sessions.iter().enumerate() {
+                                        let name = s.name.as_deref().unwrap_or("(unnamed)");
+                                        let time = slate_common::conversation::relative_time(&s.updated_at);
+                                        let (prefix, color) = if i == picker.selected_index {
+                                            ("\u{203a}", "\x1b[1;37m")
+                                        } else {
+                                            (" ", "\x1b[37m")
+                                        };
+                                        let line = format!("{}  {}[{}] {} \x1b[90m({})\x1b[0m\r\n", color, prefix, i + 1, name, time);
+                                        p.process(line.as_bytes());
+                                    }
+                                    let select_line = format!("\r\nSelect session [1-{}] or Esc to cancel:\r\n", picker.sessions.len());
+                                    p.process(select_line.as_bytes());
+                                };
+
+                                match key.code {
+                                    KeyCode::Up => {
+                                        if let Some(ref mut picker) = pending_session_picker {
+                                            picker.selected_index = if picker.selected_index == 0 {
+                                                picker.sessions.len() - 1
+                                            } else {
+                                                picker.selected_index - 1
+                                            };
+                                            redraw_picker(picker, parser);
+                                        }
+                                        key_handled = true;
+                                    }
+                                    KeyCode::Down => {
+                                        if let Some(ref mut picker) = pending_session_picker {
+                                            picker.selected_index = if picker.selected_index >= picker.sessions.len() - 1 {
+                                                0
+                                            } else {
+                                                picker.selected_index + 1
+                                            };
+                                            redraw_picker(picker, parser);
+                                        }
+                                        key_handled = true;
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Some(picker) = pending_session_picker.take() {
+                                            let sid = &picker.sessions[picker.selected_index].id;
+                                            if let Some(ref mut c) = client {
+                                                if let Some(frame) = ipc_messages::build_load_session(sid) {
+                                                    c.send(&frame);
+                                                }
+                                            }
+                                            // Clear the picker lines
+                                            for _ in 0..picker.prompt_lines {
+                                                parser.process(b"\x1b[A\r\x1b[K");
+                                            }
+                                        }
+                                        key_handled = true;
+                                    }
+                                    KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                                        let idx = (c as usize) - ('1' as usize);
+                                        if let Some(ref picker) = pending_session_picker {
+                                            if idx < picker.sessions.len() {
+                                                let sid = picker.sessions[idx].id.clone();
+                                                let prompt_lines = picker.prompt_lines;
+                                                pending_session_picker = None;
+                                                if let Some(ref mut c) = client {
+                                                    if let Some(frame) = ipc_messages::build_load_session(&sid) {
+                                                        c.send(&frame);
+                                                    }
+                                                }
+                                                for _ in 0..prompt_lines {
+                                                    parser.process(b"\x1b[A\r\x1b[K");
+                                                }
+                                            }
+                                        }
+                                        key_handled = true;
+                                    }
+                                    KeyCode::Esc => {
+                                        if let Some(picker) = pending_session_picker.take() {
+                                            for _ in 0..picker.prompt_lines {
+                                                parser.process(b"\x1b[A\r\x1b[K");
+                                            }
+                                            parser_push_notice(parser, NoticeKind::Notice, "Cancelled.");
+                                        }
+                                        key_handled = true;
+                                    }
+                                    _ => {
+                                        key_handled = true; // consume all other keys
+                                    }
+                                }
                             }
 
                             // --- Confirmation prompt key interception ---
@@ -530,9 +629,9 @@ pub(crate) fn event_loop(
                                                         tb.id,
                                                     );
                                                 }
-                                                Some(Block::AiResponse(ab)) if ab.thinking_content.is_some() => {
-                                                    let title = format!("Thought for {:.0}s", ab.thinking_duration_secs.unwrap_or(0.0));
-                                                    tool_result_modal.open(&title, ab.thinking_content.as_deref().unwrap_or(""), false, ab.id);
+                                                Some(Block::Thinking(tk)) => {
+                                                    let title = format!("Thought for {:.0}s", tk.duration_secs);
+                                                    tool_result_modal.open(&title, &tk.content, false, tk.id);
                                                 }
                                                 _ => {}
                                             }
@@ -655,15 +754,36 @@ pub(crate) fn event_loop(
                                                             selection.clear();
                                                             tracker.clear();
                                                             tool_result_modal.close();
-                                                            parser_push_styled(
+                                                            parser_push_notice(
                                                                 parser,
+                                                                NoticeKind::Notice,
                                                                 &format!(
                                                                     "slate v{} — type 'exit' to quit",
                                                                     crate::VERSION
                                                                 ),
-                                                                "\x1b[90m",
                                                             );
-                                                            parser.process(b"\r\n\r\n");
+                                                        }
+
+                                                        InputAction::Sessions => {
+                                                            if let Some(ref mut c) = client {
+                                                                if let Some(frame) = ipc_messages::build_list_sessions() {
+                                                                    c.send(&frame);
+                                                                }
+                                                            } else {
+                                                                parser_push_notice(
+                                                                    parser,
+                                                                    NoticeKind::Error,
+                                                                    "Sessions not available (daemon not connected)",
+                                                                );
+                                                            }
+                                                        }
+
+                                                        InputAction::UnknownCommand(ref cmd) => {
+                                                            parser_push_notice(
+                                                                parser,
+                                                                NoticeKind::Error,
+                                                                &format!("Unknown command: {}", cmd),
+                                                            );
                                                         }
 
                                                         InputAction::Submit => {
@@ -680,10 +800,10 @@ pub(crate) fn event_loop(
                                                                             });
                                                                         }
                                                                         None => {
-                                                                            parser_push_styled(
+                                                                            parser_push_notice(
                                                                                 parser,
+                                                                                NoticeKind::Error,
                                                                                 "failed to send command to shell",
-                                                                                "\x1b[31m",
                                                                             );
                                                                         }
                                                                     }
@@ -694,10 +814,10 @@ pub(crate) fn event_loop(
                                                                             agent_streaming = true;
                                                                         }
                                                                     } else {
-                                                                        parser_push_styled(
+                                                                        parser_push_notice(
                                                                             parser,
+                                                                            NoticeKind::Error,
                                                                             "AI mode not available (daemon not connected)",
-                                                                            "\x1b[31m",
                                                                         );
                                                                     }
                                                                 }
@@ -849,6 +969,11 @@ pub(crate) fn event_loop(
                         &mut pending_confirmation,
                         &mut permission_mode,
                         &mut last_permission_outcome,
+                        &mut session_id,
+                        &mut session_name,
+                        &mut pending_session_picker,
+                        scroll_offset,
+                        term.size().map(|s| parser_cols_from_term_width(s.width)).unwrap_or(80),
                     );
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
@@ -869,6 +994,11 @@ pub(crate) fn event_loop(
                             &mut pending_confirmation,
                             &mut permission_mode,
                             &mut last_permission_outcome,
+                            &mut session_id,
+                            &mut session_name,
+                            &mut pending_session_picker,
+                            scroll_offset,
+                            term.size().map(|s| parser_cols_from_term_width(s.width)).unwrap_or(80),
                         );
                     }
                     needs_render = true;
@@ -913,10 +1043,10 @@ pub(crate) fn event_loop(
                 // Erase the sentinel result line from the parser display.
                 parser.process(b"\x1b[A\x1b[2K");
                 if result.exit_code != 0 {
-                    parser_push_styled(
+                    parser_push_notice(
                         parser,
+                        NoticeKind::Error,
                         &format!("exit code: {}", result.exit_code),
-                        "\x1b[31m",
                     );
                 }
                 *cwd = bash.capture_cwd();
@@ -952,7 +1082,11 @@ pub(crate) fn event_loop(
             } else if pending.last_activity.elapsed() > std::time::Duration::from_secs(300) {
                 bash.send_interrupt();
                 bash.drain_for(100);
-                parser_push_styled(parser, "command timed out (no activity for 5m)", "\x1b[31m");
+                parser_push_notice(
+                    parser,
+                    NoticeKind::Error,
+                    "command timed out (no activity for 5m)",
+                );
                 let cmd_end = get_scrollback_line(parser);
                 if let Some(start) = cmd_start_scrollback.take() {
                     let line_count = (cmd_end.saturating_sub(start)) as u16;

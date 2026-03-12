@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
 use crate::agent::config::{self, ModelAssignment, ProviderConfig};
-use aisdk::core::messages::{Message, Messages};
+use aisdk::core::messages::{AssistantMessage, Message, Messages};
+use aisdk::core::language_model::LanguageModelResponseContentType;
+use aisdk::core::tools::{ToolCallInfo, ToolDetails, ToolResultInfo};
+use aisdk::extensions::Extensions;
+use slate_common::conversation::ConversationEvent;
 use slate_common::truncate::truncate_output;
 use slate_common::types::AgentRole;
 use tokio::sync::mpsc;
@@ -27,27 +31,12 @@ const MAX_HISTORY_EVENTS: usize = 100;
 const TRUNCATE_HEAD: usize = 20;
 const TRUNCATE_TAIL: usize = 20;
 
-/// A single event in the unified session timeline.
-pub enum SessionEvent {
-    /// User ran a shell command in the terminal.
-    ShellCommand {
-        command: String,
-        output: String,
-        exit_code: i32,
-        cwd: String,
-    },
-    /// User asked the AI a question (e.g., `? ...`).
-    UserQuery(String),
-    /// AI responded with text.
-    AssistantResponse(String),
-}
-
 pub struct Agent {
     pub role: AgentRole,
     pub system_prompt: String,
     pub model_config: ModelAssignment,
     pub provider_config: ProviderConfig,
-    pub history: Vec<SessionEvent>,
+    pub history: Vec<ConversationEvent>,
     pub cwd: String,
     pub env_vars: Vec<(String, String)>,
 }
@@ -65,26 +54,37 @@ impl Agent {
         }
     }
 
-    pub fn add_user_message(&mut self, content: &str) {
-        self.history
-            .push(SessionEvent::UserQuery(content.to_string()));
+    pub fn add_user_message(&mut self, content: &str, request_id: &str) {
+        self.history.push(ConversationEvent::UserPrompt {
+            text: content.to_string(),
+            request_id: request_id.to_string(),
+        });
         self.enforce_limit();
     }
 
-    pub fn add_assistant_message(&mut self, content: &str) {
-        self.history
-            .push(SessionEvent::AssistantResponse(content.to_string()));
+    pub fn add_assistant_message(&mut self, content: &str, request_id: &str) {
+        self.history.push(ConversationEvent::AssistantText {
+            request_id: request_id.to_string(),
+            text: content.to_string(),
+        });
         self.enforce_limit();
     }
 
     pub fn add_command_result(&mut self, command: &str, output: &str, exit_code: i32, cwd: &str) {
         let truncated = truncate_output(output, TRUNCATE_HEAD, TRUNCATE_TAIL);
-        self.history.push(SessionEvent::ShellCommand {
+        self.history.push(ConversationEvent::ShellCommand {
             command: command.to_string(),
             output: truncated,
             exit_code,
             cwd: cwd.to_string(),
         });
+        self.enforce_limit();
+    }
+
+    /// Push tool-related events (ToolCall, ToolResult, AssistantReasoning)
+    /// collected during streaming into the history.
+    pub fn add_tool_events(&mut self, events: &[ConversationEvent]) {
+        self.history.extend(events.iter().cloned());
         self.enforce_limit();
     }
 
@@ -104,15 +104,22 @@ impl Agent {
         let start = self.history.len().saturating_sub(6);
         for event in &self.history[start..] {
             match event {
-                SessionEvent::UserQuery(text) => {
+                ConversationEvent::UserPrompt { text, .. } => {
                     lines.push(format!("User: {}", truncate_str(text, 200)));
                 }
-                SessionEvent::AssistantResponse(text) => {
+                ConversationEvent::AssistantText { text, .. } => {
                     lines.push(format!("Assistant: {}", truncate_str(text, 200)));
                 }
-                SessionEvent::ShellCommand { command, exit_code, .. } => {
+                ConversationEvent::ShellCommand { command, exit_code, .. } => {
                     lines.push(format!("Shell: {} (exit {})", command, exit_code));
                 }
+                ConversationEvent::ToolCall { tool_name, .. } => {
+                    lines.push(format!("ToolCall: {}", tool_name));
+                }
+                ConversationEvent::ToolResult { tool_name, result, .. } => {
+                    lines.push(format!("ToolResult({}): {}", tool_name, truncate_str(result, 100)));
+                }
+                _ => {}
             }
         }
         lines.join("\n")
@@ -122,54 +129,103 @@ impl Agent {
     ///
     /// ShellCommands become assistant + user message pairs representing
     /// the command execution and its output.
-    /// UserQueries become User messages.
-    /// AssistantResponses become Assistant messages.
+    /// UserPrompts become User messages.
+    /// AssistantText become Assistant messages.
+    /// ToolCall/ToolResult are mapped to appropriate aisdk tool message pairs.
     fn build_messages(&self) -> Messages {
-        let mut builder = Message::builder().system(&self.system_prompt);
+        use aisdk::core::messages::{SystemMessage, UserMessage};
+
+        // Build the message list directly (instead of via the builder) so we
+        // can include native tool-call / tool-result message variants that the
+        // builder does not expose convenience methods for.
+        let mut messages: Messages = Vec::new();
+        messages.push(Message::System(SystemMessage::new(&self.system_prompt)));
 
         for event in &self.history {
             match event {
-                SessionEvent::ShellCommand {
+                ConversationEvent::ShellCommand {
                     command,
                     output,
                     exit_code,
                     cwd,
                 } => {
                     // Represent shell commands as assistant/user message pairs
-                    builder =
-                        builder.assistant(format!("Running command: {} (in {})", command, cwd));
+                    messages.push(Message::Assistant(
+                        format!("Running command: {} (in {})", command, cwd).into(),
+                    ));
 
                     let result_text = if *exit_code == 0 {
                         output.clone()
                     } else {
                         format!("{}\n[exit code: {}]", output, exit_code)
                     };
-                    builder = builder.user(format!(
+                    messages.push(Message::User(UserMessage::new(format!(
                         "[Terminal output for `{}`]:\n{}",
                         command, result_text
-                    ));
+                    ))));
                 }
-                SessionEvent::UserQuery(text) => {
-                    builder = builder.user(text.clone());
+                ConversationEvent::UserPrompt { text, .. } => {
+                    messages.push(Message::User(UserMessage::new(text.clone())));
                 }
-                SessionEvent::AssistantResponse(text) => {
-                    builder = builder.assistant(text.clone());
+                ConversationEvent::AssistantText { text, .. } => {
+                    messages.push(Message::Assistant(text.clone().into()));
+                }
+                ConversationEvent::AssistantReasoning { .. } => {
+                    // Reasoning is internal; not included in the message history
+                    // sent back to the model.
+                }
+                ConversationEvent::ToolCall { tool_name, arguments, request_id } => {
+                    // Native aisdk tool-call message format.
+                    // We synthesize a tool_call_id from request_id + tool_name
+                    // since ConversationEvent doesn't store the provider's ID.
+                    let tool_call_id = format!("{}_{}", request_id, tool_name);
+                    let input: serde_json::Value = serde_json::from_str(arguments)
+                        .unwrap_or_else(|_| serde_json::Value::String(arguments.clone()));
+                    let tool_call = ToolCallInfo {
+                        tool: ToolDetails {
+                            name: tool_name.clone(),
+                            id: tool_call_id,
+                        },
+                        input,
+                        extensions: Extensions::default(),
+                    };
+                    messages.push(Message::Assistant(AssistantMessage::new(
+                        LanguageModelResponseContentType::ToolCall(tool_call),
+                        None,
+                    )));
+                }
+                ConversationEvent::ToolResult { tool_name, result, request_id } => {
+                    // Native aisdk tool-result message format.
+                    let tool_call_id = format!("{}_{}", request_id, tool_name);
+                    let output: serde_json::Value = serde_json::from_str(result)
+                        .unwrap_or_else(|_| serde_json::Value::String(result.clone()));
+                    let tool_result = ToolResultInfo {
+                        tool: ToolDetails {
+                            name: tool_name.clone(),
+                            id: tool_call_id,
+                        },
+                        output: Ok(output),
+                    };
+                    messages.push(Message::Tool(tool_result));
+                }
+                ConversationEvent::Error { message, .. } => {
+                    messages.push(Message::User(UserMessage::new(format!("[Error: {}]", message))));
                 }
             }
         }
 
-        builder.build()
+        messages
     }
 
     /// Run a streaming LLM call, forwarding chunks over IPC via `client_tx`.
-    /// Returns (response_text, input_tokens, output_tokens).
+    /// Returns (response_text, input_tokens, output_tokens, collected_events).
     pub async fn run_streaming(
         &self,
         request_id: &str,
         client_tx: &mpsc::Sender<Vec<u8>>,
         thinking: bool,
         permission_ctx: Option<Arc<super::permissions::PermissionContext>>,
-    ) -> Result<(String, usize, usize), String> {
+    ) -> Result<(String, usize, usize, Vec<ConversationEvent>), String> {
         info!(
             "agent {:?} calling {}/{} ({} events in history)",
             self.role,

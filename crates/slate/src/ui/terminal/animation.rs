@@ -2,8 +2,7 @@ use std::time::Duration;
 
 /// Spinner frame characters (Braille pattern).
 const SPINNER_FRAMES: &[char] = &[
-    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}',
-    '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}',
 ];
 
 /// Tick interval for the animation timer.
@@ -37,7 +36,8 @@ impl AnimationState {
         is_thinking: bool,
         has_pending_tool: bool,
     ) {
-        self.has_active_animations = is_executing || agent_streaming || is_thinking || has_pending_tool;
+        self.has_active_animations =
+            is_executing || agent_streaming || is_thinking || has_pending_tool;
     }
 
     pub(crate) fn spinner_char(&self) -> char {

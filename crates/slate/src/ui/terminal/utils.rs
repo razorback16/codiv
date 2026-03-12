@@ -23,9 +23,35 @@ pub(crate) fn send_agent_request(
     }
 }
 
-/// Helper: write styled text to the vt100 parser using ANSI SGR codes.
-pub(crate) fn parser_push_styled(parser: &mut vt100::Parser, text: &str, ansi_prefix: &str) {
-    let line = format!("  {}{}\x1b[0m\r\n", ansi_prefix, text);
+#[allow(dead_code)]
+pub(crate) enum NoticeKind {
+    Error,
+    Warning,
+    Notice,
+}
+
+impl NoticeKind {
+    fn ansi_prefix(&self) -> &'static str {
+        match self {
+            Self::Error => "\x1b[31m",
+            Self::Warning => "\x1b[33m",
+            Self::Notice => "\x1b[90m",
+        }
+    }
+}
+
+/// Render the welcome header: "slate v{VERSION} — type 'exit' to quit".
+pub(crate) fn push_intro(parser: &mut vt100::Parser) {
+    parser_push_notice(
+        parser,
+        NoticeKind::Notice,
+        &format!("slate v{} — type 'exit' to quit", crate::VERSION),
+    );
+}
+
+/// Helper: write a terminal notice line with a blank separator after it.
+pub(crate) fn parser_push_notice(parser: &mut vt100::Parser, kind: NoticeKind, text: &str) {
+    let line = format!("  {}{}\x1b[0m\r\n\r\n", kind.ansi_prefix(), text);
     parser.process(line.as_bytes());
 }
 
@@ -65,6 +91,7 @@ pub(crate) fn scroll_to_focused(
         crate::ui::blocks::Block::Tool(tb) => tb.start_index,
         crate::ui::blocks::Block::CmdResponse(cb) => cb.start_index,
         crate::ui::blocks::Block::AiResponse(ab) => ab.start_index,
+        crate::ui::blocks::Block::Thinking(tk) => tk.start_index,
     };
     let sb_len = true_scrollback_len(parser) as u64;
     let screen_rows = parser.screen().size().0 as u64;
@@ -97,4 +124,37 @@ pub(crate) fn format_tokens(n: usize) -> String {
         .format(n as f64);
     // "200.0k" -> "200k", "1.2k" unchanged
     s.trim().replace(".0", "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parser_push_notice, NoticeKind};
+
+    fn screen_line(parser: &vt100::Parser, row: u16, cols: u16) -> String {
+        let mut line = String::new();
+        for col in 0..cols {
+            if let Some(cell) = parser.screen().cell(row, col) {
+                line.push(cell.contents().chars().next().unwrap_or(' '));
+            }
+        }
+        line.trim_end().to_string()
+    }
+
+    #[test]
+    fn notice_kind_uses_expected_colors() {
+        assert_eq!(NoticeKind::Error.ansi_prefix(), "\x1b[31m");
+        assert_eq!(NoticeKind::Warning.ansi_prefix(), "\x1b[33m");
+        assert_eq!(NoticeKind::Notice.ansi_prefix(), "\x1b[90m");
+    }
+
+    #[test]
+    fn parser_push_notice_adds_blank_separator_line() {
+        let mut parser = vt100::Parser::new(4, 40, 0);
+
+        parser_push_notice(&mut parser, NoticeKind::Error, "boom");
+
+        assert_eq!(screen_line(&parser, 0, 40), "  boom");
+        assert_eq!(screen_line(&parser, 1, 40), "");
+        assert_eq!(parser.screen().cursor_position(), (2, 0));
+    }
 }

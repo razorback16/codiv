@@ -1,11 +1,11 @@
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
-use crossterm::event;
 use crossbeam_channel;
+use crossterm::event;
 
-use crate::shell::bash_coprocess::BashCoprocess;
 use super::state::PendingCommand;
+use crate::shell::bash_coprocess::BashCoprocess;
 
 /// Cached terminal foreground/background colors queried from the host terminal.
 pub struct TerminalColors {
@@ -104,9 +104,7 @@ fn parse_osc_color_response(data: &str, osc_num: &str) -> Option<String> {
     if let Some(start) = data.find(&prefix) {
         let after = &data[start + prefix.len()..];
         // Find the string terminator: either ESC \ or BEL
-        let end = after
-            .find("\x1b\\")
-            .or_else(|| after.find('\x07'));
+        let end = after.find("\x1b\\").or_else(|| after.find('\x07'));
         if let Some(end_pos) = end {
             let color = &after[..end_pos];
             if !color.is_empty() {
@@ -162,9 +160,7 @@ fn respond_to_terminal_queries(
 
 /// Find a subsequence in a byte slice.
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Check if bytes contain an OSC query (prefix followed eventually by ST or BEL).
@@ -303,7 +299,10 @@ mod tests {
         assert_eq!(parse_osc_color_response("", "10"), None);
         assert_eq!(parse_osc_color_response("garbage", "10"), None);
         // Incomplete — no terminator
-        assert_eq!(parse_osc_color_response("\x1b]10;rgb:cccc/cccc/cccc", "10"), None);
+        assert_eq!(
+            parse_osc_color_response("\x1b]10;rgb:cccc/cccc/cccc", "10"),
+            None
+        );
     }
 
     #[test]
