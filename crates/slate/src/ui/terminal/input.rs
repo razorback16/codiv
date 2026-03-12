@@ -11,7 +11,9 @@ pub(crate) fn key_event_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Opti
         KeyCode::Char(ch) => {
             if modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+letter → 0x01..0x1A
-                let ctrl = (ch.to_ascii_lowercase() as u8).wrapping_sub(b'a').wrapping_add(1);
+                let ctrl = (ch.to_ascii_lowercase() as u8)
+                    .wrapping_sub(b'a')
+                    .wrapping_add(1);
                 if ctrl <= 26 {
                     Some(vec![ctrl])
                 } else {
