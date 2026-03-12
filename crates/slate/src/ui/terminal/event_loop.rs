@@ -629,9 +629,9 @@ pub(crate) fn event_loop(
                                                         tb.id,
                                                     );
                                                 }
-                                                Some(Block::AiResponse(ab)) if ab.thinking_content.is_some() => {
-                                                    let title = format!("Thought for {:.0}s", ab.thinking_duration_secs.unwrap_or(0.0));
-                                                    tool_result_modal.open(&title, ab.thinking_content.as_deref().unwrap_or(""), false, ab.id);
+                                                Some(Block::Thinking(tk)) => {
+                                                    let title = format!("Thought for {:.0}s", tk.duration_secs);
+                                                    tool_result_modal.open(&title, &tk.content, false, tk.id);
                                                 }
                                                 _ => {}
                                             }

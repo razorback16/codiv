@@ -8,7 +8,7 @@ use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 
 use super::state::{PendingConfirmation, PendingSessionPicker};
-use super::utils::{get_scrollback_line, parser_push_notice, NoticeKind};
+use super::utils::{get_scrollback_line, parser_push_notice, push_intro, NoticeKind};
 
 /// Finalize an in-progress thinking block: overwrite the placeholder line
 /// with a "Thought for Ns" summary and register it in the block tracker.
@@ -27,8 +27,10 @@ fn finalize_thinking(
         parser.process(summary.as_bytes());
         let content = std::mem::take(thinking_buffer);
         if let Some(sl) = thinking_scrollback.take() {
-            tracker.record_pending_thinking(content, duration_secs, sl);
+            tracker.record_thinking_block(content, duration_secs, sl);
         }
+        // Blank line separator after thinking block
+        parser.process(b"\r\n");
         true
     } else {
         false
@@ -219,7 +221,7 @@ fn handle_single_message(
                 } => {
                     // On the FIRST delta for a tool call, show spinner placeholder
                     if tracker.pending_tool().is_none() {
-                        let had_thinking = finalize_thinking(
+                        finalize_thinking(
                             parser,
                             tracker,
                             thinking_buffer,
@@ -242,7 +244,7 @@ fn handle_single_message(
                                 tracker.record_ai_response(start, line_count);
                             }
                         }
-                        if !pending.is_empty() || had_ai_content || had_thinking {
+                        if !pending.is_empty() || had_ai_content {
                             parser.process(b"\r\n");
                         }
 
@@ -263,7 +265,7 @@ fn handle_single_message(
                 ipc_messages::StreamChunk::ToolCall { name, arguments } => {
                     // If no ToolCallDelta preceded this, do the visual transition now
                     if tracker.pending_tool().is_none() {
-                        let had_thinking = finalize_thinking(
+                        finalize_thinking(
                             parser,
                             tracker,
                             thinking_buffer,
@@ -284,7 +286,7 @@ fn handle_single_message(
                                 tracker.record_ai_response(start, line_count);
                             }
                         }
-                        if !pending.is_empty() || had_ai_content || had_thinking {
+                        if !pending.is_empty() || had_ai_content {
                             parser.process(b"\r\n");
                         }
                     }
@@ -408,9 +410,6 @@ fn handle_single_message(
                         tracker.record_ai_response(start, line_count);
                     }
                 }
-                // Flush any pending thinking that was never consumed by record_ai_response
-                // (thinking-only response with no text content).
-                tracker.flush_pending_thinking();
                 if !final_bytes.is_empty() || had_ai_content {
                     parser.process(b"\r\n"); // AI block trailing separator
                 }
@@ -628,6 +627,9 @@ pub(crate) fn handle_daemon_message(
             *parser = vt100::Parser::new(rows, cols, super::state::MAX_SCROLLBACK);
             *scroll_offset = 0;
             tracker.clear();
+
+            // 1b. Re-emit the welcome header
+            push_intro(parser);
 
             // 2. Create fresh local replay state
             let mut replay_md = MarkdownStream::new(md_stream_width);
