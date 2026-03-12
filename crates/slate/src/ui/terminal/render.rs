@@ -174,7 +174,12 @@ pub(crate) fn render_frame(
                 } else if tracker.pending_tool().is_some() && scroll_offset == 0 {
                     // Gutter-only spinner for pending tool (header is in VT100 content)
                     if let Some(pending_sl) = tracker.pending_tool_start_index() {
-                        log::debug!("pending_tool gutter: pending_sl={}, abs_top={}, abs_view_bottom={}", pending_sl, abs_top, abs_view_bottom);
+                        log::debug!(
+                            "pending_tool gutter: pending_sl={}, abs_top={}, abs_view_bottom={}",
+                            pending_sl,
+                            abs_top,
+                            abs_view_bottom
+                        );
                         if pending_sl >= abs_top && pending_sl < abs_view_bottom {
                             let screen_row = (pending_sl - abs_top) as u16;
                             let row = term_area.top() + screen_row;
@@ -318,7 +323,14 @@ pub(crate) fn render_frame(
                         }
                     }
                     // Show "(press Enter to expand)" hint for ToolBlocks and thinking
-                    if matches!(focused, Block::Tool(_) | Block::AiResponse(AiResponseBlock { thinking_content: Some(_), .. })) {
+                    if matches!(
+                        focused,
+                        Block::Tool(_)
+                            | Block::AiResponse(AiResponseBlock {
+                                thinking_content: Some(_),
+                                ..
+                            })
+                    ) {
                         let hint = " (press Enter to expand)";
                         // For tools: hint on the summary line (row+1).
                         // For thinking: hint on the "Thought for Ns" line (row+0).
@@ -439,7 +451,10 @@ pub(crate) fn render_status_bar(
         Some(name) => format!("{} | ", name),
         None => String::new(),
     };
-    let right = format!(" {}{}{}{}{} | v{} ", session_part, model_part, thinking_part, mode_part, daemon_status, VERSION);
+    let right = format!(
+        " {}{}{}{}{} | v{} ",
+        session_part, model_part, thinking_part, mode_part, daemon_status, VERSION
+    );
     let left = match git_info {
         Some(info) => {
             let branch_part = format!("({})", info.branch);
