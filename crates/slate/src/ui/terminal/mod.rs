@@ -29,7 +29,7 @@ use ratatui::Terminal;
 use crate::ipc::client::SlatedClient;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::ui::input::InputLine;
-use crate::VERSION;
+use utils::push_intro;
 
 pub use self::io::TerminalColors;
 
@@ -77,13 +77,7 @@ pub fn run(
     let mut prompt_is_live = false;
 
     // Welcome message.
-    parser.process(
-        format!(
-            "\x1b[90mslate v{} — type 'exit' to quit\x1b[0m\r\n\r\n",
-            VERSION
-        )
-        .as_bytes(),
-    );
+    push_intro(&mut parser);
 
     // --- Event loop ---
     let result = event_loop(

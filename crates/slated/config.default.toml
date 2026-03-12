@@ -43,3 +43,11 @@ mode = "auto"  # "auto" | "manual" | "bypass"
 [roles.permission_evaluator]
 provider = "anthropic"
 model = "claude-haiku-3-5"
+
+# Auto-generate session titles via a cheap LLM call after the first
+# response.  Omit this section to keep the truncated-prompt title.
+# Use a fast model that won't compete with your main inference server.
+#
+# [roles.session_namer]
+# provider = "anthropic"
+# model = "claude-haiku-3-5"
