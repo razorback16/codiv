@@ -45,6 +45,16 @@ pub fn classify_input(input: &str) -> InputAction {
     InputAction::Submit
 }
 
+/// Returns slash commands matching the given prefix (e.g. "/cl" → ["/clear"]).
+pub fn complete_slash_command(prefix: &str) -> Vec<String> {
+    const COMMANDS: &[&str] = &["/clear", "/exit", "/quit", "/reset", "/sessions"];
+    COMMANDS
+        .iter()
+        .filter(|cmd| cmd.starts_with(prefix))
+        .map(|cmd| cmd.to_string())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -96,5 +106,23 @@ mod tests {
         assert_eq!(classify_input("?what is rust"), InputAction::Submit);
         assert_eq!(classify_input("cd /tmp"), InputAction::Submit);
         assert_eq!(classify_input("FOO=bar"), InputAction::Submit);
+    }
+
+    #[test]
+    fn complete_slash_prefix() {
+        let results = complete_slash_command("/cl");
+        assert_eq!(results, vec!["/clear"]);
+    }
+
+    #[test]
+    fn complete_slash_multiple() {
+        let results = complete_slash_command("/");
+        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn complete_slash_no_match() {
+        let results = complete_slash_command("/zzz");
+        assert!(results.is_empty());
     }
 }
