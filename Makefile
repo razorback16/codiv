@@ -1,4 +1,4 @@
-.PHONY: all build clean test
+.PHONY: all build clean test debug
 
 all: build
 
@@ -10,6 +10,11 @@ clean:
 
 test:
 	cargo test --workspace
+
+debug:
+	-pkill -f slated
+	RUST_LOG=slated=debug cargo run -p slated
+	cargo run -p slate -- --debug
 
 release:
 	cargo build --workspace --release
