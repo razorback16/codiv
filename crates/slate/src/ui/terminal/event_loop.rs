@@ -10,7 +10,7 @@ use ratatui::Terminal;
 use crate::ipc::client::SlatedClient;
 use crate::ipc::messages as ipc_messages;
 use crate::shell::bash_coprocess::BashCoprocess;
-use crate::shell::command_index::{classify_input, InputAction};
+use crate::shell::command_index::{classify_input, complete_slash_command, InputAction};
 use crate::shell::completion_engine::CompletionEngine;
 
 use crate::ui::blocks::{Block, BlockRegistry, InputMode};
@@ -197,6 +197,7 @@ pub(crate) fn event_loop(
                                 MouseEventKind::ScrollUp => {
                                     *scroll_offset = scroll_offset.saturating_add(3);
                                     parser.screen_mut().set_scrollback(*scroll_offset);
+                                    *scroll_offset = parser.screen().scrollback();
                                 }
                                 MouseEventKind::ScrollDown => {
                                     *scroll_offset = scroll_offset.saturating_sub(3);
@@ -883,8 +884,40 @@ pub(crate) fn event_loop(
                                                             }
                                                         }
                                                     }
+                                                } else if input_mode == InputMode::Ai {
+                                                    let line = input.content().to_string();
+                                                    if line.starts_with('/') {
+                                                        let candidates = complete_slash_command(&line);
+                                                        match candidates.len() {
+                                                            0 => {}
+                                                            1 => {
+                                                                input.replace_range(
+                                                                    0,
+                                                                    line.len(),
+                                                                    &format!("{} ", candidates[0]),
+                                                                );
+                                                            }
+                                                            _ => {
+                                                                let common =
+                                                                    terminal_input::longest_common_prefix(
+                                                                        &candidates,
+                                                                    );
+                                                                if common.len() > line.len() {
+                                                                    input.replace_range(
+                                                                        0,
+                                                                        line.len(),
+                                                                        &common,
+                                                                    );
+                                                                }
+                                                                completion_popup.open(
+                                                                    candidates,
+                                                                    0,
+                                                                    line.len(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
                                                 }
-                                                // In AI mode with non-empty input: no-op
                                             }
 
                                             // --- History navigation ---
@@ -921,6 +954,7 @@ pub(crate) fn event_loop(
                                             (KeyCode::PageUp, _) => {
                                                 *scroll_offset = scroll_offset.saturating_add(10);
                                                 parser.screen_mut().set_scrollback(*scroll_offset);
+                                                *scroll_offset = parser.screen().scrollback();
                                             }
                                             (KeyCode::PageDown, _) => {
                                                 *scroll_offset = scroll_offset.saturating_sub(10);
