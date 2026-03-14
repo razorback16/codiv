@@ -5,7 +5,7 @@ use crate::store::SessionStore;
 use slate_common::conversation::ConversationEvent;
 use slate_common::messages::{ClientMessage, DaemonMessage};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::info;
 
@@ -14,8 +14,7 @@ const SYSTEM_PROMPT: &str = "You are a helpful coding assistant embedded in a te
     Use this context to give relevant, concise answers. \
     When referencing files or directories, use paths relative to the user's current working directory when possible.";
 
-fn create_agent(cwd: String, env_vars: Vec<(String, String)>) -> crate::agent::agent::Agent {
-    let config = crate::agent::config::AppConfig::load();
+fn create_agent(cwd: String, env_vars: Vec<(String, String)>, config: &crate::agent::config::AppConfig) -> crate::agent::agent::Agent {
     let assignment = config.models.assignment_for(&slate_common::types::AgentRole::Engineer);
     let provider_config = config.models.resolve_provider_config(&assignment);
     crate::agent::agent::Agent::new(
@@ -60,13 +59,18 @@ pub struct Daemon {
     /// event loop so the name can be persisted to SQLite.
     name_update_tx: tokio::sync::mpsc::Sender<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
     name_update_rx: tokio::sync::mpsc::Receiver<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
+    config: Arc<RwLock<crate::agent::config::AppConfig>>,
+    _config_watcher: crate::agent::config::ConfigWatcherGuard,
+    config_change_rx: tokio::sync::mpsc::Receiver<()>,
 }
 
 impl Daemon {
     pub async fn new() -> std::io::Result<Self> {
         // Eagerly load config so the default config.toml is created on
         // first startup (before any client connects).
-        let _ = crate::agent::config::AppConfig::load();
+        let initial_config = crate::agent::config::AppConfig::load();
+        let (config_change_tx, config_change_rx) = tokio::sync::mpsc::channel(4);
+        let (config, _config_watcher) = initial_config.into_watched(Some(config_change_tx));
 
         let ipc = IpcServer::new().await?;
         let store = SessionStore::open().map_err(|e| {
@@ -82,6 +86,9 @@ impl Daemon {
             agent_done_rx,
             name_update_tx,
             name_update_rx,
+            config,
+            _config_watcher,
+            config_change_rx,
         })
     }
 
@@ -118,6 +125,22 @@ impl Daemon {
                 _ = cleanup_interval.tick() => {
                     self.collect_returned_agents();
                     self.cleanup_stale_sessions().await;
+                }
+                Some(_) = self.config_change_rx.recv() => {
+                    // Notify all connected clients
+                    for (&cid, _) in &self.sessions {
+                        self.ipc.send(cid, &DaemonMessage::Notice {
+                            message: "Configuration reloaded".to_string(),
+                        }).await;
+                    }
+                    // Sync permission mode on existing sessions
+                    if let Ok(cfg) = self.config.read() {
+                        for (_, session) in self.sessions.iter_mut() {
+                            if let Some(ref pctx) = session.permission_ctx {
+                                pctx.set_mode(cfg.permissions.mode);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -224,7 +247,8 @@ impl Daemon {
                     };
 
                     let mut agent = taken_agent.unwrap_or_else(|| {
-                        create_agent(cwd.clone(), env_vars)
+                        let cfg = self.config.read().unwrap();
+                        create_agent(cwd.clone(), env_vars, &cfg)
                     });
 
                     // Ensure agent uses the session's latest cwd.
@@ -240,11 +264,11 @@ impl Daemon {
                     let permission_ctx = match permission_ctx {
                         Some(ctx) => Some(ctx),
                         None => {
-                            let config = crate::agent::config::AppConfig::load();
+                            let cfg = self.config.read().unwrap();
                             let ctx = Arc::new(PermissionContext::new(
-                                config.permissions.mode,
+                                cfg.permissions.mode,
                                 client_tx.clone(),
-                                config.models,
+                                cfg.models.clone(),
                             ));
                             if let Some(session) = self.sessions.get_mut(&client_id) {
                                 session.permission_ctx = Some(Arc::clone(&ctx));
@@ -361,8 +385,30 @@ impl Daemon {
             ClientMessage::Confirmation { request_id, approved, add_to_allowlist, add_to_denylist, comment } => {
                 if let Some(session) = self.sessions.get(&client_id) {
                     if let Some(ref pctx) = session.permission_ctx {
+                        // Extract metadata for this request
+                        let meta = {
+                            let mut meta_guard = pctx.pending_meta.lock().unwrap();
+                            meta_guard.remove(&request_id)
+                        };
+
                         let mut pending = pctx.pending.lock().unwrap();
                         if let Some(sender) = pending.remove(&request_id) {
+                            // Persist permission decision if requested
+                            if let Some((ref tool_name, ref args)) = meta {
+                                let command_prefix = crate::agent::permission_evaluator::extract_args_pattern(tool_name, args);
+                                let entry = match command_prefix {
+                                    Some(ref prefix) => format!("{}:{}", tool_name, prefix),
+                                    None => tool_name.to_string(),
+                                };
+
+                                if add_to_allowlist && approved {
+                                    crate::agent::config::add_permission_to_config(&entry, "allow");
+                                } else if add_to_denylist && !approved {
+                                    crate::agent::config::add_permission_to_config(&entry, "deny");
+                                }
+                                // One-time decisions are not cached — they apply only to this call.
+                            }
+
                             let result = crate::agent::permissions::ConfirmationResult {
                                 approved,
                                 add_to_allowlist,
@@ -386,11 +432,11 @@ impl Daemon {
                             // Create PermissionContext eagerly so the mode is
                             // applied even before the first AgentRequest.
                             if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                                let config = crate::agent::config::AppConfig::load();
+                                let cfg = self.config.read().unwrap();
                                 let ctx = Arc::new(PermissionContext::new(
                                     mode,
                                     client_tx,
-                                    config.models,
+                                    cfg.models.clone(),
                                 ));
                                 session.permission_ctx = Some(ctx);
                             }
@@ -433,7 +479,9 @@ impl Daemon {
                         // Clear agent history and reload from events
                         let cwd = session.cwd.clone();
                         let env_vars = session.env_vars.clone();
-                        let mut agent = create_agent(cwd, env_vars);
+                        let cfg = self.config.read().unwrap();
+                        let mut agent = create_agent(cwd, env_vars, &cfg);
+                        drop(cfg);
                         agent.add_tool_events(&events);
                         session.agent = Some(agent);
                         session.session_id = Some(target_sid.clone());
@@ -490,8 +538,10 @@ impl Daemon {
 
                     let session_cwd = session.cwd.clone();
                     let session_env_vars = session.env_vars.clone();
+                    let config_ref = Arc::clone(&self.config);
                     let agent = session.agent.get_or_insert_with(|| {
-                        create_agent(session_cwd, session_env_vars)
+                        let cfg = config_ref.read().unwrap();
+                        create_agent(session_cwd, session_env_vars, &cfg)
                     });
                     // Update the agent's cwd so tools execute in the right directory.
                     agent.cwd = cwd.clone();
@@ -548,13 +598,14 @@ impl Daemon {
         }
         for (sid, prompt, client_tx) in name_gen_requests {
             let name_update_tx = self.name_update_tx.clone();
+            let models = self.config.read().unwrap().models.clone();
             tokio::spawn(async move {
                 // Use a timeout so name generation never blocks the inference
                 // server for too long (important for local models with single-
                 // request concurrency).
                 match tokio::time::timeout(
                     Duration::from_secs(30),
-                    generate_session_name(&prompt),
+                    generate_session_name(&prompt, &models),
                 ).await {
                     Ok(Some(name)) => {
                         info!("session name generated: {:?}", name);
@@ -591,19 +642,18 @@ impl Daemon {
 
 /// Attempt to generate a short session title using a cheap LLM call.
 /// Returns `None` on failure (network error, no API key, etc.).
-async fn generate_session_name(prompt: &str) -> Option<String> {
-    let config = crate::agent::config::AppConfig::load();
+async fn generate_session_name(prompt: &str, models: &crate::agent::config::ModelCatalog) -> Option<String> {
     // Only use "session_namer" role — don't fall back to other roles
     // which may point to expensive models. If not configured, the
     // truncated prompt name is good enough.
-    let assignment = match config.models.roles.get("session_namer").cloned() {
+    let assignment = match models.roles.get("session_namer").cloned() {
         Some(a) => a,
         None => {
             info!("generate_session_name: no session_namer role configured, skipping");
             return None;
         }
     };
-    let provider_config = config.models.resolve_provider_config(&assignment);
+    let provider_config = models.resolve_provider_config(&assignment);
 
     info!("generate_session_name: using {}/{}", assignment.provider, assignment.model);
 

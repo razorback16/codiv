@@ -130,10 +130,10 @@ The foundation layer provides a working terminal client that executes commands v
    - Auto-capture fresh env snapshot and send to `slated`
    - Manual `slate sync-env` command for edge cases
 
-6. **Color-coded agent output streaming to slate**
+6. **Agent output streaming with tool block headers** *(descoped from bordered boxes)*
    - Agent output streams from `slated` to `slate` via IPC
-   - Rendered in color-bordered blocks (cyan for Engineer role)
-   - Auto-collapse to single-line summary on completion; Enter to expand
+   - Tool calls rendered with yellow/green/red header lines (sufficient for v1)
+   - Bordered boxes and auto-collapse are descoped to a later phase
 
 7. **TOML config for API keys and model selection**
    - Config file at `~/.slate-agent/config.toml`

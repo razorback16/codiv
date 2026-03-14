@@ -14,6 +14,8 @@ default_model = "claude-sonnet-4-5"
 # ── Permissions ─────────────────────────────────────────────────────
 [permissions]
 mode = "auto"  # "auto" | "manual" | "bypass"
+# allow = ["bash:cargo build", "bash:git log", "bash:git status"]
+# deny = ["bash:rm -rf"]
 
 # ── Provider-level settings ──────────────────────────────────────────
 # API keys and base URLs set here apply to all roles using that provider.

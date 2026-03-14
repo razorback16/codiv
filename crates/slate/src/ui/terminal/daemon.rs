@@ -467,18 +467,25 @@ fn handle_single_message(
             prompt_lines += 1;
 
             // Build options (extra indent, no ⎿)
-            let options: Vec<&str> = if risk == slate_common::messages::RiskLevel::Critical {
+            // Permanent allow/deny only for bash and non-native tools
+            let is_native = matches!(tool_name.as_str(), "read" | "write" | "edit" | "glob" | "grep");
+            let options: Vec<&str> = if is_native {
                 vec![
                     "1. Yes, allow this action",
                     "2. No, reject",
-                    "3. No, and never allow (session)",
+                ]
+            } else if risk == slate_common::messages::RiskLevel::Critical {
+                vec![
+                    "1. Yes, allow this action",
+                    "2. No, reject",
+                    "3. No, and never allow (permanent)",
                 ]
             } else {
                 vec![
                     "1. Yes, allow this action",
-                    "2. Yes, and always allow (session)",
+                    "2. Yes, and always allow (permanent)",
                     "3. No, reject",
-                    "4. No, and never allow (session)",
+                    "4. No, and never allow (permanent)",
                 ]
             };
             let option_count = options.len();
@@ -547,6 +554,9 @@ fn handle_single_message(
             name,
         } => {
             *session_name = Some(name);
+        }
+        ipc_messages::DaemonMessage::Notice { message } => {
+            parser_push_notice(parser, NoticeKind::Notice, &message);
         }
         // SessionList and SessionReplay are handled in handle_daemon_message
         ipc_messages::DaemonMessage::SessionList { .. }
