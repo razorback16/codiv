@@ -365,10 +365,13 @@ pub(crate) fn event_loop(
                             if pending_confirmation.is_some() && !key_handled {
                                 // Helper: build the options list for the current risk level
                                 let redraw_options = |conf: &PendingConfirmation, p: &mut vt100::Parser| {
-                                    let options: Vec<&str> = if conf.risk == slate_common::messages::RiskLevel::Critical {
-                                        vec!["1. Yes, allow this action", "2. No, reject", "3. No, and never allow (session)"]
+                                    let is_native = matches!(conf.tool_name.as_str(), "read" | "write" | "edit" | "glob" | "grep");
+                                    let options: Vec<&str> = if is_native {
+                                        vec!["1. Yes, allow this action", "2. No, reject"]
+                                    } else if conf.risk == slate_common::messages::RiskLevel::Critical {
+                                        vec!["1. Yes, allow this action", "2. No, reject", "3. No, and never allow (permanent)"]
                                     } else {
-                                        vec!["1. Yes, allow this action", "2. Yes, and always allow (session)", "3. No, reject", "4. No, and never allow (session)"]
+                                        vec!["1. Yes, allow this action", "2. Yes, and always allow (permanent)", "3. No, reject", "4. No, and never allow (permanent)"]
                                     };
                                     // Move cursor up by option_count lines to overwrite them
                                     for _ in 0..conf.option_count {
@@ -392,10 +395,18 @@ pub(crate) fn event_loop(
                                     }
                                 };
 
-                                // Helper: resolve selected_index to (granted, always, never) based on risk
+                                // Helper: resolve selected_index to (granted, always, never) based on risk and tool type
                                 let resolve_action = |conf: &PendingConfirmation| -> (bool, bool, bool) {
-                                    if conf.risk == slate_common::messages::RiskLevel::Critical {
-                                        // Critical: 0=allow, 1=reject, 2=never-allow
+                                    let is_native = matches!(conf.tool_name.as_str(), "read" | "write" | "edit" | "glob" | "grep");
+                                    if is_native {
+                                        // Native tools: 0=allow, 1=reject (no permanent options)
+                                        match conf.selected_index {
+                                            0 => (true, false, false),
+                                            1 => (false, false, false),
+                                            _ => (false, false, false),
+                                        }
+                                    } else if conf.risk == slate_common::messages::RiskLevel::Critical {
+                                        // Critical: 0=allow, 1=reject, 2=never-allow(permanent)
                                         match conf.selected_index {
                                             0 => (true, false, false),
                                             1 => (false, false, false),
@@ -403,7 +414,7 @@ pub(crate) fn event_loop(
                                             _ => (false, false, false),
                                         }
                                     } else {
-                                        // Non-critical: 0=allow, 1=always-allow, 2=reject, 3=never-allow
+                                        // Non-critical bash/non-native: 0=allow, 1=always-allow(permanent), 2=reject, 3=never-allow(permanent)
                                         match conf.selected_index {
                                             0 => (true, false, false),
                                             1 => (true, true, false),
@@ -798,6 +809,7 @@ pub(crate) fn event_loop(
                                                                                 accumulated: String::new(),
                                                                                 command: raw_input.clone(),
                                                                                 last_activity: Instant::now(),
+                                                                                needs_env_refresh: super::state::command_modifies_env(&raw_input),
                                                                             });
                                                                         }
                                                                         None => {
@@ -1085,7 +1097,9 @@ pub(crate) fn event_loop(
                 }
                 *cwd = bash.capture_cwd();
                 git_info = bash.capture_git_info();
-                cached_env_vars = bash.capture_env();
+                if pending.needs_env_refresh {
+                    cached_env_vars = bash.capture_env();
+                }
                 if let Some(ref mut c) = client {
                     if let Some(frame) = ipc_messages::build_command_result(
                         &pending.command,

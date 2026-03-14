@@ -67,23 +67,59 @@ pub struct AppConfig {
     pub models: ModelCatalog,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct PermissionsConfig {
     #[serde(default)]
     pub mode: PermissionMode,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
-impl Default for PermissionsConfig {
-    fn default() -> Self {
-        Self {
-            mode: PermissionMode::default(),
+impl PermissionsConfig {
+    /// Look up whether a tool (optionally with a bash command prefix) is in the
+    /// allow or deny list. Returns `Some("allow")`, `Some("deny")`, or `None`.
+    pub fn lookup(&self, tool_name: &str, command_prefix: Option<&str>) -> Option<&str> {
+        let key = match command_prefix {
+            Some(prefix) => format!("{}:{}", tool_name, prefix),
+            None => tool_name.to_string(),
+        };
+        if self.deny.contains(&key) { return Some("deny"); }
+        if self.allow.contains(&key) { return Some("allow"); }
+        if command_prefix.is_some() {
+            let tool_key = tool_name.to_string();
+            if self.deny.contains(&tool_key) { return Some("deny"); }
+            if self.allow.contains(&tool_key) { return Some("allow"); }
         }
+        None
     }
+}
+
+/// Append an entry to the `allow` or `deny` array in the `[permissions]`
+/// section of `~/.slate-agent/config.toml`, using `toml_edit` for
+/// format-preserving edits.
+pub fn add_permission_to_config(entry: &str, list: &str) {
+    use toml_edit::{DocumentMut, value, Array};
+    let config_path = AppConfig::config_path();
+    let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc = content.parse::<DocumentMut>().unwrap_or_else(|_| DocumentMut::new());
+    if !doc.contains_table("permissions") {
+        doc["permissions"] = toml_edit::table();
+    }
+    let perms = doc["permissions"].as_table_mut().unwrap();
+    if !perms.contains_key(list) {
+        perms[list] = value(Array::new());
+    }
+    let arr = perms[list].as_value_mut().and_then(|v| v.as_array_mut()).unwrap();
+    if !arr.iter().any(|v| v.as_str() == Some(entry)) {
+        arr.push(entry);
+    }
+    let _ = std::fs::write(&config_path, doc.to_string());
 }
 
 impl AppConfig {
     /// Resolve the canonical config file path (`~/.slate-agent/config.toml`).
-    #[allow(dead_code)]
     pub fn config_path() -> PathBuf {
         slate_common::config::config_dir().join("config.toml")
     }
@@ -112,10 +148,9 @@ impl AppConfig {
     /// Wrap this config in an `Arc<RwLock<>>` and start a filesystem watcher
     /// that automatically re-parses on changes.
     /// Returns the shared handle and a guard that keeps the watcher alive.
-    #[allow(dead_code)]
-    pub fn into_watched(self) -> (Arc<RwLock<AppConfig>>, ConfigWatcherGuard) {
+    pub fn into_watched(self, change_tx: Option<tokio::sync::mpsc::Sender<()>>) -> (Arc<RwLock<AppConfig>>, ConfigWatcherGuard) {
         let shared = Arc::new(RwLock::new(self));
-        let guard = ConfigWatcherGuard::start(Arc::clone(&shared));
+        let guard = ConfigWatcherGuard::start(Arc::clone(&shared), change_tx);
         (shared, guard)
     }
 }
@@ -125,13 +160,12 @@ impl AppConfig {
 // ---------------------------------------------------------------------------
 
 /// Holds the `notify` watcher so it stays alive as long as needed.
-#[allow(dead_code)]
 pub struct ConfigWatcherGuard {
     _watcher: RecommendedWatcher,
 }
 
 impl ConfigWatcherGuard {
-    fn start(shared: Arc<RwLock<AppConfig>>) -> Self {
+    fn start(shared: Arc<RwLock<AppConfig>>, change_tx: Option<tokio::sync::mpsc::Sender<()>>) -> Self {
         let config_path = AppConfig::config_path();
         let watch_dir = config_path
             .parent()
@@ -152,6 +186,9 @@ impl ConfigWatcherGuard {
                         let new_cfg = AppConfig::load();
                         if let Ok(mut guard) = shared.write() {
                             *guard = new_cfg;
+                        }
+                        if let Some(ref tx) = change_tx {
+                            let _ = tx.try_send(());
                         }
                     }
                     _ => {}
@@ -640,4 +677,52 @@ async fn send_ipc(tx: &mpsc::Sender<Vec<u8>>, msg: &DaemonMessage) -> Result<(),
     let frame = frame_message(msg)?;
     tx.send(frame).await.map_err(|_| "ipc receiver closed")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_exact_match() {
+        let cfg = PermissionsConfig {
+            mode: PermissionMode::Auto,
+            allow: vec!["read".to_string()],
+            deny: vec![],
+        };
+        assert_eq!(cfg.lookup("read", None), Some("allow"));
+        assert_eq!(cfg.lookup("write", None), None);
+    }
+
+    #[test]
+    fn lookup_bash_prefix() {
+        let cfg = PermissionsConfig {
+            mode: PermissionMode::Auto,
+            allow: vec!["bash:cargo build".to_string()],
+            deny: vec![],
+        };
+        assert_eq!(cfg.lookup("bash", Some("cargo build")), Some("allow"));
+        assert_eq!(cfg.lookup("bash", Some("cargo test")), None);
+        assert_eq!(cfg.lookup("bash", Some("rm")), None);
+    }
+
+    #[test]
+    fn lookup_deny_wins() {
+        let cfg = PermissionsConfig {
+            mode: PermissionMode::Auto,
+            allow: vec!["bash:cargo build".to_string()],
+            deny: vec!["bash:cargo build".to_string()],
+        };
+        assert_eq!(cfg.lookup("bash", Some("cargo build")), Some("deny"));
+    }
+
+    #[test]
+    fn lookup_fallback_tool_only() {
+        let cfg = PermissionsConfig {
+            mode: PermissionMode::Auto,
+            allow: vec!["bash".to_string()],
+            deny: vec![],
+        };
+        assert_eq!(cfg.lookup("bash", Some("anything")), Some("allow"));
+    }
 }

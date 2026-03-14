@@ -18,6 +18,8 @@ pub struct PermissionContext {
     pub client_tx: mpsc::Sender<Vec<u8>>,
     /// Pending confirmation requests waiting for user response.
     pub pending: std::sync::Mutex<HashMap<String, oneshot::Sender<ConfirmationResult>>>,
+    /// Metadata for pending confirmation requests (tool_name, args).
+    pub pending_meta: std::sync::Mutex<HashMap<String, (String, serde_json::Value)>>,
     /// Model catalog for LLM evaluator calls.
     pub catalog: ModelCatalog,
     /// Recent conversation context for the LLM evaluator.
@@ -43,6 +45,7 @@ impl PermissionContext {
             mode: RwLock::new(mode),
             client_tx,
             pending: std::sync::Mutex::new(HashMap::new()),
+            pending_meta: std::sync::Mutex::new(HashMap::new()),
             catalog,
             context_summary: RwLock::new(String::new()),
         }
@@ -74,12 +77,24 @@ pub fn wrap_with_permissions(
     ctx: Arc<PermissionContext>,
 ) -> Box<dyn Fn(Value) -> Result<String, String> + Send + Sync> {
     Box::new(move |args: Value| {
+        let command_prefix = super::permission_evaluator::extract_args_pattern(&tool_name, &args);
+
+        // Check config.toml persistent permissions
+        {
+            let cfg = crate::agent::config::AppConfig::load();
+            if let Some(d) = cfg.permissions.lookup(&tool_name, command_prefix.as_deref()) {
+                if d == "allow" { return original(args); }
+                if d == "deny" { return Err("Denied by saved permission rule".into()); }
+            }
+        }
+
         let risk = classify_risk(&tool_name, &args);
         let mode = ctx.current_mode();
         let decision = evaluate_permission(mode, &tool_name, &args, risk);
 
         match decision {
             PermissionDecision::Allow => original(args),
+            PermissionDecision::Deny => Err("Denied by permission policy".into()),
             PermissionDecision::Prompt => {
                 // Use block_in_place to bridge async confirmation into sync closure
                 let result = tokio::task::block_in_place(|| {
@@ -188,6 +203,12 @@ async fn request_confirmation(
         pending.insert(request_id.clone(), tx);
     }
 
+    // Store metadata so the daemon can look up tool_name/args when persisting decisions
+    {
+        let mut meta = ctx.pending_meta.lock().map_err(|e| e.to_string())?;
+        meta.insert(request_id.clone(), (tool_name.to_string(), args.clone()));
+    }
+
     // Build description
     let args_summary = match tool_name {
         "bash" => args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -215,12 +236,16 @@ async fn request_confirmation(
             // Channel closed — clean up
             let mut pending = ctx.pending.lock().map_err(|e| e.to_string())?;
             pending.remove(&request_id);
+            let mut meta = ctx.pending_meta.lock().map_err(|e| e.to_string())?;
+            meta.remove(&request_id);
             Err("Confirmation channel closed".to_string())
         }
         Err(_) => {
             // Timeout — clean up and default to reject
             let mut pending = ctx.pending.lock().map_err(|e| e.to_string())?;
             pending.remove(&request_id);
+            let mut meta = ctx.pending_meta.lock().map_err(|e| e.to_string())?;
+            meta.remove(&request_id);
             tracing::warn!("confirmation timed out for {} (60s), rejecting", tool_name);
             Ok(ConfirmationResult {
                 approved: false,

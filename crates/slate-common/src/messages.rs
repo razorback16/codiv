@@ -121,6 +121,10 @@ pub enum DaemonMessage {
     SessionReplay {
         events: Vec<ConversationEvent>,
     },
+    /// Generic notice pushed to the client (e.g. config reloaded).
+    Notice {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

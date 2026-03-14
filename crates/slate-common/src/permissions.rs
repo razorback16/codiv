@@ -48,4 +48,6 @@ pub enum PermissionDecision {
     Prompt,
     /// Invoke the LLM evaluator to decide (Auto mode, High risk only).
     LlmEvaluate,
+    /// Deny the tool call outright.
+    Deny,
 }

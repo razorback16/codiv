@@ -51,6 +51,26 @@ pub fn evaluate_permission(
     }
 }
 
+/// Extract the subcommand pattern from a bash command for permission matching.
+/// Uses the first two words (e.g. "git log", "cargo build") so permissions
+/// are granular rather than blanket. Falls back to a single word for commands
+/// without a subcommand (e.g. "ls"). Returns `None` for non-bash tools.
+pub fn extract_args_pattern(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+    if tool_name == "bash" {
+        args.get("command").and_then(|v| v.as_str())
+            .and_then(|cmd| {
+                let mut words = cmd.split_whitespace();
+                let first = words.next().filter(|w| !w.is_empty())?;
+                match words.next().filter(|w| !w.starts_with('-')) {
+                    Some(second) => Some(format!("{} {}", first, second)),
+                    None => Some(first.to_string()),
+                }
+            })
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +169,38 @@ mod tests {
             evaluate_permission(PermissionMode::Bypass, "bash", &json!({"command": "rm -rf /"}), RiskLevel::Critical),
             PermissionDecision::Prompt
         );
+    }
+
+    #[test]
+    fn extract_args_pattern_bash() {
+        let args = serde_json::json!({"command": "cargo build"});
+        assert_eq!(extract_args_pattern("bash", &args), Some("cargo build".to_string()));
+    }
+
+    #[test]
+    fn extract_args_pattern_bash_single_word() {
+        let args = serde_json::json!({"command": "ls"});
+        assert_eq!(extract_args_pattern("bash", &args), Some("ls".to_string()));
+    }
+
+    #[test]
+    fn extract_args_pattern_bash_skips_flags() {
+        // Flag as second word is skipped, falls back to single word
+        let args = serde_json::json!({"command": "git --no-pager log"});
+        assert_eq!(extract_args_pattern("bash", &args), Some("git".to_string()));
+        let args2 = serde_json::json!({"command": "ls -la"});
+        assert_eq!(extract_args_pattern("bash", &args2), Some("ls".to_string()));
+    }
+
+    #[test]
+    fn extract_args_pattern_non_bash() {
+        let args = serde_json::json!({"file_path": "/foo"});
+        assert_eq!(extract_args_pattern("read", &args), None);
+    }
+
+    #[test]
+    fn extract_args_pattern_empty_command() {
+        let args = serde_json::json!({"command": ""});
+        assert_eq!(extract_args_pattern("bash", &args), None);
     }
 }
