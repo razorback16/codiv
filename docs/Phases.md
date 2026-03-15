@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-**Codiv Agent** is a Rust terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`codiv`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the Rust daemon (`codivd`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands that execute instantly (zero-latency fast-pass), or natural language that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
+**Codiv Agent** is a Rust terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`codiv`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the Rust daemon (`codivd`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands in Command mode that execute instantly (direct shell execution), or natural language in AI mode that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
 
 **Current status**: Phase 1 (Terminal Foundation) and Phase 2 (Single-Agent AI Loop) are complete. Phase 3 (Work Item DAG + Scheduler) is next.
 
@@ -16,8 +16,8 @@
 
 | Phase | Name                            | Goal                                                        | Status       | Key Deliverables                                                                                                                             |
 | ----- | ------------------------------- | ----------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1** | Terminal Foundation             | Working terminal client with daemon IPC                     | **COMPLETE** | Rust TUI, Rust daemon (replaced original C++ daemon), serde+bincode IPC, command fast-pass, tab completion, interactive passthrough |
-| **2** | Single-Agent AI Loop            | Natural language input routes to AI agent with tool calling | **COMPLETE** | aisdk.rs integration, single agent loop, session timeline, built-in tools, markdown rendering, basic safety                                |
+| **1** | Terminal Foundation             | Working terminal client with daemon IPC                     | **COMPLETE** | Rust TUI, Rust daemon (replaced original C++ daemon), serde+bincode IPC, dual-mode input, tab completion, interactive passthrough |
+| **2** | Single-Agent AI Loop            | AI mode input goes to agent with tool calling | **COMPLETE** | aisdk.rs integration, single agent loop, session timeline, built-in tools, markdown rendering, basic safety                                |
 | **3** | Work Item DAG + Scheduler       | Complex tasks decomposed into concurrent Work Items         | Planned      | Work Item schema, DAG construction, Tokio-based scheduler, budget enforcement                                                                |
 | **4** | Multi-Agent Roles + Multi-Model | Specialized agent roles with dynamic model selection        | Planned      | Role separation, model catalog, TeamLead model selection, Reviewer gating                                                                    |
 | **5** | Memory + Project Context        | Persistent bounded memory across sessions and projects      | Planned      | SQLite episodic store, semantic markdown, Narrator consolidation, project auto-switching                                                     |
@@ -68,7 +68,7 @@ The foundation layer provides a working terminal client that executes commands v
 - `codivd` daemon (Rust, Tokio async) listening on Unix socket with serde+bincode IPC protocol (replaced original C++20 daemon)
 - Persistent bash co-process via portable-pty with sentinel-based output boundary detection
 - Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
-- Command fast-pass: PATH scanning + 65 bash builtins in O(1) hash map with input classification (Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty)
+- Dual-mode input: AI mode (default, `>` gutter) and Command mode (`$` gutter) with Tab toggle
 - 3-tier tab completion: programmable (bash-completion integration) → command → file
 - Env snapshot protocol: session_id, env_vars, PATH, cwd captured on connect, stored per-session in daemon
 - Heartbeat mechanism (5s interval from client, 30s stale timeout in daemon)
@@ -107,7 +107,7 @@ The foundation layer provides a working terminal client that executes commands v
 
 - **TOML config for API keys and model selection** — Config at `~/.codiv/config.toml` with hot-reload support, `[models]` and `[safety]` sections.
 
-**Testable outcome**: User types "create a hello world program, compile it, and run it" — agent creates the file, compiles, executes, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
+**Testable outcome**: User types "create a hello world program, compile it, and run it" — agent creates the file, compiles, executes, and streams the output. User types `ls` — still executes directly in Command mode. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
 **Tech**: aisdk.rs (streaming + tool calling), streamdown-rs for markdown rendering.
 
@@ -344,7 +344,7 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 | Layer | Framework | Scope |
 | --- | --- | --- |
 | Rust daemon unit tests | `cargo test` (built-in) | IPC protocol, session management, worker execution, agent loop |
-| Rust client unit tests | `cargo test` (built-in) | Input classification, command index, completion engine, IPC message building |
+| Rust client unit tests | `cargo test` (built-in) | Dual-mode input, command index, completion engine, IPC message building |
 | Rust integration tests | `cargo test` (integration test modules) | End-to-end command execution, daemon connection, env snapshot round-trip |
 | End-to-end tests | expect-style scripting (e.g., rexpect or custom) | Full user scenarios: launch `codiv`, type commands, verify output, test agent interactions |
 | LLM interaction tests | Mock LLM server (record/replay) | Agent tool calling loop, Work Item creation, role delegation, error handling |

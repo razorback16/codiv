@@ -55,12 +55,12 @@ The key design decision: **no multi-pane split layout**. Everything flows linear
 ### Flow
 
 ```
-codiv> ls -la                          ← user types, output below (normal terminal)
+$ ls -la                               ← Command mode: user types, output below
 total 48
 drwxr-xr-x  12 user staff  384 Feb 23 .
 -rw-r--r--   1 user staff 1200 Feb 23 auth.ts
 
-codiv> refactor auth module to use JWT  ← natural language triggers agent
+> refactor auth module to use JWT       ← AI mode: natural language goes to agent
 
 ── Task: refactor auth module to use JWT ──────────────
 │
@@ -88,7 +88,7 @@ codiv> refactor auth module to use JWT  ← natural language triggers agent
 │ ⚠ Missing error handling on token expiry (line 42)   │
 └──────────────────────────────────────────────────────┘
 
-codiv> _                                ← back to prompt when done
+> _                                     ← back to AI mode prompt when done
 ```
 
 ### Key Behaviors
@@ -197,6 +197,6 @@ Unix domain socket with 4-byte length prefix + bincode payload. Both client and 
 - serde+bincode IPC protocol — shared via `codiv-common` crate.
 - Unix domain socket transport.
 - Persistent bash co-process model.
-- Command fast-pass logic.
+- Dual-mode input logic.
 - Env snapshot protocol.
 - All agent/memory/scheduler logic in daemon.

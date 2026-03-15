@@ -37,7 +37,7 @@ The workspace contains four crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `codiv` | TUI client — terminal rendering, bash co-process, input classification, tab completion |
+| `codiv` | TUI client — terminal rendering, bash co-process, dual-mode input, tab completion |
 | `codivd` | Async daemon — AI agent, session management, LLM streaming, tool execution |
 | `codiv-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
 | `codiv-common` | Shared types — IPC messages, config, utilities |
@@ -50,7 +50,7 @@ The terminal needs to be responsive at all times — you should be able to type,
 
 ### Why Rust?
 
-- **Performance** — command fast-pass with sub-10ms latency requires no GC pauses
+- **Performance** — direct shell execution with sub-10ms latency requires no GC pauses
 - **Safety** — memory safety without runtime overhead, critical for a tool that executes commands
 - **Async** — Tokio provides excellent async I/O for streaming LLM responses and concurrent tool execution
 - **Single binary** — no runtime dependencies to install

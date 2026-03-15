@@ -28,7 +28,7 @@ This design fills those gaps.
 
 ## 3. Phase 2: Single-Agent Architecture
 
-Phase 2 delivers a combined Orchestrator+Engineer agent — a single LLM session that receives user input classified as `AiQuery` by the command fast-pass, reasons about it, calls tools, and produces output.
+Phase 2 delivers a combined Orchestrator+Engineer agent — a single LLM session that receives user input from AI mode, reasons about it, calls tools, and produces output.
 
 ### 3.1 aisdk.rs Integration
 

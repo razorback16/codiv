@@ -10,7 +10,7 @@
 
 **Key differentiators:**
 
-- **Zero-latency command fast-pass**: recognized shell commands execute immediately without AI round-trip — no competitor offers this
+- **Zero-latency Command mode**: shell commands in Command mode execute immediately without AI round-trip — no competitor offers this
 - **Multi-model orchestration**: different AI models assigned to different roles (planning, coding, review, research) based on task complexity — not locked to a single provider
 - **Recursive agent hierarchy**: TeamLead can deploy sub-TeamLeads, enabling arbitrarily deep task decomposition for complex work — validated by Anthropic's research showing orchestrator+subagent patterns outperform single agents by 90.2%
 - **Shared state over agent chat**: agents coordinate through explicit artifacts and task state, not implicit message passing; single-writer ownership ensures no two agents can corrupt shared state — a pattern validated by Cursor's failure with reader-writer locks (agents held locks too long, 20 agents degraded to throughput of 2-3)
@@ -34,7 +34,7 @@
 
 ### Competitive Landscape
 
-| Tool | Type | Models | Agent Architecture | Memory | Command Fast-Pass | Pricing | Benchmark |
+| Tool | Type | Models | Agent Architecture | Memory | Command Mode | Pricing | Benchmark |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **Claude Code** (Anthropic) | CLI | Anthropic only | Recursive subagents (up to 7 parallel; unreleased Swarms) | Hierarchical CLAUDE.md + Auto Memory + Subagent Memory; compaction at ~95% capacity | Permission allowlist (closest analog) | $20-200/mo | 80.9% SWE-bench |
 | **Codex CLI** (OpenAI) | Open-source Rust CLI | OpenAI family + Ollama local models | Flat agent (multi-agent via external Agents SDK + MCP) | AGENTS.md + session resume | No | $20-200/mo or API | N/A |
@@ -48,7 +48,7 @@
 | **Devin** (Cognition) | Cloud VM (terminal+editor+browser) | Proprietary | Full autonomous environment | Cloud-persistent | N/A | $500/mo | N/A |
 | **Codiv Agent** | **Rust CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
 
-**Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
+**Key competitive insight**: No existing tool combines terminal-native dual-mode input with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
 
 ---
 
@@ -59,7 +59,7 @@
 | Priority | Goal | Success Metric | Target |
 | --- | --- | --- | --- |
 | **P0** | Codiv binary + codivd daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
-| **P0** | Command fast-pass with near-zero latency | Recognized commands execute in <10ms overhead vs raw shell | Phase 1 complete |
+| **P0** | Direct shell execution with near-zero latency | Commands in Command mode execute in <10ms overhead vs raw shell | Phase 1 complete |
 | **P0** | Single-model agent loop (Orchestrator → Engineer → output) | Natural language task → file edits + test runs working | Phase 2 complete |
 | **P1** | Basic safety controls (risk classification, confirmation prompts) | Destructive commands require confirmation; no auto-execution of critical-risk commands | Phase 2 complete |
 | **P0** | Work Item DAG with concurrent scheduling | Independent Work Items execute in parallel; dependencies enforced | Phase 3 complete |
@@ -73,7 +73,7 @@
 
 | KPI | Baseline (no tool) | Target |
 | --- | --- | --- |
-| Command execution overhead | 0ms (raw shell) | <10ms for fast-pass |
+| Command execution overhead | 0ms (raw shell) | <10ms for Command mode |
 | Time-to-first-token (AI response) | N/A | <500ms streaming |
 | Work Item throughput (concurrent) | 1 (sequential) | 4+ parallel workers |
 | Memory footprint (daemon) | N/A | <50MB resident |
@@ -124,13 +124,13 @@ The following are **not** in scope for the MVP or near-term roadmap:
 
 ### 5.5 User Stories with Acceptance Criteria
 
-#### Fast-Pass & Command Execution
+#### Command Mode & Shell Execution
 
-**US-001**: As Alex (senior backend dev), I want to type `make test` and have it execute instantly without AI routing, so that my shell workflow has zero overhead.
+**US-001**: As Alex (senior backend dev), I want to type `make test` in Command mode and have it execute instantly, so that my shell workflow has zero overhead.
 - **AC**: Recognized commands execute in <10ms overhead. No network call to LLM. Command output renders inline with no border, indistinguishable from a normal terminal.
 
-**US-002**: As Alex, I want to type `?make test` (or any `?`-prefixed command) and have the agent interpret it as an AI query, so that I can force agent routing when I need help with a recognized command.
-- **AC**: `?` prefix bypasses fast-pass classification. Agent receives the full input (minus `?`) as a natural language query.
+**US-002**: As Alex, I want to press Tab on an empty input to switch from Command mode to AI mode, so that I can ask the agent for help without leaving the terminal.
+- **AC**: Tab on empty input toggles between AI mode (`>` gutter, cyan) and Command mode (`$` gutter, white). Input in AI mode is sent to the agent as a natural language query.
 
 #### Agent Task Execution
 
@@ -237,12 +237,12 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - **Daemon logging**: logs to `~/.codiv/codivd.log`
 - **Async I/O**: Tokio runtime with async/await
 
-### FR-003: Command Fast-Pass
+### FR-003: Dual-Mode Input
 
 - Build command index on startup in `codiv` binary from: PATH executables (scanning) + 65 bash builtins
 - Store in **O(1) hash map**: command name → type + path/builtin
-- **Input classification categories**: Execute (recognized command), Interactive (vim, ssh, python, etc.), AiQuery (natural language), NotFound, Clear, Reset, Exit, Empty
-- Recognized commands execute immediately through bash co-process; unknown commands route to agent mode; `?` prefix forces AI
+- **Dual-mode input**: AI mode (default, `>` gutter) and Command mode (`$` gutter) with Tab toggle on empty input
+- In Command mode, input executes through the bash co-process; in AI mode, input is sent to the agent as a natural language query
 - Provide completion hints via tab completion in `codiv` binary
 
 ### FR-004: Agent System

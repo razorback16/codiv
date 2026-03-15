@@ -1,13 +1,13 @@
 ---
 title: AI Mode
-description: How natural language queries trigger the AI agent and tool calling loop.
+description: "How AI mode works: querying the agent, tool calling, and session context."
 section: Usage
 order: 2
 ---
 
 ## How It Works
 
-When Codiv classifies your input as an AI query — either natural language or an unrecognized command — it sends the request to the daemon's AI agent over IPC.
+AI mode is the default mode in Codiv. When the gutter shows `>` in cyan, everything you type is sent to the daemon's AI agent over IPC.
 
 The agent then:
 
@@ -15,6 +15,8 @@ The agent then:
 2. Reasons about what to do
 3. Calls tools as needed (bash, read, write, edit, grep, glob)
 4. Streams the response back to your terminal in real time
+
+AI mode is active on startup. Press Tab on empty input to switch to Command mode, and Tab again to return.
 
 ## Streaming Responses
 

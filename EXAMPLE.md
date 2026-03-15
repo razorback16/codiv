@@ -80,56 +80,42 @@ async fn decompose_task(user_request: &str) -> TaskGraph {
 }
 ```
 
-### Instant Command Detection
+### Dual-Mode Input
 
-The terminal uses pattern matching to detect shell commands with <10ms overhead:
+Codiv uses an explicit mode system — the user controls whether input goes to the shell or the AI agent:
 
 ```rust
-use regex::Regex;
-
-fn is_shell_command(input: &str) -> bool {
-    let shell_patterns = vec![
-        Regex::new(r"^(ls|cd|pwd|cat|grep|find)").unwrap(),
-        Regex::new(r"^git\s+").unwrap(),
-        Regex::new(r"^cargo\s+").unwrap(),
-        Regex::new(r"^\w+\s*=").unwrap(), // env vars
-    ];
-    
-    shell_patterns.iter().any(|pattern| pattern.is_match(input))
-}
-
-fn handle_input(input: &str) {
-    if is_shell_command(input) {
-        execute_instantly(input); // <10ms, no AI
-    } else {
-        send_to_ai_agents(input); // Natural language task
-    }
+enum InputMode {
+    Ai,      // `>` gutter in cyan — default on startup
+    Command, // `$` gutter in white — direct shell access
 }
 ```
 
+Press **Tab on empty input** to toggle between modes. No classification heuristics, no ambiguity.
+
 ## Usage Examples
 
-### Instant Shell Commands
+### Shell Commands (Command Mode)
 
 ```bash
-# These execute instantly (no AI overhead)
+# In Command Mode ($ gutter), input goes directly to the shell
 $ ls -la
 $ git status
 $ cargo build
 $ cd src/
 ```
 
-### AI-Powered Tasks
+### AI-Powered Tasks (AI Mode)
 
 ```bash
-# Natural language requests go to AI agents
-$ analyze this codebase and find potential bugs
+# In AI Mode (> gutter), input goes to the AI agent
+> analyze this codebase and find potential bugs
 
-$ refactor the database module to use async/await
+> refactor the database module to use async/await
 
-$ write comprehensive tests for the authentication system
+> write comprehensive tests for the authentication system
 
-$ research best practices for Rust error handling and apply them
+> research best practices for Rust error handling and apply them
 ```
 
 ### Multi-Model Intelligence
@@ -172,13 +158,21 @@ fn render_ui(frame: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title("Output"));
     frame.render_widget(output, chunks[0]);
     
-    // Render input prompt
+    // Render input prompt with mode-appropriate gutter
+    let gutter = match app.input_mode {
+        InputMode::Ai      => "> ",  // cyan in actual render
+        InputMode::Command  => "$ ", // white in actual render
+    };
     let input = Paragraph::new(app.input.clone())
-        .block(Block::default().borders(Borders::ALL).title("$ "));
+        .block(Block::default().borders(Borders::ALL).title(gutter));
     frame.render_widget(input, chunks[1]);
-    
+
     // Render status
-    let status = Paragraph::new(format!("Mode: {} | Agents: Active", app.mode));
+    let mode_label = match app.input_mode {
+        InputMode::Ai      => "AI",
+        InputMode::Command  => "Command",
+    };
+    let status = Paragraph::new(format!("Mode: {} | Agents: Active", mode_label));
     frame.render_widget(status, chunks[2]);
 }
 ```
@@ -256,7 +250,6 @@ researcher = "claude-3-haiku"
 [terminal]
 shell = "/bin/zsh"
 command_timeout_ms = 5000
-ai_overhead_threshold_ms = 10
 ```
 
 ## Contributing

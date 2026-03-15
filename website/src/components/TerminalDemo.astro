@@ -140,6 +140,8 @@
   const steps = [
     {
       cmd: 'ls',
+      prompt: '$ ',
+      promptCls: 'tm-gutter-cmd',
       speed: 50,
       output: 'Cargo.toml  Cargo.lock  README.md  LICENSE\ncrates/     docs/       target/',
       pause: 1500,
@@ -147,6 +149,8 @@
     },
     {
       cmd: 'git status',
+      prompt: '$ ',
+      promptCls: 'tm-gutter-cmd',
       speed: 50,
       output: 'On branch main\nYour branch is up to date with \'origin/main\'.\n\nChanges not staged for commit:\n  modified:   crates/codiv/src/app.rs\n\nno changes added to commit',
       pause: 1500,
@@ -154,6 +158,8 @@
     },
     {
       cmd: 'create a hello world in Rust, compile and run it',
+      prompt: '> ',
+      promptCls: 'tm-gutter-ai',
       speed: 60,
       output:
         'I\'ll create a Hello World program in Rust, compile it, and run it.\n\n' +
@@ -309,7 +315,7 @@
 
   async function runStep(step) {
     // Prompt
-    appendSpan('tm-prompt', 'codiv> ');
+    appendSpan(step.promptCls, step.prompt);
     await typeText(step.cmd, step.speed);
     appendText('\n');
 
@@ -337,7 +343,7 @@
 
   // Inject dynamic styles for colored spans
   const st = document.createElement('style');
-  st.textContent = '.tm-prompt{color:#4ade80}.tm-tool{color:#facc15}.tm-code{color:#67e8f9}.tm-green{color:#4ade80}.tm-white{color:#f0f0f0}';
+  st.textContent = '.tm-gutter-ai{color:#67e8f9}.tm-gutter-cmd{color:#d4d4d4}.tm-tool{color:#facc15}.tm-code{color:#67e8f9}.tm-green{color:#4ade80}.tm-white{color:#f0f0f0}';
   document.head.appendChild(st);
 })();
 </script>
