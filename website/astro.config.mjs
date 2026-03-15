@@ -3,8 +3,8 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 
 export default defineConfig({
-  site: 'https://razorback16.github.io',
-  base: '/slate-agent',
+  site: 'https://codiv.ai',
+  base: '/',
   integrations: [mdx(), sitemap()],
   markdown: {
     shikiConfig: {
