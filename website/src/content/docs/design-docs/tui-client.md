@@ -15,9 +15,7 @@ The TUI presents a single scrollable pane where content appears chronologically:
 
 ```
 ┌──────────────────────────────────────┐
-│ $ ls -la                             │  ← Shell command
-│ total 48                             │  ← Shell output
-│ drwxr-xr-x  12 user staff  384 ...  │
+│ > refactor auth module               │  ← AI mode query
 │                                      │
 │ ━━━ Task: Refactor auth module ━━━━  │  ← Task header
 │ ├─ [✓] Read auth module              │  ← DAG tree
@@ -31,8 +29,25 @@ The TUI presents a single scrollable pane where content appears chronologically:
 │ ```rust                              │  ← Syntax highlighted
 │ pub fn authenticate(token: &str)     │    code block
 │ ```                                  │
+│                                      │
+│ $ ls -la                             │  ← Shell command
+│ total 48                             │  ← Shell output
+│ drwxr-xr-x  12 user staff  384 ...  │
 └──────────────────────────────────────┘
 ```
+
+## Dual-Mode Input
+
+The TUI uses an explicit dual-mode input system controlled by the `InputMode` enum, which has two variants: `Ai` and `Command`.
+
+### Modes
+
+- **AI mode** is the default on startup. The gutter displays `>` in cyan, and all input is sent to the AI agent for processing.
+- **Command mode** switches the gutter to `$` in white, and input is sent directly to the bash co-process for execution.
+
+### Switching modes
+
+Pressing **Tab on an empty input line** toggles between AI mode and Command mode. The gutter symbol and color update immediately to reflect the active mode, giving you a clear visual indicator of where your input will go.
 
 ## Rendering
 
@@ -63,6 +78,8 @@ Different content types use distinct visual styles:
 | Tool calls | Muted, monospace |
 | Errors | Red accent |
 | Task headers | Bold, bordered |
+| AI mode gutter | `>` in cyan |
+| Command mode gutter | `$` in white |
 
 ## Interactive Passthrough
 

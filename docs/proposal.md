@@ -8,11 +8,11 @@
 
 **Codiv Agent** is a terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. Built as a Rust system — a TUI client (`codiv`) and a daemon (`codivd`) — it looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
-The core insight is that most terminal interactions are simple commands that should execute instantly, while complex tasks benefit from a structured multi-agent system with specialized roles. Codiv Agent bridges both: recognized commands run with near-zero latency through a command fast-pass, while natural language requests are decomposed and executed by a hierarchy of AI agents — each assigned a purpose-fit model based on the task at hand.
+The core insight is that most terminal interactions are simple commands that should execute instantly, while complex tasks benefit from a structured multi-agent system with specialized roles. Codiv Agent bridges both through dual-mode input: Command mode sends input directly to the shell for near-zero latency execution, while AI mode routes natural language requests to a hierarchy of AI agents — each assigned a purpose-fit model based on the task at hand.
 
 **Key differentiators:**
 
-- **Command fast-pass (<10ms)**: Recognized shell commands execute immediately without any AI round-trip. No competitor offers this.
+- **Dual-mode input**: Command mode executes shell commands with near-zero overhead, AI mode handles natural language — no competitor offers this seamless separation.
 - **Multi-model orchestration**: Different AI models are assigned to different roles (planning, coding, review, research) based on task complexity — not locked to a single provider.
 - **Recursive agent hierarchy**: An Orchestrator delegates to a TeamLead, who decomposes tasks into a Work Item DAG executed by Engineers and validated by Reviewers. Sub-TeamLeads enable arbitrarily deep decomposition for complex work.
 - **Bounded memory with Narrator curation**: Global and per-project memories are size-capped and actively curated by a dedicated Narrator agent, with automatic project context switching.
@@ -40,7 +40,7 @@ Existing tools that attempt to solve this fall short in several ways:
 
 ### Competitive Landscape
 
-| Tool | Type | Models | Multi-Agent | Memory | Command Fast-Pass |
+| Tool | Type | Models | Multi-Agent | Memory | Command Mode |
 | --- | --- | --- | --- | --- | --- |
 | **Claude Code** | CLI | Anthropic only | Recursive subagents | Hierarchical + compaction | No |
 | **Codex CLI** | Rust CLI | OpenAI + local | Flat (external multi-agent) | Session-based | No |
@@ -51,7 +51,7 @@ Existing tools that attempt to solve this fall short in several ways:
 | **Devin** | Cloud VM | Proprietary | Full autonomous environment | Cloud-persistent | N/A |
 | **Codiv Agent** | **Rust CLI** | **Any provider** | **Recursive tree** | **Bounded + Narrator-curated** | **Yes (<10ms)** |
 
-**Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to one provider. Aider and Cline offer the broadest model support but have flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound.
+**Key competitive insight**: No existing tool combines terminal-native dual-mode input with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to one provider. Aider and Cline offer the broadest model support but have flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound.
 
 ---
 
@@ -67,7 +67,7 @@ Codiv Agent is a shell replacement that functions as both a high-performance ter
 
 ### Core Concepts
 
-**Command Fast-Pass**: On startup, `codiv` scans PATH directories and known bash builtins to build a command index. Every input is classified instantly: recognized commands execute immediately through the persistent bash co-process; natural language or ambiguous input routes to the agent system. This ensures the terminal never feels slow for everyday commands.
+**Dual-Mode Input**: The terminal operates in two explicit modes. Command mode (`$` gutter, white) sends input directly to the persistent bash co-process for immediate shell execution. AI mode (`>` gutter, cyan) sends input to the agent system for natural language processing. AI mode is the default on startup; pressing Tab on an empty input line toggles between modes. This ensures everyday shell commands execute with zero AI overhead while keeping the agent always one keypress away.
 
 **Multi-Agent Hierarchy**: The agent system uses a tree of specialized roles:
 
@@ -137,7 +137,7 @@ The architecture enforces a clean separation: `codiv` owns everything the user t
 
 **Goal**: A working terminal client that executes commands via daemon IPC.
 
-- `codiv` Rust binary: TUI with persistent bash co-process, command index classifier, 3-tier tab completion, interactive program passthrough, VT100 terminal emulation, clipboard support
+- `codiv` Rust binary: TUI with persistent bash co-process, dual-mode input, 3-tier tab completion, interactive program passthrough, VT100 terminal emulation, clipboard support
 - `codivd` C++ daemon: Unix socket server, IPC protocol, session management with env snapshots, worker bash process spawning, heartbeat detection
 - Binary IPC protocol between `codiv` and `codivd`
 
@@ -276,7 +276,7 @@ End users pay their own LLM API costs (bring-your-own-key model). Typical usage 
 
 | Criterion | Target | Measured By |
 | --- | --- | --- |
-| Command fast-pass latency | <10ms overhead vs raw shell | Benchmark recognized commands |
+| Command mode latency | <10ms overhead vs raw shell | Benchmark shell commands in Command mode |
 | Time-to-first-token (AI response) | <500ms streaming | Measure from input to first token display |
 | Work Item throughput | 4+ parallel workers | Concurrent task execution benchmark |
 | Daemon memory footprint | <50MB resident | Runtime measurement |

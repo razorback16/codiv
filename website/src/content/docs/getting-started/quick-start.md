@@ -13,27 +13,31 @@ Start the Codiv TUI by running:
 codiv
 ```
 
-This opens an interactive terminal that replaces your shell. Commands you know work instantly; everything else routes to the AI agent.
-
-## Try a Shell Command
-
-Type a standard shell command and press Enter:
-
-```bash
-ls -la
-```
-
-Codiv recognizes this as a known command and executes it with near-zero overhead — no AI round-trip needed. The output appears inline just like a regular terminal.
+This opens an interactive terminal with two explicit modes. **AI Mode** is active by default — you'll see a cyan `>` gutter on the input line. Press **Tab on an empty input** to toggle into **Command Mode** (white `$` gutter), which sends input directly to a bash co-process. Press Tab again to switch back.
 
 ## Try an AI Query
 
-Type a natural language request:
+AI Mode is the default. With the `>` gutter showing, type a natural language request:
 
 ```
 find all Rust files that contain "async fn" and list them
 ```
 
-Codiv classifies this as an AI query and routes it to the agent. The agent reasons about the task, calls tools (like `grep` and `glob`), and streams the response back to your terminal.
+The agent reasons about the task, calls tools (like `grep` and `glob`), and streams the response back to your terminal.
+
+## Switch to Command Mode
+
+Press **Tab** on an empty input line. The gutter changes from `>` (cyan) to `$` (white), indicating you are now in Command Mode. All input is sent directly to the bash co-process.
+
+## Try a Shell Command
+
+With the `$` gutter showing, type a standard shell command and press Enter:
+
+```bash
+ls -la
+```
+
+The command executes with near-zero overhead — no AI round-trip needed. The output appears inline just like a regular terminal.
 
 ## Try CLI Tools
 

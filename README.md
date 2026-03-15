@@ -4,8 +4,8 @@ A terminal-native AI coding assistant built in Rust. Codiv replaces your shell w
 
 ## What It Does
 
-- **Command fast-pass** — recognized shell commands execute with near-zero overhead (<10ms target), no AI round-trip
-- **AI routing** — unknown commands and natural language automatically route to an AI agent with tool calling
+- **Dual-mode interface** — AI mode for natural language queries, Command mode for direct shell execution, toggled with Tab
+- **AI-first** — starts in AI mode by default; the agent reasons, calls tools, and streams responses
 - **Multi-model** — supports Anthropic, OpenAI, and Google providers via aisdk, with plans for per-role model assignment
 - **Native tools as subcommands** — built-in tools (read, write, edit, glob, grep, bash) are accessible both to the agent in-process and to users from the CLI
 
@@ -28,7 +28,7 @@ codiv (TUI client)          codivd (daemon)
 
 | Crate | Purpose |
 |-------|---------|
-| `codiv` | TUI client — terminal rendering, bash co-process, input classification, tab completion |
+| `codiv` | TUI client — terminal rendering, bash co-process, dual-mode input, tab completion |
 | `codivd` | Async daemon — AI agent, session management, LLM streaming, tool execution |
 | `codiv-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
 | `codiv-common` | Shared types — IPC messages, config, utilities |
@@ -107,11 +107,11 @@ Each built-in tool is available as a `codiv` subcommand with these common flags:
 
 ### Phase 1: Terminal Foundation — Complete
 
-Working terminal client with daemon IPC, command fast-pass, and zero-overhead shell experience.
+Working terminal client with daemon IPC, dual-mode input, and zero-overhead shell experience.
 
 1. Ratatui TUI with persistent bash co-process (portable-pty)
 2. Command index: PATH scanning + bash/zsh builtins in O(1) hash map
-3. Input classification: Execute, Interactive, AiQuery, NotFound, Clear, Exit
+3. Dual-mode input: AI mode (default) and Command mode with Tab toggle
 4. 3-tier tab completion: programmable bash-completion, command, file
 5. Interactive passthrough for full-screen programs (vim, ssh, python REPL)
 6. Serde+bincode IPC over Unix domain socket with heartbeat
@@ -119,7 +119,7 @@ Working terminal client with daemon IPC, command fast-pass, and zero-overhead sh
 
 ### Phase 2: Single-Agent AI Loop — Complete
 
-Natural language routes to an AI agent that reasons and uses tools.
+AI mode input goes to an agent that reasons and uses tools.
 
 1. [x] aisdk integration with streaming LLM access (Anthropic, OpenAI, Google)
 2. [x] Unified session timeline (shell commands + queries + responses)
