@@ -1,0 +1,78 @@
+---
+import FeatureCard from './FeatureCard.astro';
+
+const features = [
+  {
+    icon: '⚡',
+    title: 'Command Fast-Pass',
+    description: 'Recognized commands execute in <10ms with zero AI overhead. Your shell, but faster.',
+  },
+  {
+    icon: '🤖',
+    title: 'AI Agent with Tools',
+    description: 'Natural language routes to an AI agent that can read, write, edit files, run commands, and reason about your codebase.',
+  },
+  {
+    icon: '🔄',
+    title: 'Multi-Model Support',
+    description: 'Use Anthropic, OpenAI, or Google models. Pick the right model for each task — frontier for planning, fast for execution.',
+  },
+  {
+    icon: '📊',
+    title: 'Work Item DAG',
+    description: 'Complex tasks decompose into a dependency graph. Independent items run in parallel. No wasted time.',
+  },
+  {
+    icon: '👥',
+    title: 'Multi-Agent Roles',
+    description: 'Specialized roles — Orchestrator, TeamLead, Engineer, Reviewer, Narrator — each with the right model for the job.',
+  },
+  {
+    icon: '🧠',
+    title: 'Persistent Memory',
+    description: 'SQLite episodic store + semantic markdown. Context survives sessions, auto-switches per project.',
+  },
+];
+---
+
+<section class="features-section">
+  <div class="container">
+    <h2 class="features-heading">Built Different</h2>
+    <div class="features-grid">
+      {features.map((f) => (
+        <FeatureCard icon={f.icon} title={f.title} description={f.description} />
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .features-section {
+    padding: var(--space-16) 0;
+    background-color: var(--color-bg-alt);
+  }
+
+  .features-heading {
+    text-align: center;
+    font-size: var(--text-4xl);
+    margin-bottom: var(--space-12);
+  }
+
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-6);
+  }
+
+  @media (max-width: 900px) {
+    .features-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 560px) {
+    .features-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

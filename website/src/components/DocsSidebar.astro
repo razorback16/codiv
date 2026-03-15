@@ -1,0 +1,48 @@
+---
+import { getCollection } from 'astro:content';
+
+const docs = await getCollection('docs', ({ data }) => !data.draft);
+
+const sectionOrder = ['Getting Started', 'Usage', 'Architecture', 'Design Docs', 'Contributing'];
+
+// Group by section
+const grouped = new Map<string, typeof docs>();
+for (const entry of docs) {
+  const section = entry.data.section;
+  if (!grouped.has(section)) grouped.set(section, []);
+  grouped.get(section)!.push(entry);
+}
+
+// Sort within each section by order
+for (const entries of grouped.values()) {
+  entries.sort((a, b) => a.data.order - b.data.order);
+}
+
+// Build ordered sections
+const sections = sectionOrder
+  .filter((s) => grouped.has(s))
+  .map((s) => ({ name: s, entries: grouped.get(s)! }));
+
+const currentPath = Astro.url.pathname;
+---
+
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+  {sections.map((section) => (
+    <div class="sidebar-section">
+      <p class="sidebar-section-title">{section.name}</p>
+      <ul class="sidebar-links">
+        {section.entries.map((entry) => {
+          const href = `/slate-agent/docs/${entry.id}/`;
+          const isActive = currentPath.replace(/\/$/, '') === href.replace(/\/$/, '');
+          return (
+            <li>
+              <a href={href} class={`sidebar-link ${isActive ? 'active' : ''}`}>
+                {entry.data.title}
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  ))}
+</nav>

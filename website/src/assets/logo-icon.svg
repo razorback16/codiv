@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
+  <!-- Terminal prompt: thick > character -->
+  <polyline points="8,10 20,20 8,30" stroke="#1a1a1a" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter" fill="none"/>
+  <!-- Blinking cursor underscore -->
+  <line x1="22" y1="30" x2="34" y2="30" stroke="#2563eb" stroke-width="4" stroke-linecap="square"/>
+  <!-- DAG triangle: 3 dots connected by thin lines -->
+  <line x1="30" y1="8" x2="24" y2="16" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="30" y1="8" x2="36" y2="16" stroke="#1a1a1a" stroke-width="1.5"/>
+  <line x1="24" y1="16" x2="36" y2="16" stroke="#1a1a1a" stroke-width="1.5"/>
+  <circle cx="30" cy="8" r="2" fill="#1a1a1a"/>
+  <circle cx="24" cy="16" r="2" fill="#1a1a1a"/>
+  <circle cx="36" cy="16" r="2" fill="#1a1a1a"/>
+</svg>

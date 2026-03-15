@@ -117,7 +117,7 @@ Working terminal client with daemon IPC, command fast-pass, and zero-overhead sh
 6. Serde+bincode IPC over Unix domain socket with heartbeat
 7. Env snapshot protocol and worker bash sessions
 
-### Phase 2: Single-Agent AI Loop — In Progress
+### Phase 2: Single-Agent AI Loop — Complete
 
 Natural language routes to an AI agent that reasons and uses tools.
 
@@ -128,9 +128,9 @@ Natural language routes to an AI agent that reasons and uses tools.
 5. [x] Terminal colorscheme detection
 6. [x] Native tools extracted to shared crate with CLI subcommands
 7. [x] Tool calling loop (agent reasons, calls tools, continues)
-8. [ ] Risk classification + confirmation prompts for destructive commands
-9. [ ] Env snapshot refresh on `cd` and `source`
-10. [ ] TOML config for API keys and model selection
+8. [x] Risk classification + confirmation prompts for destructive commands
+9. [x] Env snapshot refresh on `cd` and `source`
+10. [x] TOML config for API keys and model selection (with hot-reload)
 
 ### Phase 3: Work Item DAG + Scheduler
 

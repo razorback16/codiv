@@ -8,7 +8,7 @@
 
 **Codiv Agent** is a Rust terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`codiv`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the Rust daemon (`codivd`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands that execute instantly (zero-latency fast-pass), or natural language that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
 
-**Current status**: Phase 1 (Terminal Foundation) is complete. Phase 2 (Single-Agent AI Loop) is next.
+**Current status**: Phase 1 (Terminal Foundation) and Phase 2 (Single-Agent AI Loop) are complete. Phase 3 (Work Item DAG + Scheduler) is next.
 
 ---
 
@@ -17,7 +17,7 @@
 | Phase | Name                            | Goal                                                        | Status       | Key Deliverables                                                                                                                             |
 | ----- | ------------------------------- | ----------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | **1** | Terminal Foundation             | Working terminal client with daemon IPC                     | **COMPLETE** | Rust TUI, Rust daemon (replaced original C++ daemon), serde+bincode IPC, command fast-pass, tab completion, interactive passthrough |
-| **2** | Single-Agent AI Loop            | Natural language input routes to AI agent with tool calling | **IN PROGRESS** | aisdk.rs integration, single agent loop, session timeline, built-in tools, markdown rendering, basic safety                                |
+| **2** | Single-Agent AI Loop            | Natural language input routes to AI agent with tool calling | **COMPLETE** | aisdk.rs integration, single agent loop, session timeline, built-in tools, markdown rendering, basic safety                                |
 | **3** | Work Item DAG + Scheduler       | Complex tasks decomposed into concurrent Work Items         | Planned      | Work Item schema, DAG construction, Tokio-based scheduler, budget enforcement                                                                |
 | **4** | Multi-Agent Roles + Multi-Model | Specialized agent roles with dynamic model selection        | Planned      | Role separation, model catalog, TeamLead model selection, Reviewer gating                                                                    |
 | **5** | Memory + Project Context        | Persistent bounded memory across sessions and projects      | Planned      | SQLite episodic store, semantic markdown, Narrator consolidation, project auto-switching                                                     |
@@ -32,7 +32,7 @@
 Phase 1: Terminal Foundation  [COMPLETE]
     |
     v
-Phase 2: Single-Agent AI Loop + Basic Safety  [IN PROGRESS]
+Phase 2: Single-Agent AI Loop + Basic Safety  [COMPLETE]
     |
     v
 Phase 3: Work Item DAG + Scheduler
@@ -79,11 +79,11 @@ The foundation layer provides a working terminal client that executes commands v
 
 ---
 
-### Phase 2: Single-Agent AI Loop — IN PROGRESS
+### Phase 2: Single-Agent AI Loop — COMPLETE
 
 **Goal**: Unknown/natural language input routes to a single AI agent that can reason and use tools.
 
-#### Completed
+#### What was built:
 
 - **aisdk.rs integration with streaming LLM access** — aisdk 0.5.2 added as workspace dependency. Streaming works via `LanguageModelRequest::builder().model(model).messages(messages).build()` with SSE chunk forwarding over IPC. Supports Anthropic, OpenAI, and Google providers via `DynamicModel`.
 
@@ -93,56 +93,23 @@ The foundation layer provides a working terminal client that executes commands v
 
 - **Agent persistence per session** — Agent stored in `ClientSession`, taken via `Option::take()` for async streaming, returned via `oneshot` channel, polled by `collect_returned_agents()`.
 
-- **Rust daemon replaced C++ daemon** — `codivd` is now pure Rust with Tokio async runtime, serde+bincode IPC.
+- **Tool calling loop** — Agent receives `AiQuery` input, reasons, calls tools, receives output, continues until final response. Agent state managed in `codivd` daemon per session.
 
-#### Remaining Sub-tasks
+- **Built-in tools: Bash, Read, Write, Edit, Glob, Grep** — All tools implemented in `codiv-tools` shared crate with CLI subcommands, `--help`, and `--agent-guide` support.
 
-1. **Implement tool calling loop**
-   - Agent receives user input classified as `AiQuery` from the `codiv` client
-   - System prompt defines the combined Orchestrator+Engineer role
-   - Agent reasons, decides which tool to call, receives tool output, continues reasoning
-   - Loop terminates when agent produces a final response (no more tool calls)
-   - Agent state managed in `codivd` daemon per session
+- **Streamdown markdown rendering with syntax highlighting** — Streaming markdown parser (streamdown-rs) with ANSI rendering and syntax highlighting, wired through tui-term/vt100 into ratatui.
 
-2. **Implement built-in tools: Bash, Read, Write, Edit, Glob, Grep**
-   - `Bash`: execute commands via worker bash sessions (already built in Phase 1), capture stdout/stderr/exit code
-   - `Read`: read file contents with optional line range (offset + limit)
-   - `Write`: write file to disk (requires prior read for overwrite safety)
-   - `Edit`: exact string replacement in files (old_string → new_string)
-   - `Glob`: file pattern matching (returns sorted file paths)
-   - `Grep`: content search using ripgrep-style regex
-   - Each tool exposes `--help` for agent consumption
+- **Basic risk classification + confirmation prompts** — Commands classified by risk level. High/critical risk triggers confirmation prompt. Allowlist/denylist configurable in TOML config.
 
-3. **Add terminal markdown rendering (comrak + syntect)**
-   - Use comrak for CommonMark+GFM parsing
-   - Use syntect for syntax highlighting in code blocks (same engine as Sublime Text)
-   - Walk AST to emit ANSI escape codes
-   - For streaming: maintain growing buffer, re-parse on significant updates, diff rendered output
+- **Env snapshot refresh on cd/source** — Selective env refresh on directory changes, auto-capture and send to `codivd`.
 
-4. **Basic risk classification + confirmation prompts for destructive commands**
-   - Classify commands as low/medium/high/critical risk
-   - High/critical risk triggers confirmation prompt sent from `codivd` → `codiv` → user
-   - Command allowlist/denylist configurable in TOML config
-   - No agent auto-execution of critical-risk commands (e.g., `rm -rf /`, `git push --force`, `DROP TABLE`)
+- **Agent output streaming with tool block headers** — Tool calls rendered with colored header lines. Bordered boxes descoped to later phase.
 
-5. **Env snapshot refresh on cd/source**
-   - Detect `cd` and `source` commands in the `codiv` bash co-process
-   - Auto-capture fresh env snapshot and send to `codivd`
-   - Manual `codiv sync-env` command for edge cases
+- **TOML config for API keys and model selection** — Config at `~/.codiv/config.toml` with hot-reload support, `[models]` and `[safety]` sections.
 
-6. **Agent output streaming with tool block headers** *(descoped from bordered boxes)*
-   - Agent output streams from `codivd` to `codiv` via IPC
-   - Tool calls rendered with yellow/green/red header lines (sufficient for v1)
-   - Bordered boxes and auto-collapse are descoped to a later phase
+**Testable outcome**: User types "create a hello world program, compile it, and run it" — agent creates the file, compiles, executes, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
-7. **TOML config for API keys and model selection**
-   - Config file at `~/.codiv/config.toml`
-   - `[models]` section with API key and model ID
-   - `[safety]` section with allowlist/denylist
-
-**Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
-
-**Tech**: aisdk.rs (streaming + tool calling), Claude Sonnet 4.5 as initial model, comrak + syntect for rendering.
+**Tech**: aisdk.rs (streaming + tool calling), streamdown-rs for markdown rendering.
 
 ---
 
@@ -420,4 +387,4 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 
 ---
 
-*Codiv Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Rust daemon has fully replaced the original C++ daemon. Phase 1 complete. Phase 2 in progress (session timeline implemented, tool calling loop next).*
+*Codiv Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Phase 1 and Phase 2 complete. Phase 3 (Work Item DAG + Scheduler) is next.*

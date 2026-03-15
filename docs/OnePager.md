@@ -31,7 +31,7 @@ A terminal that **is** your shell. Codiv Agent replaces your terminal emulator w
 | Multi-model assignment per task | No | No | Yes |
 | Native terminal experience | Partial (runs inside a terminal) | No (editor-based) | Yes (is the terminal) |
 
-The building blocks have converged: fast frontier models make real-time agent orchestration viable, multi-provider APIs enable model selection by task, and Rust/C++ give the performance budget to keep command execution imperceptible.
+The building blocks have converged: fast frontier models make real-time agent orchestration viable, multi-provider APIs enable model selection by task, and Rust gives the performance budget to keep command execution imperceptible.
 
 ### Success Metrics
 
@@ -46,7 +46,7 @@ TODO:
 
 ### Architecture (one sentence)
 
-Rust terminal client for rendering and user interaction, C++ singleton daemon for agent orchestration and worker management, connected via binary IPC over a Unix domain socket.
+Rust terminal client for rendering and user interaction, Rust async daemon for agent orchestration and worker management, connected via binary IPC over a Unix domain socket.
 
 ### Monetization Hypothesis
 

@@ -1,0 +1,36 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import DocsSidebar from '../components/DocsSidebar.astro';
+import TableOfContents from '../components/TableOfContents.astro';
+import '../styles/docs.css';
+
+interface Props {
+  title: string;
+  description: string;
+  headings: { depth: number; slug: string; text: string }[];
+}
+
+const { title, description, headings } = Astro.props;
+---
+
+<BaseLayout title={`${title} — Codiv Docs`} description={description}>
+  <input type="checkbox" id="sidebar-toggle" class="sidebar-toggle sr-only" />
+  <label for="sidebar-toggle" class="sidebar-toggle-label">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+    Menu
+  </label>
+
+  <div class="docs-layout">
+    <DocsSidebar />
+
+    <article class="docs-content">
+      <h1>{title}</h1>
+      {description && <p class="docs-description">{description}</p>}
+      <slot />
+    </article>
+
+    <TableOfContents headings={headings} />
+  </div>
+</BaseLayout>

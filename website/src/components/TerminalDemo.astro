@@ -1,0 +1,343 @@
+---
+---
+
+<section class="terminal-section">
+  <div class="container">
+    <p class="terminal-label">See it in action</p>
+    <div class="terminal-wrapper">
+      <div class="terminal" id="terminal-demo">
+        <div class="terminal-titlebar">
+          <div class="terminal-dots">
+            <span class="dot dot-red"></span>
+            <span class="dot dot-yellow"></span>
+            <span class="dot dot-green"></span>
+          </div>
+          <span class="terminal-title">codiv</span>
+          <div class="terminal-dots" style="visibility:hidden">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </div>
+        </div>
+        <div class="terminal-body" id="terminal-body">
+          <span class="cursor" id="cursor"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .terminal-section {
+    padding: var(--space-16) 0;
+  }
+
+  .terminal-label {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: var(--space-6);
+  }
+
+  .terminal-wrapper {
+    display: flex;
+    justify-content: center;
+  }
+
+  .terminal {
+    width: 100%;
+    max-width: 720px;
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-lg);
+    border-radius: var(--border-radius);
+    overflow: hidden;
+  }
+
+  .terminal-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #1e1e1e;
+    padding: 10px 14px;
+    border-bottom: 1px solid #333;
+    border-radius: var(--border-radius) var(--border-radius) 0 0;
+  }
+
+  .terminal-dots {
+    display: flex;
+    gap: 7px;
+  }
+
+  .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: block;
+  }
+
+  .dot-red { background: #ff5f56; }
+  .dot-yellow { background: #ffbd2e; }
+  .dot-green { background: #27c93f; }
+
+  .terminal-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: #999;
+    user-select: none;
+  }
+
+  .terminal-body {
+    background: #0a0a0a;
+    min-height: 320px;
+    padding: 16px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    position: relative;
+  }
+
+  .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    background: #60a5fa;
+    vertical-align: text-bottom;
+    animation: blink 1.06s step-end infinite;
+  }
+
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0; }
+  }
+
+  @media (max-width: 480px) {
+    .terminal-body {
+      font-size: 11px;
+      min-height: 260px;
+      padding: 12px;
+    }
+  }
+</style>
+
+<script>
+(function(){
+  const body = document.getElementById('terminal-body');
+  const cursor = document.getElementById('cursor');
+  if (!body || !cursor) return;
+
+  const P = '\x01'; // prompt marker
+  const T = '\x02'; // tool header marker
+  const C = '\x03'; // cyan code marker
+  const G = '\x04'; // green marker
+  const W = '\x05'; // white/bright marker
+  const E = '\x06'; // end color marker
+
+  // Demo script steps
+  const steps = [
+    {
+      cmd: 'ls',
+      speed: 50,
+      output: 'Cargo.toml  Cargo.lock  README.md  LICENSE\ncrates/     docs/       target/',
+      pause: 1500,
+      stream: false
+    },
+    {
+      cmd: 'git status',
+      speed: 50,
+      output: 'On branch main\nYour branch is up to date with \'origin/main\'.\n\nChanges not staged for commit:\n  modified:   crates/codiv/src/app.rs\n\nno changes added to commit',
+      pause: 1500,
+      stream: false
+    },
+    {
+      cmd: 'create a hello world in Rust, compile and run it',
+      speed: 60,
+      output:
+        'I\'ll create a Hello World program in Rust, compile it, and run it.\n\n' +
+        T + '\u25b6 Write  src/main.rs' + E + '\n' +
+        C + 'fn main() {\n    println!("Hello, world!");\n}' + E + '\n\n' +
+        T + '\u25b6 Bash  rustc src/main.rs -o hello' + E + '\n' +
+        G + '  exit code: 0' + E + '\n\n' +
+        T + '\u25b6 Bash  ./hello' + E + '\n' +
+        W + 'Hello, world!' + E + '\n\n' +
+        'Done \u2014 created and ran hello world successfully.',
+      pause: 3000,
+      stream: true
+    }
+  ];
+
+  let visible = false;
+  let running = false;
+  let raf = 0;
+
+  const obs = new IntersectionObserver(function(entries) {
+    visible = entries[0].isIntersecting;
+    if (visible && !running) startLoop();
+  }, { threshold: 0.2 });
+  obs.observe(body);
+
+  function span(cls, text) {
+    const s = document.createElement('span');
+    s.className = cls;
+    s.textContent = text;
+    return s;
+  }
+
+  function appendText(text) {
+    body.insertBefore(document.createTextNode(text), cursor);
+  }
+
+  function appendSpan(cls, text) {
+    body.insertBefore(span(cls, text), cursor);
+  }
+
+  function clear() {
+    while (body.firstChild !== cursor && body.firstChild) {
+      body.removeChild(body.firstChild);
+    }
+  }
+
+  function wait(ms) {
+    return new Promise(function(r) {
+      setTimeout(r, ms);
+    });
+  }
+
+  function typeText(text, speed) {
+    return new Promise(function(resolve) {
+      let i = 0;
+      function tick() {
+        if (!visible) { raf = requestAnimationFrame(tick); return; }
+        if (i < text.length) {
+          appendText(text[i]);
+          i++;
+          setTimeout(function() { raf = requestAnimationFrame(tick); }, speed);
+        } else {
+          resolve();
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    });
+  }
+
+  function renderOutput(text) {
+    // Parse markers and render colored spans
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === T || ch === C || ch === G || ch === W) {
+        const cls = ch === T ? 'tm-tool' : ch === C ? 'tm-code' : ch === G ? 'tm-green' : 'tm-white';
+        let end = text.indexOf(E, i + 1);
+        if (end === -1) end = text.length;
+        appendSpan(cls, text.substring(i + 1, end));
+        i = end + 1;
+      } else {
+        // Collect plain text
+        let j = i;
+        while (j < text.length && text[j] !== T && text[j] !== C && text[j] !== G && text[j] !== W) j++;
+        appendText(text.substring(i, j));
+        i = j;
+      }
+    }
+  }
+
+  function streamOutput(text, speed) {
+    return new Promise(function(resolve) {
+      // Pre-parse into tokens: {cls, text} or {text}
+      const tokens = [];
+      let i = 0;
+      while (i < text.length) {
+        const ch = text[i];
+        if (ch === T || ch === C || ch === G || ch === W) {
+          const cls = ch === T ? 'tm-tool' : ch === C ? 'tm-code' : ch === G ? 'tm-green' : 'tm-white';
+          let end = text.indexOf(E, i + 1);
+          if (end === -1) end = text.length;
+          tokens.push({ cls: cls, text: text.substring(i + 1, end) });
+          i = end + 1;
+        } else {
+          let j = i;
+          while (j < text.length && text[j] !== T && text[j] !== C && text[j] !== G && text[j] !== W) j++;
+          tokens.push({ cls: null, text: text.substring(i, j) });
+          i = j;
+        }
+      }
+
+      // Flatten to chars with their class
+      const chars = [];
+      for (let t = 0; t < tokens.length; t++) {
+        const tk = tokens[t];
+        for (let c = 0; c < tk.text.length; c++) {
+          chars.push({ cls: tk.cls, ch: tk.text[c] });
+        }
+      }
+
+      let ci = 0;
+      let currentSpan = null;
+      let currentCls = null;
+
+      function tick() {
+        if (!visible) { raf = requestAnimationFrame(tick); return; }
+        if (ci < chars.length) {
+          const item = chars[ci];
+          if (item.cls !== currentCls) {
+            currentCls = item.cls;
+            if (item.cls) {
+              currentSpan = document.createElement('span');
+              currentSpan.className = item.cls;
+              body.insertBefore(currentSpan, cursor);
+            } else {
+              currentSpan = null;
+            }
+          }
+          if (currentSpan) {
+            currentSpan.textContent += item.ch;
+          } else {
+            body.insertBefore(document.createTextNode(item.ch), cursor);
+          }
+          ci++;
+          setTimeout(function() { raf = requestAnimationFrame(tick); }, speed);
+        } else {
+          resolve();
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    });
+  }
+
+  async function runStep(step) {
+    // Prompt
+    appendSpan('tm-prompt', 'codiv> ');
+    await typeText(step.cmd, step.speed);
+    appendText('\n');
+
+    if (step.stream) {
+      await streamOutput(step.output, 15);
+    } else {
+      renderOutput(step.output);
+    }
+    appendText('\n');
+    await wait(step.pause);
+  }
+
+  async function startLoop() {
+    running = true;
+    while (visible) {
+      clear();
+      for (let i = 0; i < steps.length; i++) {
+        if (!visible) break;
+        await runStep(steps[i]);
+      }
+      if (visible) await wait(1000);
+    }
+    running = false;
+  }
+
+  // Inject dynamic styles for colored spans
+  const st = document.createElement('style');
+  st.textContent = '.tm-prompt{color:#4ade80}.tm-tool{color:#facc15}.tm-code{color:#67e8f9}.tm-green{color:#4ade80}.tm-white{color:#f0f0f0}';
+  document.head.appendChild(st);
+})();
+</script>
