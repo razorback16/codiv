@@ -35,7 +35,7 @@ This design provides the concrete architecture for FR-007.
 ## 3. Storage Layout
 
 ```
-~/.slate-agent/memory/
+~/.codiv/memory/
 ├── user.md                              # Semantic: cross-project user preferences, habits
 ├── memory.db                            # Episodic: SQLite database (all scopes)
 └── projects/
@@ -53,7 +53,7 @@ This design provides the concrete architecture for FR-007.
 Projects are identified by a fingerprint derived from:
 1. Git remote URL (normalized: strip `.git`, lowercase) — primary
 2. Repository root path — fallback when no remote exists
-3. Manual override via `[project] id` in `.slate-agent/config.toml`
+3. Manual override via `[project] id` in `.codiv/config.toml`
 
 The fingerprint is a stable hash of the primary identifier. Example: `a1b2c3d4` from `github.com/user/repo`.
 
@@ -280,7 +280,7 @@ Arguments:
 Output: Formatted list of matching episodes with timestamps, summaries, and tags
 ```
 
-Implementation: the daemon translates the query into SQL. Keywords are matched against the `summary` and `tags` columns using `LIKE` with tokenization. No vector search — keyword matching is sufficient for the structured, tag-rich episodic format.
+Implementation: the daemon trancodivs the query into SQL. Keywords are matched against the `summary` and `tags` columns using `LIKE` with tokenization. No vector search — keyword matching is sufficient for the structured, tag-rich episodic format.
 
 **`memory_read`** — load a topic file
 
@@ -343,7 +343,7 @@ The Orchestrator detects project context and switches memory accordingly:
 
 ### Detection signals (in priority order)
 
-1. **Explicit config**: `.slate-agent/config.toml` in cwd with `[project] id`
+1. **Explicit config**: `.codiv/config.toml` in cwd with `[project] id`
 2. **Git remote**: `git remote get-url origin` → normalize → hash
 3. **Git root**: `git rev-parse --show-toplevel` → hash
 4. **Working directory**: cwd path → hash (fallback for non-git projects)
@@ -353,7 +353,7 @@ The Orchestrator detects project context and switches memory accordingly:
 When the detected project changes:
 1. Unload previous `project.md` from Orchestrator context
 2. Load new `project.md` into Orchestrator context
-3. Update `SLATE_PROJECT_FINGERPRINT` environment variable for tools
+3. Update `CODIV_PROJECT_FINGERPRINT` environment variable for tools
 4. Any in-flight Work Items continue with their original project context
 
 Switching is **transparent** — no user confirmation needed. The agent announces the switch: *"Switched to project X."*
@@ -363,10 +363,10 @@ Switching is **transparent** — no user confirmation needed. The agent announce
 All memory settings live in the global config:
 
 ```toml
-# ~/.slate-agent/config.toml
+# ~/.codiv/config.toml
 
 [memory]
-storage_path = "~/.slate-agent/memory"   # override storage location
+storage_path = "~/.codiv/memory"   # override storage location
 user_max_size_kb = 64
 project_max_size_kb = 128
 topic_max_size_kb = 32

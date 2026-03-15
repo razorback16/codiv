@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-The `slate-common` crate (`crates/slate-common/src/messages.rs`) defines the wire format using serde + bincode for communication between `slate` (TUI client) and `slated` (Rust daemon). This document defines the protocol semantics — when messages are sent, what responses are expected, how errors are handled, and how the protocol evolves over time.
+The `codiv-common` crate (`crates/codiv-common/src/messages.rs`) defines the wire format using serde + bincode for communication between `codiv` (TUI client) and `codivd` (Rust daemon). This document defines the protocol semantics — when messages are sent, what responses are expected, how errors are handled, and how the protocol evolves over time.
 
 This is the authoritative reference for IPC behavior. The schema defines *what* can be sent; this document defines *when* and *why*.
 
@@ -19,7 +19,7 @@ The Phase 1 IPC implementation works but the protocol semantics are implicit in 
 
 - No documented message flow for new contributors to follow
 - No error handling contract — what happens when a message is malformed or a session is unknown?
-- No reconnection strategy — what happens when slate loses its connection to slated?
+- No reconnection strategy — what happens when codiv loses its connection to codivd?
 - No versioning strategy — how does the protocol evolve without breaking existing clients?
 
 This design makes all of these explicit.
@@ -31,7 +31,7 @@ This design makes all of these explicit.
 Unix domain socket at:
 
 ```
-/tmp/slated-{uid}.sock
+/tmp/codivd-{uid}.sock
 ```
 
 Where `{uid}` is the numeric user ID of the running user. One daemon per user, one socket per daemon.
@@ -50,13 +50,13 @@ Every message on the wire is framed as:
 ```
 
 - Length prefix: 4-byte unsigned integer, big-endian byte order
-- Payload: bincode-encoded message as defined in `slate-common/src/messages.rs`
+- Payload: bincode-encoded message as defined in `codiv-common/src/messages.rs`
 - Maximum message size: 16 MB (configurable, but exceeding this indicates a bug)
 
 ### 3.3 Connection Lifecycle
 
 ```
-slate                          slated
+codiv                          codivd
   |--- connect() -------------->|
   |--- EnvSnapshot ------------>|  (handshake: session_id, env, protocol_version)
   |<-- (implicit ack) ----------|  (connection accepted)
@@ -77,14 +77,14 @@ slate                          slated
 ### 4.1 Phase 1 (Implemented)
 
 #### EnvSnapshot
-- **Direction**: slate → slated
+- **Direction**: codiv → codivd
 - **When**: on initial connect and whenever the environment changes (e.g., user changes directory, shell env updated)
 - **Contains**: session_id, env_vars (HashMap), PATH, cwd
 - **Response**: none (fire-and-forget); daemon updates its internal session state
 - **Future extension**: protocol_version field for handshake negotiation
 
 #### Heartbeat
-- **Direction**: slate → slated
+- **Direction**: codiv → codivd
 - **Interval**: every 5 seconds
 - **Contains**: session_id, timestamp (Unix millis)
 - **Response**: none (daemon updates last-seen timestamp internally)
@@ -105,7 +105,7 @@ slate                          slated
 ### 4.2 Phase 2 (Planned)
 
 #### AgentRequest
-- **Direction**: slate → slated
+- **Direction**: codiv → codivd
 - **When**: user submits natural language input for agent processing
 - **Contains**: session_id, prompt, request_id, context (SessionContext with cwd, recent_commands, env_vars)
 - **Response**: one or more AgentStreamChunk messages followed by exactly one AgentComplete
@@ -113,7 +113,7 @@ slate                          slated
 - **CommandRecord**: each entry captures a previously executed command with its output, exit code, and timestamp
 
 #### AgentStreamChunk
-- **Direction**: slated → slate
+- **Direction**: codivd → codiv
 - **When**: the agent produces output (text, tool activity, thinking)
 - **Contains**: session_id, work_item_id, chunk_type, data
 - **Chunk types**:
@@ -124,20 +124,20 @@ slate                          slated
 - **Delivery**: streaming, ordered within a single work item
 
 #### AgentComplete
-- **Direction**: slated → slate
+- **Direction**: codivd → codiv
 - **When**: the agent has finished processing the request
 - **Contains**: session_id, summary (string), artifact_ids (list of created/modified files)
 - **Guarantees**: exactly one AgentComplete per AgentRequest; no further AgentStreamChunk after this
 
 #### ConfirmationRequest
-- **Direction**: slated → slate
+- **Direction**: codivd → codiv
 - **When**: the agent attempts a high or critical risk action (see Safety & Audit Design)
 - **Contains**: session_id, work_item_id, request_id, command, risk_level, description
 - **Response**: exactly one Confirmation with matching request_id
 - **Timeout**: if no response within 60 seconds, daemon treats it as rejected
 
 #### Confirmation
-- **Direction**: slate → slated
+- **Direction**: codiv → codivd
 - **When**: user responds to a safety confirmation prompt
 - **Contains**: session_id, request_id, approved (bool), add_to_allowlist (bool), add_to_denylist (bool)
 - **Constraint**: request_id must match a pending ConfirmationRequest
@@ -145,27 +145,27 @@ slate                          slated
 ### 4.3 Phase 3+ (Planned)
 
 #### WorkItemUpdate
-- **Direction**: slated → slate
+- **Direction**: codivd → codiv
 - **When**: a Work Item changes state in the execution DAG
 - **Contains**: session_id, work_item_id, state (pending/running/completed/failed/blocked), assigned_role (string), model_id (string), progress_pct (u8)
-- **Purpose**: enables slate to render a live DAG visualization of multi-agent task execution
+- **Purpose**: enables codiv to render a live DAG visualization of multi-agent task execution
 
 #### TaskTreeUpdate
-- **Direction**: slated → slate
+- **Direction**: codivd → codiv
 - **When**: the full task DAG is created or restructured
 - **Contains**: session_id, work_items (array of { id, goal, state, role, dependencies })
-- **Purpose**: provides slate with the complete DAG structure for initial rendering or after a restructure
+- **Purpose**: provides codiv with the complete DAG structure for initial rendering or after a restructure
 
 ## 5. Message Flow Diagrams
 
 ### 5.1 Command Execution
 
-**Note**: Direct command execution is handled locally by `slate`'s persistent bash co-process. The daemon is not involved in command execution — it only handles agent requests.
+**Note**: Direct command execution is handled locally by `codiv`'s persistent bash co-process. The daemon is not involved in command execution — it only handles agent requests.
 
 ### 5.2 Agent Task (Phase 2)
 
 ```
-slate                          slated
+codiv                          codivd
   |--- AgentRequest ----------->|  (prompt, SessionContext: cwd, recent_commands, env_vars)
   |<-- AgentStreamChunk --------|  (text: "I'll create the file...")
   |<-- AgentStreamChunk --------|  (tool_start: "Bash: echo hello > hello.txt")
@@ -177,7 +177,7 @@ slate                          slated
 ### 5.3 Safety Confirmation (Phase 2)
 
 ```
-slate                          slated
+codiv                          codivd
   |<-- AgentStreamChunk --------|  (tool_start: "Bash: rm -rf ./build/")
   |<-- ConfirmationRequest -----|  (risk: high)
   |--- Confirmation ----------->|  (approved: true)
@@ -187,7 +187,7 @@ slate                          slated
 If the user rejects:
 
 ```
-slate                          slated
+codiv                          codivd
   |<-- ConfirmationRequest -----|  (risk: high)
   |--- Confirmation ----------->|  (approved: false)
   |<-- AgentStreamChunk --------|  (text: "Action rejected. Finding alternative...")
@@ -196,7 +196,7 @@ slate                          slated
 ### 5.4 Multi-Agent Task (Phase 3+)
 
 ```
-slate                          slated
+codiv                          codivd
   |--- AgentRequest ----------->|
   |<-- TaskTreeUpdate ----------|  (3 Work Items created)
   |<-- WorkItemUpdate ----------|  (WI-1: running, Engineer)
@@ -213,7 +213,7 @@ slate                          slated
 ### 5.5 Heartbeat and Timeout
 
 ```
-slate                          slated
+codiv                          codivd
   |--- Heartbeat -------------->|  (t=0s)
   |--- Heartbeat -------------->|  (t=5s)
   |--- Heartbeat -------------->|  (t=10s)
@@ -248,9 +248,9 @@ slate                          slated
 
 **Session not found**: Send an Error message with code SESSION_NOT_FOUND. The client should re-send an EnvSnapshot to establish a new session.
 
-**Daemon overloaded**: Send an Error message with code OVERLOADED. Slate displays a "daemon busy" status message. The client may retry after a backoff.
+**Daemon overloaded**: Send an Error message with code OVERLOADED. Codiv displays a "daemon busy" status message. The client may retry after a backoff.
 
-**Budget exceeded**: Send an Error message with code BUDGET_EXCEEDED. The agent stops execution. Slate displays the budget status and asks the user whether to increase the budget or abort.
+**Budget exceeded**: Send an Error message with code BUDGET_EXCEEDED. The agent stops execution. Codiv displays the budget status and asks the user whether to increase the budget or abort.
 
 **Confirmation denied**: Sent as part of normal agent flow (not an error in the connection sense). The agent receives this and must find an alternative approach.
 
@@ -258,7 +258,7 @@ slate                          slated
 
 ### 7.1 Detection
 
-Slate detects a lost connection when:
+Codiv detects a lost connection when:
 
 - The TCP write fails (socket closed)
 - No daemon response to heartbeats for 30 seconds
@@ -282,9 +282,9 @@ On each attempt:
 
 ### 7.3 User Experience During Reconnection
 
-- Slate shows a "Reconnecting..." status indicator
+- Codiv shows a "Reconnecting..." status indicator
 - User input is buffered during reconnection attempts
-- If all 3 attempts fail: Slate shows "Connection lost. Daemon may have stopped." with instructions to restart slated
+- If all 3 attempts fail: Codiv shows "Connection lost. Daemon may have stopped." with instructions to restart codivd
 - Buffered input is discarded on total failure (user is notified)
 
 ## 8. Versioning
@@ -341,7 +341,7 @@ The default OS socket buffer size (64KB on most systems) is sufficient for termi
 
 ### 9.4 Message Ordering
 
-All messages on a single socket connection are ordered (Unix domain sockets are stream-oriented). No sequence numbers are needed for ordering within a connection. However, if multiple agents produce interleaved output, each AgentStreamChunk carries a work_item_id so slate can demultiplex.
+All messages on a single socket connection are ordered (Unix domain sockets are stream-oriented). No sequence numbers are needed for ordering within a connection. However, if multiple agents produce interleaved output, each AgentStreamChunk carries a work_item_id so codiv can demultiplex.
 
 ## 10. Open Questions
 
@@ -349,4 +349,4 @@ All messages on a single socket connection are ordered (Unix domain sockets are 
 
 2. **Separate streaming channel**: Should streaming output (AgentStreamChunk) use a separate socket or channel from control messages (Heartbeat, Shutdown, Error)? This would prevent a flood of output from blocking control messages, at the cost of managing two connections.
 
-3. **Cross-version graceful handling**: How should slate handle connecting to a daemon running a different (but not explicitly incompatible) protocol version? For example, protocol_version=2 client connecting to protocol_version=3 daemon — the daemon supports features the client does not know about. Current strategy is for the daemon to downgrade its message set, but this needs concrete specification.
+3. **Cross-version graceful handling**: How should codiv handle connecting to a daemon running a different (but not explicitly incompatible) protocol version? For example, protocol_version=2 client connecting to protocol_version=3 daemon — the daemon supports features the client does not know about. Current strategy is for the daemon to downgrade its message set, but this needs concrete specification.

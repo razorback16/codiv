@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-This document specifies the safety and audit architecture for Slate Agent. It covers risk classification, user confirmation flows, allowlist/denylist configuration, audit log schema, and sandboxing strategy.
+This document specifies the safety and audit architecture for Codiv Agent. It covers risk classification, user confirmation flows, allowlist/denylist configuration, audit log schema, and sandboxing strategy.
 
 Phase 2 delivers the basic safety layer: pattern-based risk classification, confirmation prompts for dangerous operations, configurable allow/deny lists, and tool-call audit logging. Phase 7 extends this with OS-level and container-based sandboxing, full audit trails, privacy controls, and compliance alignment.
 
@@ -95,7 +95,7 @@ Classification examples:
 When a high-risk action is detected:
 
 1. The agent output block displays the proposed action with a risk level badge.
-2. A confirmation prompt appears in slate's input area:
+2. A confirmation prompt appears in codiv's input area:
    ```
    ⚠ HIGH RISK: rm -rf ./build/ — Allow? [y/N/always/never]
    ```
@@ -120,10 +120,10 @@ Critical-risk actions follow the same flow with stronger visual treatment and no
 
 ### 4.3 IPC Flow
 
-The confirmation flow spans the IPC boundary between slate and slated:
+The confirmation flow spans the IPC boundary between codiv and codivd:
 
 ```
-slate                          slated
+codiv                          codivd
   |                              |
   |<-- AgentStreamChunk ---------|  (tool_start: shows proposed command)
   |<-- ConfirmationRequest ------|  (risk_level, command, description)
@@ -143,7 +143,7 @@ slate                          slated
 
 ### 5.1 Persistent Configuration
 
-User-level configuration in `~/.slate-agent/config.toml`:
+User-level configuration in `~/.codiv/config.toml`:
 
 ```toml
 [safety]
@@ -161,7 +161,7 @@ denylist = [
 
 ### 5.2 Project-Level Overrides
 
-Project-level configuration in `.slate-agent/config.toml` at the project root. Same format as user-level. Project entries extend (not replace) user-level entries.
+Project-level configuration in `.codiv/config.toml` at the project root. Same format as user-level. Project entries extend (not replace) user-level entries.
 
 ### 5.3 Session-Level Lists
 
@@ -184,7 +184,7 @@ Denylist always wins over allowlist. Project-level overrides user-level for the 
 Audit logs are stored per session as JSON Lines files:
 
 ```
-~/.slate-agent/audit/<session_id>.jsonl
+~/.codiv/audit/<session_id>.jsonl
 ```
 
 Each line is a self-contained JSON object. JSON Lines format enables append-only writes and streaming reads.
@@ -246,10 +246,10 @@ Phase 2 delivers the minimum viable safety layer:
 - **Hard rule**: critical-risk commands never auto-execute, regardless of allowlist (allowlist skips the prompt but critical still requires explicit `y`)
 
 Implementation scope:
-- Risk classifier module in `slated` that evaluates tool calls before execution
+- Risk classifier module in `codivd` that evaluates tool calls before execution
 - Confirmation IPC messages (ConfirmationRequest / ConfirmationResponse)
-- Confirmation prompt widget in `slate` TUI
-- JSONL audit writer in `slated`
+- Confirmation prompt widget in `codiv` TUI
+- JSONL audit writer in `codivd`
 - Config parser for `[safety]` section
 
 ## 8. Phase 7 Safety (Advanced)
@@ -258,7 +258,7 @@ Phase 7 extends the safety system with isolation, full auditing, and compliance 
 
 ### 8.1 OS-Level Sandboxing
 
-Worker bash sessions spawned by `slated` run inside OS-level sandboxes:
+Worker bash sessions spawned by `codivd` run inside OS-level sandboxes:
 
 **Linux — bubblewrap (bwrap)**:
 - Mount namespace isolation: worker sees only the project directory and essential system paths
@@ -291,7 +291,7 @@ An advanced option for stronger isolation:
 - Container image configurable:
   ```toml
   [safety.sandbox]
-  docker_image = "slate-agent-sandbox:latest"
+  docker_image = "codiv-sandbox:latest"
   docker_network = "none"  # or "bridge" for network access
   ```
 
@@ -325,7 +325,7 @@ audit_record_file_diffs = false  # record file diffs in audit log
 
 Two new IPC message types support the confirmation flow:
 
-### 9.1 ConfirmationRequest (slated → slate)
+### 9.1 ConfirmationRequest (codivd → codiv)
 
 | Field          | Type   | Description                                    |
 |----------------|--------|------------------------------------------------|
@@ -336,7 +336,7 @@ Two new IPC message types support the confirmation flow:
 | risk_level     | enum   | `high` or `critical`                           |
 | description    | string | Human-readable explanation of the risk         |
 
-### 9.2 ConfirmationResponse (slate → slated)
+### 9.2 ConfirmationResponse (codiv → codivd)
 
 | Field            | Type   | Description                                    |
 |------------------|--------|------------------------------------------------|

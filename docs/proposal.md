@@ -1,4 +1,4 @@
-# Slate Agent — Technical Proposal
+# Codiv Agent — Technical Proposal
 
 **Date**: 2026-02-26 | **Author**: Subhagato | **Status**: Draft | **Document type**: Proposal (approval/funding)
 
@@ -6,9 +6,9 @@
 
 ## 1. Executive Summary
 
-**Slate Agent** is a terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. Built as a Rust system — a TUI client (`slate`) and a daemon (`slated`) — it looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
+**Codiv Agent** is a terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. Built as a Rust system — a TUI client (`codiv`) and a daemon (`codivd`) — it looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
-The core insight is that most terminal interactions are simple commands that should execute instantly, while complex tasks benefit from a structured multi-agent system with specialized roles. Slate Agent bridges both: recognized commands run with near-zero latency through a command fast-pass, while natural language requests are decomposed and executed by a hierarchy of AI agents — each assigned a purpose-fit model based on the task at hand.
+The core insight is that most terminal interactions are simple commands that should execute instantly, while complex tasks benefit from a structured multi-agent system with specialized roles. Codiv Agent bridges both: recognized commands run with near-zero latency through a command fast-pass, while natural language requests are decomposed and executed by a hierarchy of AI agents — each assigned a purpose-fit model based on the task at hand.
 
 **Key differentiators:**
 
@@ -49,7 +49,7 @@ Existing tools that attempt to solve this fall short in several ways:
 | **Gemini CLI** | Node.js CLI | Gemini family | ReAct loop + MCP | Session-based | No |
 | **Warp AI** | Rust terminal | Multi-model | Agent with terminal control | Session-based | No |
 | **Devin** | Cloud VM | Proprietary | Full autonomous environment | Cloud-persistent | N/A |
-| **Slate Agent** | **Rust CLI** | **Any provider** | **Recursive tree** | **Bounded + Narrator-curated** | **Yes (<10ms)** |
+| **Codiv Agent** | **Rust CLI** | **Any provider** | **Recursive tree** | **Bounded + Narrator-curated** | **Yes (<10ms)** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to one provider. Aider and Cline offer the broadest model support but have flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound.
 
@@ -59,15 +59,15 @@ Existing tools that attempt to solve this fall short in several ways:
 
 ### What We Are Building
 
-Slate Agent is a shell replacement that functions as both a high-performance terminal and an intelligent coding assistant. The system has two components:
+Codiv Agent is a shell replacement that functions as both a high-performance terminal and an intelligent coding assistant. The system has two components:
 
-- **`slate`** (Rust binary, per-terminal): The user-facing TUI client. Owns the terminal experience — rendering, input, tab completion, command execution via a persistent bash co-process, and interactive program passthrough (vim, ssh, python REPL). Communicates with the daemon over IPC.
+- **`codiv`** (Rust binary, per-terminal): The user-facing TUI client. Owns the terminal experience — rendering, input, tab completion, command execution via a persistent bash co-process, and interactive program passthrough (vim, ssh, python REPL). Communicates with the daemon over IPC.
 
-- **`slated`** (Rust daemon, singleton): The backend intelligence. Manages client sessions, spawns worker bash processes for agent tool calls, and hosts the agent system — orchestration, memory, task scheduling, and LLM access.
+- **`codivd`** (Rust daemon, singleton): The backend intelligence. Manages client sessions, spawns worker bash processes for agent tool calls, and hosts the agent system — orchestration, memory, task scheduling, and LLM access.
 
 ### Core Concepts
 
-**Command Fast-Pass**: On startup, `slate` scans PATH directories and known bash builtins to build a command index. Every input is classified instantly: recognized commands execute immediately through the persistent bash co-process; natural language or ambiguous input routes to the agent system. This ensures the terminal never feels slow for everyday commands.
+**Command Fast-Pass**: On startup, `codiv` scans PATH directories and known bash builtins to build a command index. Every input is classified instantly: recognized commands execute immediately through the persistent bash co-process; natural language or ambiguous input routes to the agent system. This ensures the terminal never feels slow for everyday commands.
 
 **Multi-Agent Hierarchy**: The agent system uses a tree of specialized roles:
 
@@ -97,7 +97,7 @@ Slate Agent is a shell replacement that functions as both a high-performance ter
 │                     User's Terminal                     │
 │                                                         │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │  slate (Rust, per-terminal)                       │  │
+│  │  codiv (Rust, per-terminal)                       │  │
 │  │                                                   │  │
 │  │  TUI Rendering    Persistent Bash    Command      │  │
 │  │  (ratatui)        Co-Process (PTY)   Index        │  │
@@ -108,7 +108,7 @@ Slate Agent is a shell replacement that functions as both a high-performance ter
 │                         │ serde+bincode IPC             │
 │                         │ (Unix domain socket)          │
 │  ┌──────────────────────▼────────────────────────────┐  │
-│  │  slated (Rust, singleton daemon)                  │  │
+│  │  codivd (Rust, singleton daemon)                  │  │
 │  │                                                   │  │
 │  │  Session Manager         Worker Bash Sessions     │  │
 │  │  (env snapshots,         (spawn per Work Item,    │  │
@@ -127,7 +127,7 @@ Slate Agent is a shell replacement that functions as both a high-performance ter
 └─────────────────────────────────────────────────────────┘
 ```
 
-The architecture enforces a clean separation: `slate` owns everything the user touches (rendering, input, command execution), while `slated` owns everything the agent does (orchestration, memory, scheduling, LLM access). They communicate over a binary IPC protocol (serde+bincode) on a Unix domain socket. This separation enables independent development, deployment, and crate-level optimizations for each component.
+The architecture enforces a clean separation: `codiv` owns everything the user touches (rendering, input, command execution), while `codivd` owns everything the agent does (orchestration, memory, scheduling, LLM access). They communicate over a binary IPC protocol (serde+bincode) on a Unix domain socket. This separation enables independent development, deployment, and crate-level optimizations for each component.
 
 ---
 
@@ -137,9 +137,9 @@ The architecture enforces a clean separation: `slate` owns everything the user t
 
 **Goal**: A working terminal client that executes commands via daemon IPC.
 
-- `slate` Rust binary: TUI with persistent bash co-process, command index classifier, 3-tier tab completion, interactive program passthrough, VT100 terminal emulation, clipboard support
-- `slated` C++ daemon: Unix socket server, IPC protocol, session management with env snapshots, worker bash process spawning, heartbeat detection
-- Binary IPC protocol between `slate` and `slated`
+- `codiv` Rust binary: TUI with persistent bash co-process, command index classifier, 3-tier tab completion, interactive program passthrough, VT100 terminal emulation, clipboard support
+- `codivd` C++ daemon: Unix socket server, IPC protocol, session management with env snapshots, worker bash process spawning, heartbeat detection
+- Binary IPC protocol between `codiv` and `codivd`
 
 **Note**: The C++ daemon from Phase 1 has been replaced by a Rust daemon in Phase 2.
 
@@ -218,7 +218,7 @@ The architecture enforces a clean separation: `slate` owns everything the user t
 
 **Developer**: Subhagato (solo developer)
 
-Slate Agent is currently a solo project. All design, implementation, and testing across the Rust client and Rust daemon are handled by a single developer.
+Codiv Agent is currently a solo project. All design, implementation, and testing across the Rust client and Rust daemon are handled by a single developer.
 
 **Future considerations**: As the project matures past Phase 4, specific phases may benefit from contributors — particularly Phase 6 (Tool System / MCP Bridge) and Phase 7 (Safety / Sandboxing), which involve well-scoped, relatively independent work that could be parallelized.
 
@@ -251,8 +251,8 @@ End users pay their own LLM API costs (bring-your-own-key model). Typical usage 
 
 ### Compute & Infrastructure
 
-- **Compute**: Minimal. Both `slate` and `slated` run on the user's local machine. The daemon's memory footprint target is <50MB resident.
-- **Cloud backend**: None. Slate Agent has no cloud infrastructure — all processing is local. Users connect directly to LLM provider APIs.
+- **Compute**: Minimal. Both `codiv` and `codivd` run on the user's local machine. The daemon's memory footprint target is <50MB resident.
+- **Cloud backend**: None. Codiv Agent has no cloud infrastructure — all processing is local. Users connect directly to LLM provider APIs.
 - **CI/CD**: Standard GitHub Actions for building Rust workspace — negligible cost.
 - **No recurring infrastructure costs.**
 
@@ -289,13 +289,13 @@ End users pay their own LLM API costs (bring-your-own-key model). Typical usage 
 
 The following are explicitly out of scope for the current roadmap:
 
-- **Fish/Zsh native mode** — `slate` uses its own persistent bash co-process
+- **Fish/Zsh native mode** — `codiv` uses its own persistent bash co-process
 - **Voice agent integration** — text input only
 - **Multi-model forked work trees** — running the same task on multiple models in parallel and picking the best result
 - **Backpressure system** for tool output and Work Item spawning
 - **Scoped capability tokens** for fine-grained session/cwd/repo permissions
 - **Circuit breaker with automatic model tier fallback**
-- **MCP server hosting** — Slate Agent bridges MCP servers as tools (client), but does not expose its own MCP server
+- **MCP server hosting** — Codiv Agent bridges MCP servers as tools (client), but does not expose its own MCP server
 - **Windows support** — Unix-only (macOS and Linux)
 - **Open-source release** — not initially; may open-source later
 
@@ -311,14 +311,14 @@ These features can be revisited when real-world usage patterns emerge.
 
 **Codex CLI** is open-source and supports OpenAI models plus local inference via Ollama, but has a flat agent architecture. Multi-agent workflows require external orchestration through the Agents SDK and MCP.
 
-**Cursor** pioneered multi-agent coding with its Planner/Worker/Judge pattern, but it is IDE-bound and learned hard lessons about coordination — reader-writer locks degraded 20 concurrent agents to the throughput of 2-3. Slate Agent avoids this with single-writer ownership and shared state coordination.
+**Cursor** pioneered multi-agent coding with its Planner/Worker/Judge pattern, but it is IDE-bound and learned hard lessons about coordination — reader-writer locks degraded 20 concurrent agents to the throughput of 2-3. Codiv Agent avoids this with single-writer ownership and shared state coordination.
 
 **Aider** is the most model-agnostic tool (supports any LLM), but has a flat architecture with no task decomposition, no memory persistence, and no concurrent execution.
 
-Slate Agent combines the best ideas from each: terminal-native command execution (unique), recursive multi-agent hierarchy (Claude Code's strength), multi-model flexibility (Aider's strength), and shared-state coordination (Cursor's hard-won lesson).
+Codiv Agent combines the best ideas from each: terminal-native command execution (unique), recursive multi-agent hierarchy (Claude Code's strength), multi-model flexibility (Aider's strength), and shared-state coordination (Cursor's hard-won lesson).
 
 ### Pricing Model
 
-Slate Agent uses a bring-your-own-key model. Users configure their own API keys for the LLM providers they want to use. There are no subscription fees, no cloud infrastructure costs, and no vendor lock-in. The software is free to use; users pay only for the LLM API calls their agent system makes.
+Codiv Agent uses a bring-your-own-key model. Users configure their own API keys for the LLM providers they want to use. There are no subscription fees, no cloud infrastructure costs, and no vendor lock-in. The software is free to use; users pay only for the LLM API calls their agent system makes.
 
 This aligns with tools like Aider and Cline, and contrasts with the subscription models of Claude Code ($20-200/month), Cursor ($60-200/month), and Devin ($500/month).

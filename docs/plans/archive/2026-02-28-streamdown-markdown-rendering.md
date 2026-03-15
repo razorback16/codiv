@@ -13,11 +13,11 @@
 ### Task 1: Add streamdown dependencies to Cargo.toml
 
 **Files:**
-- Modify: `crates/slate/Cargo.toml`
+- Modify: `crates/codiv/Cargo.toml`
 
 **Step 1: Add dependencies**
 
-Add two lines to the end of `[dependencies]` in `crates/slate/Cargo.toml`:
+Add two lines to the end of `[dependencies]` in `crates/codiv/Cargo.toml`:
 
 ```toml
 streamdown-parser = "0.1"
@@ -26,13 +26,13 @@ streamdown-render = "0.1"
 
 **Step 2: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles with no errors (new deps downloaded)
 
 **Step 3: Commit**
 
 ```bash
-git add crates/slate/Cargo.toml Cargo.lock
+git add crates/codiv/Cargo.toml Cargo.lock
 git commit -m "feat: add streamdown-parser and streamdown-render dependencies"
 ```
 
@@ -41,10 +41,10 @@ git commit -m "feat: add streamdown-parser and streamdown-render dependencies"
 ### Task 2: Create the MarkdownStream module
 
 **Files:**
-- Create: `crates/slate/src/markdown.rs`
-- Modify: `crates/slate/src/main.rs` (add `mod markdown;`)
+- Create: `crates/codiv/src/markdown.rs`
+- Modify: `crates/codiv/src/main.rs` (add `mod markdown;`)
 
-**Step 1: Create `crates/slate/src/markdown.rs`**
+**Step 1: Create `crates/codiv/src/markdown.rs`**
 
 ```rust
 use streamdown_parser::Parser;
@@ -141,7 +141,7 @@ impl MarkdownStream {
 }
 ```
 
-**Step 2: Register the module in `crates/slate/src/main.rs`**
+**Step 2: Register the module in `crates/codiv/src/main.rs`**
 
 Add `mod markdown;` after the existing module declarations (line 4). The file starts with:
 
@@ -155,13 +155,13 @@ mod markdown;
 
 **Step 3: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles (module registered, no users yet, may warn about dead code — that's fine)
 
 **Step 4: Commit**
 
 ```bash
-git add crates/slate/src/markdown.rs crates/slate/src/main.rs
+git add crates/codiv/src/markdown.rs crates/codiv/src/main.rs
 git commit -m "feat: add MarkdownStream module for streaming markdown rendering"
 ```
 
@@ -170,7 +170,7 @@ git commit -m "feat: add MarkdownStream module for streaming markdown rendering"
 ### Task 3: Wire MarkdownStream into the terminal event loop
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal.rs`
+- Modify: `crates/codiv/src/ui/terminal.rs`
 
 This task has 4 changes to this file:
 
@@ -284,12 +284,12 @@ In the Error handler (around line 917 where `agent_streaming = false`), add a re
 
 **Step 7: Build and verify**
 
-Run: `cargo build -p slate`
+Run: `cargo build -p codiv`
 Expected: compiles with no errors
 
 **Step 8: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal.rs
+git add crates/codiv/src/ui/terminal.rs
 git commit -m "feat: integrate streamdown for streaming markdown rendering of AI responses"
 ```

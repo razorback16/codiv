@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-This document specifies the architecture of Slate Agent's AI agent system — how LLMs are integrated, how the tool calling loop operates, how system prompts are structured, how context is managed, how streaming output reaches the terminal, and how the system evolves from a single combined agent (Phase 2) to a multi-agent hierarchy with specialized roles (Phase 4).
+This document specifies the architecture of Codiv Agent's AI agent system — how LLMs are integrated, how the tool calling loop operates, how system prompts are structured, how context is managed, how streaming output reaches the terminal, and how the system evolves from a single combined agent (Phase 2) to a multi-agent hierarchy with specialized roles (Phase 4).
 
 The PRD defines agent roles (Orchestrator, TeamLead, Engineer, Reviewer, Narrator) and Work Items at a requirements level. This design provides the concrete implementation architecture.
 
@@ -21,7 +21,7 @@ The PRD (FR-004, Phases 2 and 4) establishes agent roles, the Orchestrator-Worke
 - How tool calling works in a loop — the full cycle from LLM generating a tool call to result injection and continuation
 - How system prompts are structured — what information each role receives and in what format
 - How context is managed — token budget allocation, compaction strategy, tool output truncation
-- How streaming output reaches the terminal — the path from aisdk.rs streaming through IPC to rendered agent blocks in slate
+- How streaming output reaches the terminal — the path from aisdk.rs streaming through IPC to rendered agent blocks in codiv
 - How single-agent (Phase 2) evolves to multi-agent (Phase 4) — the concrete transition path
 
 This design fills those gaps.
@@ -32,10 +32,10 @@ Phase 2 delivers a combined Orchestrator+Engineer agent — a single LLM session
 
 ### 3.1 aisdk.rs Integration
 
-The daemon (`slated`) integrates with aisdk.rs for streaming LLM access with tool calling. The integration surface:
+The daemon (`codivd`) integrates with aisdk.rs for streaming LLM access with tool calling. The integration surface:
 
 ```
-slated
+codivd
   └── AgentSession
         ├── aisdk::Client               // HTTP client to LLM provider
         ├── aisdk::LanguageModelRequest  // streaming completion with tool definitions
@@ -53,20 +53,20 @@ slated
 The core agent loop is a synchronous cycle within a single LLM turn:
 
 ```
-1. User input arrives at daemon (via IPC from slate)
+1. User input arrives at daemon (via IPC from codiv)
 2. Daemon constructs messages array: [system_prompt, ...history, user_message]
 3. Daemon calls aisdk.rs streaming completion with tool definitions
 4. For each streamed chunk:
-   a. If text token → forward to slate via IPC (AgentStreamChunk message)
+   a. If text token → forward to codiv via IPC (AgentStreamChunk message)
    b. If tool_call → pause streaming, execute the tool:
       i.   Parse tool name + arguments from the LLM's structured output
-      ii.  Dispatch to tool implementation (built-in or external via SLATE_TOOLS_PATH)
+      ii.  Dispatch to tool implementation (built-in or external via CODIV_TOOLS_PATH)
       iii. Capture tool result (stdout, stderr, exit code)
       iv.  Append tool_call message and tool_result message to conversation history
       v.   Resume streaming completion with updated messages (LLM sees the result)
 5. LLM continues generating — may produce more text or more tool calls
 6. Loop terminates when LLM produces a final text response with no tool calls
-7. Daemon sends AgentComplete to slate
+7. Daemon sends AgentComplete to codiv
 ```
 
 Key behaviors:
@@ -81,7 +81,7 @@ The combined Orchestrator+Engineer system prompt for Phase 2:
 
 ```
 [ROLE]
-You are Slate Agent, a terminal-native coding assistant. You operate inside a
+You are Codiv Agent, a terminal-native coding assistant. You operate inside a
 terminal where the user types commands and natural language requests. You can
 execute shell commands, read and modify files, and search codebases.
 
@@ -104,12 +104,12 @@ Last exit code: {last_exit_code}
 
 [PROJECT MEMORY]
 {project_md_content}
-// Injected from ~/.slate-agent/memory/projects/<fingerprint>/project.md
+// Injected from ~/.codiv/memory/projects/<fingerprint>/project.md
 // Empty string if no project memory exists yet
 
 [USER MEMORY]
 {user_md_content}
-// Injected from ~/.slate-agent/memory/user.md
+// Injected from ~/.codiv/memory/user.md
 // Empty string if no user memory exists yet
 
 [CONSTRAINTS]
@@ -157,16 +157,16 @@ The path from LLM to terminal:
 aisdk.rs stream item
   → AgentSession::on_token(chunk: &str)
     → IPC: AgentStreamChunk { request_id, chunk: StreamChunk::Text(chunk) }
-      → Unix socket write to slate client
-        → slate receives AgentStreamChunk
+      → Unix socket write to codiv client
+        → codiv receives AgentStreamChunk
           → Appends to agent output block widget
             → ratatui re-renders the block with new content
               → User sees streaming text in a color-bordered agent block
 ```
 
 - **Chunking**: The daemon forwards tokens as they arrive from aisdk.rs. No batching — latency-sensitive path.
-- **Tool call visibility**: When a tool call is detected, the daemon sends a status message to slate: `[Calling: Bash("make test")]`. The tool's output streams separately. When the tool completes, the daemon sends `[Tool result: exit code 0]` and resumes LLM streaming.
-- **Markdown rendering**: slate uses comrak + syntect to render the agent's markdown output with syntax highlighting in code blocks. For streaming, slate maintains a growing buffer and re-parses on significant updates (every ~500 characters or on newline).
+- **Tool call visibility**: When a tool call is detected, the daemon sends a status message to codiv: `[Calling: Bash("make test")]`. The tool's output streams separately. When the tool completes, the daemon sends `[Tool result: exit code 0]` and resumes LLM streaming.
+- **Markdown rendering**: codiv uses comrak + syntect to render the agent's markdown output with syntax highlighting in code blocks. For streaming, codiv maintains a growing buffer and re-parses on significant updates (every ~500 characters or on newline).
 
 ### 3.6 Error Handling
 
@@ -183,10 +183,10 @@ aisdk.rs stream item
 The agent loop terminates when:
 
 1. **Agent decides task is complete** — LLM produces a final text response with no tool calls
-2. **User interrupts** — Ctrl+C forwarded from slate to daemon; daemon cancels the in-flight API call and any running tool subprocess
+2. **User interrupts** — Ctrl+C forwarded from codiv to daemon; daemon cancels the in-flight API call and any running tool subprocess
 3. **Budget exceeded** — token or cost budget for the Work Item is exhausted (see work-item-dag-design.md)
 4. **Maximum turns reached** — configurable safety limit (default: 50 tool calling turns per request) to prevent infinite loops
-5. **Unrecoverable error** — LLM API fails after all retries; daemon reports failure to slate
+5. **Unrecoverable error** — LLM API fails after all retries; daemon reports failure to codiv
 
 ## 4. Phase 4: Multi-Agent Architecture
 
@@ -277,7 +277,7 @@ The Engineer is the workhorse — created per Work Item, given a goal and accept
 
 **Tools available**: Bash, Read, Write, Edit, Glob, Grep, WebFetch, memory_search, memory_read, memory_write_episode.
 
-**Execution**: The Engineer runs the standard tool calling loop (Section 3.2) within its Work Item's scope. It has access to its own worker bash session (spawned by slated, initialized from env snapshot). On completion, it produces artifacts (diffs, files, transcripts) stored in Shared Project State.
+**Execution**: The Engineer runs the standard tool calling loop (Section 3.2) within its Work Item's scope. It has access to its own worker bash session (spawned by codivd, initialized from env snapshot). On completion, it produces artifacts (diffs, files, transcripts) stored in Shared Project State.
 
 ### 4.5 Reviewer
 
@@ -355,8 +355,8 @@ Agents are ephemeral except for the Orchestrator. This keeps memory usage bounde
 Multiple Engineers can run simultaneously on independent Work Items (independent branches of the DAG). Each concurrent agent gets:
 
 - Its own LLM session (separate aisdk.rs completion stream)
-- Its own worker bash process (spawned by slated from env snapshot)
-- Its own artifact directory (`~/.slate-agent/state/<session_id>/artifacts/<work_item_id>/`)
+- Its own worker bash process (spawned by codivd from env snapshot)
+- Its own artifact directory (`~/.codiv/state/<session_id>/artifacts/<work_item_id>/`)
 - No shared mutable state with other concurrent agents
 
 Maximum concurrent agents is configurable (default: 4, matching the default Tokio concurrent task limit).
@@ -432,7 +432,7 @@ AgentSession::on_token("Hello")
 Unix socket write (framed: 4-byte BE length + bincode payload)
   │
   ▼
-slate IPC client receives AgentStreamChunk
+codiv IPC client receives AgentStreamChunk
   │
   │ Route to correct agent output block by work_item_id
   │ Append text to block's content buffer
@@ -452,16 +452,16 @@ Tool calls are detected during streaming:
 1. aisdk.rs detects a `tool_calls` field in the streamed response (OpenAI format) or a `tool_use` content block (Anthropic format)
 2. aisdk.rs yields a ToolCall stream item with name and arguments_json
 3. The daemon:
-   a. Sends a status message to slate: `[Calling: {tool_name}({brief_args})]`
+   a. Sends a status message to codiv: `[Calling: {tool_name}({brief_args})]`
    b. Executes the tool (may take seconds — Bash commands, file operations)
-   c. Sends tool output to slate as it streams (for Bash, stdout/stderr stream in real time)
+   c. Sends tool output to codiv as it streams (for Bash, stdout/stderr stream in real time)
    d. Sends tool completion status: `[Tool complete: {tool_name} → {exit_code}]`
    e. Injects the tool result into the conversation and makes another completion call
 4. The next completion call may produce more text, more tool calls, or a final response
 
 ### 6.3 Output Block Management
 
-slate manages agent output blocks in its ratatui widget tree:
+codiv manages agent output blocks in its ratatui widget tree:
 
 - Each Work Item gets a dedicated output block identified by `work_item_id`
 - Blocks are color-bordered by agent role (Cyan for Engineer, Yellow for Reviewer, etc.)
@@ -476,7 +476,7 @@ For concurrent Work Items, multiple blocks are visible simultaneously, each stre
 ### 7.1 Orchestrator
 
 ```
-You are the Orchestrator for Slate Agent, a terminal-native coding assistant.
+You are the Orchestrator for Codiv Agent, a terminal-native coding assistant.
 
 ROLE: You manage the user's session. You interpret user input, decide how to
 handle it, and present results.
@@ -510,7 +510,7 @@ CONSTRAINTS:
 ### 7.2 TeamLead
 
 ```
-You are a TeamLead for Slate Agent. You decompose complex tasks into executable
+You are a TeamLead for Codiv Agent. You decompose complex tasks into executable
 Work Items.
 
 ROLE: Analyze the task, examine relevant code, and produce a plan as a
@@ -547,7 +547,7 @@ CONSTRAINTS:
 ### 7.3 Engineer
 
 ```
-You are an Engineer for Slate Agent. You execute a specific Work Item by using
+You are an Engineer for Codiv Agent. You execute a specific Work Item by using
 tools to accomplish the goal.
 
 GOAL:
@@ -574,7 +574,7 @@ CONSTRAINTS:
 ### 7.4 Reviewer
 
 ```
-You are a Reviewer for Slate Agent. You validate Work Item outputs against
+You are a Reviewer for Codiv Agent. You validate Work Item outputs against
 acceptance criteria.
 
 WORK ITEM UNDER REVIEW:
@@ -610,7 +610,7 @@ OUTPUT FORMAT:
 ### 7.5 Narrator
 
 ```
-You are the Narrator for Slate Agent. You consolidate episodic memory into
+You are the Narrator for Codiv Agent. You consolidate episodic memory into
 semantic knowledge files.
 
 ROLE: After a Work Item completes, you process new episodes and update the

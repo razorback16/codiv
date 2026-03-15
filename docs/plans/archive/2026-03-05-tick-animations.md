@@ -13,13 +13,13 @@
 ### Task 1: Create AnimationState struct
 
 **Files:**
-- Create: `crates/slate/src/ui/terminal/animation.rs`
-- Modify: `crates/slate/src/ui/terminal/mod.rs:8-14` (add `mod animation;`)
+- Create: `crates/codiv/src/ui/terminal/animation.rs`
+- Modify: `crates/codiv/src/ui/terminal/mod.rs:8-14` (add `mod animation;`)
 
 **Step 1: Create the animation module with AnimationState**
 
 ```rust
-// crates/slate/src/ui/terminal/animation.rs
+// crates/codiv/src/ui/terminal/animation.rs
 use std::time::{Duration, Instant};
 
 /// Spinner frame characters (Braille pattern).
@@ -99,7 +99,7 @@ impl AnimationState {
 
 **Step 2: Register the module**
 
-In `crates/slate/src/ui/terminal/mod.rs`, add `mod animation;` after line 8 (after `mod daemon;`):
+In `crates/codiv/src/ui/terminal/mod.rs`, add `mod animation;` after line 8 (after `mod daemon;`):
 
 ```rust
 mod animation;
@@ -110,13 +110,13 @@ mod event_loop;
 
 **Step 3: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles with no errors (unused warnings are fine at this stage)
 
 **Step 4: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/animation.rs crates/slate/src/ui/terminal/mod.rs
+git add crates/codiv/src/ui/terminal/animation.rs crates/codiv/src/ui/terminal/mod.rs
 git commit -m "feat: add AnimationState struct for tick-based animations"
 ```
 
@@ -125,12 +125,12 @@ git commit -m "feat: add AnimationState struct for tick-based animations"
 ### Task 2: Add tick channel to the event loop
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal/event_loop.rs`
-- Modify: `crates/slate/src/ui/terminal/io.rs`
+- Modify: `crates/codiv/src/ui/terminal/event_loop.rs`
+- Modify: `crates/codiv/src/ui/terminal/io.rs`
 
 **Step 1: Add spawn_tick_channel to io.rs**
 
-Append this function to `crates/slate/src/ui/terminal/io.rs`:
+Append this function to `crates/codiv/src/ui/terminal/io.rs`:
 
 ```rust
 /// Spawn a background thread that sends tick events at a fixed interval.
@@ -182,13 +182,13 @@ recv(tick_rx) -> _ => {
 
 **Step 3: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles (anim may warn as unused in render — that's fine)
 
 **Step 4: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/io.rs crates/slate/src/ui/terminal/event_loop.rs
+git add crates/codiv/src/ui/terminal/io.rs crates/codiv/src/ui/terminal/event_loop.rs
 git commit -m "feat: add tick channel to event loop for animation timing"
 ```
 
@@ -197,8 +197,8 @@ git commit -m "feat: add tick channel to event loop for animation timing"
 ### Task 3: Implement cursor blink in render
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal/render.rs`
-- Modify: `crates/slate/src/ui/terminal/event_loop.rs`
+- Modify: `crates/codiv/src/ui/terminal/render.rs`
+- Modify: `crates/codiv/src/ui/terminal/event_loop.rs`
 
 **Step 1: Add anim parameter to render_frame**
 
@@ -236,13 +236,13 @@ render_frame(
 
 **Step 4: Verify it compiles and cursor blinks**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles with no errors
 
 **Step 5: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/render.rs crates/slate/src/ui/terminal/event_loop.rs
+git add crates/codiv/src/ui/terminal/render.rs crates/codiv/src/ui/terminal/event_loop.rs
 git commit -m "feat: implement cursor blink using animation tick"
 ```
 
@@ -251,7 +251,7 @@ git commit -m "feat: implement cursor blink using animation tick"
 ### Task 4: Add spinner to status bar during execution/streaming
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal/render.rs`
+- Modify: `crates/codiv/src/ui/terminal/render.rs`
 
 **Step 1: Add anim parameter to render_status_bar**
 
@@ -297,13 +297,13 @@ render_status_bar(
 
 **Step 5: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles with no errors
 
 **Step 6: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/render.rs
+git add crates/codiv/src/ui/terminal/render.rs
 git commit -m "feat: add animated spinner to status bar during command execution"
 ```
 
@@ -312,7 +312,7 @@ git commit -m "feat: add animated spinner to status bar during command execution
 ### Task 5: Add spinner to gutter during agent streaming
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal/render.rs`
+- Modify: `crates/codiv/src/ui/terminal/render.rs`
 
 **Step 1: Animate the live prompt gutter marker during streaming**
 
@@ -344,13 +344,13 @@ Note: `agent_streaming` is already a parameter of `render_frame` — it's passed
 
 **Step 2: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles with no errors
 
 **Step 3: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/render.rs
+git add crates/codiv/src/ui/terminal/render.rs
 git commit -m "feat: add animated spinner gutter marker during agent streaming"
 ```
 
@@ -359,7 +359,7 @@ git commit -m "feat: add animated spinner gutter marker during agent streaming"
 ### Task 6: Add pulsing daemon status indicator in status bar
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal/render.rs`
+- Modify: `crates/codiv/src/ui/terminal/render.rs`
 
 **Step 1: Add pulsing dot to daemon status**
 
@@ -403,13 +403,13 @@ This should work without changes since `format!` handles `String` via `Display`.
 
 **Step 3: Verify it compiles**
 
-Run: `cargo check -p slate`
+Run: `cargo check -p codiv`
 Expected: compiles with no errors
 
 **Step 4: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/render.rs
+git add crates/codiv/src/ui/terminal/render.rs
 git commit -m "feat: add pulsing daemon status indicator in status bar"
 ```
 
@@ -418,7 +418,7 @@ git commit -m "feat: add pulsing daemon status indicator in status bar"
 ### Task 7: Add unit tests for AnimationState
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal/animation.rs`
+- Modify: `crates/codiv/src/ui/terminal/animation.rs`
 
 **Step 1: Add tests module**
 
@@ -499,13 +499,13 @@ mod tests {
 
 **Step 2: Run tests**
 
-Run: `cargo test -p slate -- animation`
+Run: `cargo test -p codiv -- animation`
 Expected: all 5 tests pass
 
 **Step 3: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal/animation.rs
+git add crates/codiv/src/ui/terminal/animation.rs
 git commit -m "test: add unit tests for AnimationState"
 ```
 
@@ -515,12 +515,12 @@ git commit -m "test: add unit tests for AnimationState"
 
 **Step 1: Full build check**
 
-Run: `cargo build -p slate`
+Run: `cargo build -p codiv`
 Expected: compiles with no errors
 
 **Step 2: Run all tests**
 
-Run: `cargo test -p slate`
+Run: `cargo test -p codiv`
 Expected: all tests pass
 
 **Step 3: Commit any remaining changes**

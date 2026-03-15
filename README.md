@@ -1,6 +1,6 @@
-# Slate Agent
+# Codiv Agent
 
-A terminal-native AI coding assistant built in Rust. Slate replaces your shell with one that runs commands instantly and handles complex AI tasks in the same interface.
+A terminal-native AI coding assistant built in Rust. Codiv replaces your shell with one that runs commands instantly and handles complex AI tasks in the same interface.
 
 ## What It Does
 
@@ -12,7 +12,7 @@ A terminal-native AI coding assistant built in Rust. Slate replaces your shell w
 ## Architecture
 
 ```
-slate (TUI client)          slated (daemon)
+codiv (TUI client)          codivd (daemon)
 ┌────────────────┐          ┌──────────────────────┐
 │ ratatui + pty  │◄─IPC────►│ tokio + aisdk        │
 │ command index  │ bincode  │ agent + tool loop    │
@@ -21,17 +21,17 @@ slate (TUI client)          slated (daemon)
 └────────────────┘ socket   └──────────────────────┘
                                       │
                             ┌─────────┴─────────┐
-                            │   slate-tools      │
+                            │   codiv-tools      │
                             │ (shared lib crate) │
                             └───────────────────┘
 ```
 
 | Crate | Purpose |
 |-------|---------|
-| `slate` | TUI client — terminal rendering, bash co-process, input classification, tab completion |
-| `slated` | Async daemon — AI agent, session management, LLM streaming, tool execution |
-| `slate-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
-| `slate-common` | Shared types — IPC messages, config, utilities |
+| `codiv` | TUI client — terminal rendering, bash co-process, input classification, tab completion |
+| `codivd` | Async daemon — AI agent, session management, LLM streaming, tool execution |
+| `codiv-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
+| `codiv-common` | Shared types — IPC messages, config, utilities |
 
 ## Getting Started
 
@@ -50,40 +50,40 @@ cargo build --workspace
 
 ```bash
 cargo build --workspace --release
-ln -sf "$(pwd)/target/release/slate" /usr/local/bin/slate
+ln -sf "$(pwd)/target/release/codiv" /usr/local/bin/codiv
 ```
 
 ### Run
 
 ```bash
 # Launch the TUI (default — replaces your shell)
-slate
+codiv
 
 # Use tools directly from the CLI
-slate read --path ./src/main.rs
-slate grep --pattern "fn main" --path ./src
-slate bash --command "cargo test"
-slate glob --pattern "**/*.rs"
+codiv read --path ./src/main.rs
+codiv grep --pattern "fn main" --path ./src
+codiv bash --command "cargo test"
+codiv glob --pattern "**/*.rs"
 
 # JSON mode for programmatic use
-echo '{"file_path":"./Cargo.toml"}' | slate read --json-in --json-out
+echo '{"file_path":"./Cargo.toml"}' | codiv read --json-in --json-out
 
 # Tool metadata
-slate read --help
-slate read --agent-guide
+codiv read --help
+codiv read --agent-guide
 ```
 
 ### Debug Mode
 
 ```bash
-# Logs to /tmp/slate-debug.log
-slate --debug
-slate --debug=trace
+# Logs to /tmp/codiv-debug.log
+codiv --debug
+codiv --debug=trace
 ```
 
 ## CLI Tool Reference
 
-Each built-in tool is available as a `slate` subcommand with these common flags:
+Each built-in tool is available as a `codiv` subcommand with these common flags:
 
 | Flag | Purpose |
 |------|---------|
@@ -96,12 +96,12 @@ Each built-in tool is available as a `slate` subcommand with these common flags:
 
 | Command | Description |
 |---------|-------------|
-| `slate read --path <file> [--offset N] [--limit N]` | Read file contents with numbered lines |
-| `slate write --path <file> --content <text>` | Write content to a file |
-| `slate edit --path <file> --old-string <old> --new-string <new>` | Find and replace a unique string |
-| `slate glob --pattern <glob> [--path <dir>]` | Find files matching a pattern |
-| `slate grep --pattern <regex> [--path <dir>] [--include <glob>]` | Search file contents with regex |
-| `slate bash --command <cmd> [--timeout <ms>]` | Execute a shell command |
+| `codiv read --path <file> [--offset N] [--limit N]` | Read file contents with numbered lines |
+| `codiv write --path <file> --content <text>` | Write content to a file |
+| `codiv edit --path <file> --old-string <old> --new-string <new>` | Find and replace a unique string |
+| `codiv glob --pattern <glob> [--path <dir>]` | Find files matching a pattern |
+| `codiv grep --pattern <regex> [--path <dir>] [--include <glob>]` | Search file contents with regex |
+| `codiv bash --command <cmd> [--timeout <ms>]` | Execute a shell command |
 
 ## Roadmap
 
@@ -164,7 +164,7 @@ Persistent bounded memory across sessions with project auto-switching.
 
 Unified tool registry — binary tools, MCP bridge, prompt tools, hooks, aliases.
 
-- `SLATE_TOOLS_PATH` discovery and progressive loading (Tier 0-3)
+- `CODIV_TOOLS_PATH` discovery and progressive loading (Tier 0-3)
 - MCP bridge (CLI ↔ MCP protocol translation)
 - Prompt tool runtime with skill import
 - Hooks and aliases in config

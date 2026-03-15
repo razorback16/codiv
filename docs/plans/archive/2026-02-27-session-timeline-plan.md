@@ -15,12 +15,12 @@
 ### Task 1: Output Truncation Utility
 
 **Files:**
-- Create: `crates/slate-common/src/truncate.rs`
-- Modify: `crates/slate-common/src/lib.rs`
+- Create: `crates/codiv-common/src/truncate.rs`
+- Modify: `crates/codiv-common/src/lib.rs`
 
 **Step 1: Write the failing test**
 
-Add to `crates/slate-common/src/truncate.rs`:
+Add to `crates/codiv-common/src/truncate.rs`:
 
 ```rust
 /// Truncate long output keeping the first `head_lines` and last `tail_lines`.
@@ -80,12 +80,12 @@ mod tests {
 
 **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p slate-common truncate -- --nocapture`
+Run: `cargo test -p codiv-common truncate -- --nocapture`
 Expected: FAIL with "not yet implemented"
 
 **Step 3: Write minimal implementation**
 
-Replace `todo!()` in `crates/slate-common/src/truncate.rs`:
+Replace `todo!()` in `crates/codiv-common/src/truncate.rs`:
 
 ```rust
 pub fn truncate_output(output: &str, head_lines: usize, tail_lines: usize) -> String {
@@ -115,7 +115,7 @@ pub fn truncate_output(output: &str, head_lines: usize, tail_lines: usize) -> St
 
 **Step 4: Export module**
 
-In `crates/slate-common/src/lib.rs`, add:
+In `crates/codiv-common/src/lib.rs`, add:
 
 ```rust
 pub mod truncate;
@@ -123,7 +123,7 @@ pub mod truncate;
 
 **Step 5: Run tests to verify they pass**
 
-Run: `cargo test -p slate-common truncate -- --nocapture`
+Run: `cargo test -p codiv-common truncate -- --nocapture`
 Expected: all 5 tests PASS
 
 **Step 6: Build workspace**
@@ -134,8 +134,8 @@ Expected: no errors, no new warnings
 **Step 7: Commit**
 
 ```bash
-git add crates/slate-common/src/truncate.rs crates/slate-common/src/lib.rs
-git commit -m "feat: add reusable output truncation utility in slate-common"
+git add crates/codiv-common/src/truncate.rs crates/codiv-common/src/lib.rs
+git commit -m "feat: add reusable output truncation utility in codiv-common"
 ```
 
 ---
@@ -143,11 +143,11 @@ git commit -m "feat: add reusable output truncation utility in slate-common"
 ### Task 2: Add `ClientMessage::CommandResult` IPC variant
 
 **Files:**
-- Modify: `crates/slate-common/src/messages.rs`
+- Modify: `crates/codiv-common/src/messages.rs`
 
 **Step 1: Add the variant**
 
-In `crates/slate-common/src/messages.rs`, add a new variant to the `ClientMessage` enum after `Confirmation`:
+In `crates/codiv-common/src/messages.rs`, add a new variant to the `ClientMessage` enum after `Confirmation`:
 
 ```rust
     CommandResult {
@@ -184,7 +184,7 @@ Expected: all tests pass
 **Step 5: Commit**
 
 ```bash
-git add crates/slate-common/src/messages.rs crates/slated/src/daemon.rs
+git add crates/codiv-common/src/messages.rs crates/codivd/src/daemon.rs
 git commit -m "feat: add ClientMessage::CommandResult IPC variant"
 ```
 
@@ -193,15 +193,15 @@ git commit -m "feat: add ClientMessage::CommandResult IPC variant"
 ### Task 3: Rewrite Agent with `SessionEvent` and aisdk `Messages` API
 
 **Files:**
-- Modify: `crates/slated/src/agent/agent.rs`
-- Modify: `crates/slated/src/agent/config.rs`
-- Modify: `crates/slated/Cargo.toml`
+- Modify: `crates/codivd/src/agent/agent.rs`
+- Modify: `crates/codivd/src/agent/config.rs`
+- Modify: `crates/codivd/Cargo.toml`
 
 This is the largest task. We replace the concatenated prompt approach with proper aisdk multi-turn messages.
 
 **Step 1: Update Cargo.toml**
 
-Add `serde_json` dependency to `crates/slated/Cargo.toml` (needed for `ToolCallInfo.input` which is `serde_json::Value`):
+Add `serde_json` dependency to `crates/codivd/Cargo.toml` (needed for `ToolCallInfo.input` which is `serde_json::Value`):
 
 ```toml
 serde_json = "1"
@@ -211,14 +211,14 @@ Note: `serde_json` is already listed in the Cargo.toml, so this step is a no-op.
 
 **Step 2: Rewrite `agent.rs`**
 
-Replace the entire contents of `crates/slated/src/agent/agent.rs` with:
+Replace the entire contents of `crates/codivd/src/agent/agent.rs` with:
 
 ```rust
 use crate::agent::config::{self, ModelAssignment};
 use aisdk::core::messages::{Message, Messages};
 use aisdk::core::tools::{ToolCallInfo, ToolDetails, ToolResultInfo};
-use slate_common::truncate::truncate_output;
-use slate_common::types::AgentRole;
+use codiv_common::truncate::truncate_output;
+use codiv_common::types::AgentRole;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -368,7 +368,7 @@ impl Agent {
 
 **Step 3: Update `config.rs` to accept `Messages`**
 
-In `crates/slated/src/agent/config.rs`, change `stream_from_config` and `run_stream` to accept `Messages` instead of separate `system` and `prompt` strings.
+In `crates/codivd/src/agent/config.rs`, change `stream_from_config` and `run_stream` to accept `Messages` instead of separate `system` and `prompt` strings.
 
 Replace the function signatures and implementations:
 
@@ -460,7 +460,7 @@ Expected: all tests pass
 **Step 6: Commit**
 
 ```bash
-git add crates/slated/src/agent/agent.rs crates/slated/src/agent/config.rs crates/slated/Cargo.toml
+git add crates/codivd/src/agent/agent.rs crates/codivd/src/agent/config.rs crates/codivd/Cargo.toml
 git commit -m "feat: rewrite agent with SessionEvent timeline and aisdk Messages API"
 ```
 
@@ -469,11 +469,11 @@ git commit -m "feat: rewrite agent with SessionEvent timeline and aisdk Messages
 ### Task 4: Update System Prompt
 
 **Files:**
-- Modify: `crates/slated/src/daemon.rs`
+- Modify: `crates/codivd/src/daemon.rs`
 
 **Step 1: Update the system prompt**
 
-In `crates/slated/src/daemon.rs`, change the system prompt string in the `AgentRequest` handler from:
+In `crates/codivd/src/daemon.rs`, change the system prompt string in the `AgentRequest` handler from:
 
 ```rust
 "You are a helpful coding assistant. Answer concisely."
@@ -496,7 +496,7 @@ Expected: pass
 **Step 3: Commit**
 
 ```bash
-git add crates/slated/src/daemon.rs
+git add crates/codivd/src/daemon.rs
 git commit -m "feat: update system prompt with terminal context awareness"
 ```
 
@@ -505,7 +505,7 @@ git commit -m "feat: update system prompt with terminal context awareness"
 ### Task 5: Handle `CommandResult` in Daemon
 
 **Files:**
-- Modify: `crates/slated/src/daemon.rs`
+- Modify: `crates/codivd/src/daemon.rs`
 
 **Step 1: Update the `CommandResult` handler**
 
@@ -524,9 +524,9 @@ Replace the placeholder `CommandResult` arm in `dispatch()` with:
                     // so the command isn't lost.
                     let agent = session.agent.get_or_insert_with(|| {
                         let catalog = crate::agent::config::ModelCatalog::load();
-                        let assignment = catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+                        let assignment = catalog.assignment_for(&codiv_common::types::AgentRole::Engineer);
                         crate::agent::agent::Agent::new(
-                            slate_common::types::AgentRole::Engineer,
+                            codiv_common::types::AgentRole::Engineer,
                             assignment,
                             "You are a helpful coding assistant embedded in a terminal. \
                             You can see the user's recent terminal commands and their output in the conversation history. \
@@ -548,7 +548,7 @@ Expected: pass
 **Step 3: Commit**
 
 ```bash
-git add crates/slated/src/daemon.rs
+git add crates/codivd/src/daemon.rs
 git commit -m "feat: handle CommandResult in daemon, store in session timeline"
 ```
 
@@ -557,12 +557,12 @@ git commit -m "feat: handle CommandResult in daemon, store in session timeline"
 ### Task 6: Client Sends `CommandResult` After Shell Commands
 
 **Files:**
-- Modify: `crates/slate/src/ui/terminal.rs`
-- Modify: `crates/slate/src/ipc/messages.rs`
+- Modify: `crates/codiv/src/ui/terminal.rs`
+- Modify: `crates/codiv/src/ipc/messages.rs`
 
 **Step 1: Add `build_command_result` helper**
 
-In `crates/slate/src/ipc/messages.rs`, add a new function:
+In `crates/codiv/src/ipc/messages.rs`, add a new function:
 
 ```rust
 /// Build a framed CommandResult message.
@@ -584,7 +584,7 @@ pub fn build_command_result(
 
 **Step 2: Send `CommandResult` when a command completes**
 
-In `crates/slate/src/ui/terminal.rs`, there are two places where commands complete:
+In `crates/codiv/src/ui/terminal.rs`, there are two places where commands complete:
 
 **Location A** — Normal command completion (around line 307-331):
 
@@ -634,7 +634,7 @@ Expected: pass
 **Step 4: Commit**
 
 ```bash
-git add crates/slate/src/ui/terminal.rs crates/slate/src/ipc/messages.rs
+git add crates/codiv/src/ui/terminal.rs crates/codiv/src/ipc/messages.rs
 git commit -m "feat: client sends CommandResult to daemon after shell commands"
 ```
 
@@ -650,13 +650,13 @@ Expected: clean build, no warnings
 **Step 2: Start daemon in foreground with debug logging**
 
 ```bash
-RUST_LOG=slated=debug cargo run -p slated -- --foreground
+RUST_LOG=codivd=debug cargo run -p codivd -- --foreground
 ```
 
 **Step 3: In another terminal, start the client**
 
 ```bash
-cargo run -p slate
+cargo run -p codiv
 ```
 
 **Step 4: Test sequence**
@@ -665,7 +665,7 @@ cargo run -p slate
 2. Run `pwd` — should execute normally
 3. Type `? what directory am I in and what files are here?` — the AI should know the answer from the terminal history
 4. Type `? what was the exit code of the last command?` — the AI should know
-5. Check daemon logs (`tail -f ~/.slate-agent/slated.log`) — should show "recorded command result" entries and "N events in history"
+5. Check daemon logs (`tail -f ~/.codiv/codivd.log`) — should show "recorded command result" entries and "N events in history"
 
 **Step 5: Verify**
 
@@ -686,10 +686,10 @@ git commit -m "fix: integration test fixes for session timeline"
 
 | Task | Description | Files |
 |------|-------------|-------|
-| 1 | Output truncation utility | `slate-common/src/truncate.rs`, `slate-common/src/lib.rs` |
-| 2 | `ClientMessage::CommandResult` IPC | `slate-common/src/messages.rs`, `slated/src/daemon.rs` |
-| 3 | Agent rewrite with `SessionEvent` + aisdk `Messages` | `slated/src/agent/agent.rs`, `slated/src/agent/config.rs` |
-| 4 | System prompt update | `slated/src/daemon.rs` |
-| 5 | Daemon `CommandResult` handler | `slated/src/daemon.rs` |
-| 6 | Client sends `CommandResult` | `slate/src/ui/terminal.rs`, `slate/src/ipc/messages.rs` |
+| 1 | Output truncation utility | `codiv-common/src/truncate.rs`, `codiv-common/src/lib.rs` |
+| 2 | `ClientMessage::CommandResult` IPC | `codiv-common/src/messages.rs`, `codivd/src/daemon.rs` |
+| 3 | Agent rewrite with `SessionEvent` + aisdk `Messages` | `codivd/src/agent/agent.rs`, `codivd/src/agent/config.rs` |
+| 4 | System prompt update | `codivd/src/daemon.rs` |
+| 5 | Daemon `CommandResult` handler | `codivd/src/daemon.rs` |
+| 6 | Client sends `CommandResult` | `codiv/src/ui/terminal.rs`, `codiv/src/ipc/messages.rs` |
 | 7 | Manual integration test | — |

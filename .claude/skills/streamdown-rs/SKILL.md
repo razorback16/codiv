@@ -2,25 +2,25 @@
 name: streamdown-rs
 description: >
   Guide for building with the streamdown-rs library (razorback16/streamdown-rs) and integrating
-  it into the slate TUI client. Covers the streaming markdown parser, ANSI renderer, syntax
+  it into the codiv TUI client. Covers the streaming markdown parser, ANSI renderer, syntax
   highlighting, RenderStyle/RenderFeatures configuration, and wiring ANSI output into ratatui's
   VT100 canvas. Use this skill PROACTIVELY whenever:
-  - Implementing or fixing the markdown output rendering area in slate
-  - Handling IpcMessage::StreamChunk or StreamChunk::Text/Reasoning in the slate TUI
+  - Implementing or fixing the markdown output rendering area in codiv
+  - Handling IpcMessage::StreamChunk or StreamChunk::Text/Reasoning in the codiv TUI
   - Debugging incomplete code blocks, broken formatting, or mid-stream display glitches
   - Wiring streamdown-rs ANSI output through tui-term/vt100 into ratatui Lines/Spans
   - Implementing resize/reflow logic for the scrollable output zone (Event::Resize)
   - Developing the streamdown-rs library itself: new block types, syntax themes, streaming internals
   - Working on streamdown-parser, streamdown-render, streamdown-syntax, or streamdown-config crates
   Even if the user doesn't say "streamdown-rs" explicitly — if they mention streaming markdown,
-  code fence rendering, the output canvas, VT100 reflow, syntax highlighting in slate, or
+  code fence rendering, the output canvas, VT100 reflow, syntax highlighting in codiv, or
   incomplete block handling mid-stream, use this skill.
 ---
 
 # streamdown-rs Integration Guide
 
 This skill covers the **streamdown-rs** library (a multi-crate streaming markdown renderer) and
-how it integrates with the **slate** TUI client for real-time AI response rendering.
+how it integrates with the **codiv** TUI client for real-time AI response rendering.
 
 ## Crate Structure
 
@@ -319,9 +319,9 @@ colors so only foreground token colors show over your custom background.
 
 ---
 
-## Integration with slate TUI (VT100 Canvas Pattern)
+## Integration with codiv TUI (VT100 Canvas Pattern)
 
-streamdown-rs outputs ANSI strings. The slate TUI uses `vt100` + `tui-term` to paint these
+streamdown-rs outputs ANSI strings. The codiv TUI uses `vt100` + `tui-term` to paint these
 into a ratatui widget. The pattern:
 
 ```rust
@@ -335,7 +335,7 @@ struct OutputArea {
     height: u16,
 }
 
-// On each StreamChunk::Text arriving from slated over IPC:
+// On each StreamChunk::Text arriving from codivd over IPC:
 fn handle_stream_chunk(&mut self, text: &str) {
     // 1. Feed the text through streamdown to get ANSI bytes
     let mut buf = Vec::<u8>::new();
@@ -372,7 +372,7 @@ let the renderer drop before reading `buf`. Or use a shared buffer with `Rc<RefC
 
 ## Handling Terminal Resize / Reflow
 
-When `Event::Resize(new_cols, new_rows)` fires in the slate event loop:
+When `Event::Resize(new_cols, new_rows)` fires in the codiv event loop:
 
 ```rust
 fn handle_resize(&mut self, new_cols: u16, new_rows: u16) {
@@ -516,9 +516,9 @@ syntect loads themes from `.tmTheme` XML files. To bundle a new theme:
 
 ---
 
-## Wiring StreamChunk in slate TUI
+## Wiring StreamChunk in codiv TUI
 
-In the slate client, AI output arrives as `DaemonMessage::AgentStreamChunk { request_id, chunk }`
+In the codiv client, AI output arrives as `DaemonMessage::AgentStreamChunk { request_id, chunk }`
 over the Unix socket. The `StreamChunk` variants that feed streamdown-rs:
 
 | `StreamChunk` variant | Action |
@@ -531,9 +531,9 @@ over the Unix socket. The `StreamChunk` variants that feed streamdown-rs:
 StreamChunk::Text is the primary feed for streamdown-rs. Reasoning and tool output are typically
 rendered with separate formatting, not through the markdown parser.
 
-**Key point:** slate is the **only consumer** of streamdown-rs in this project. slated never
+**Key point:** codiv is the **only consumer** of streamdown-rs in this project. codivd never
 touches streamdown-rs — it handles raw text and sends it over the socket. All markdown rendering
-happens client-side in slate's output area widget.
+happens client-side in codiv's output area widget.
 
 ---
 

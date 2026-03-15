@@ -27,7 +27,7 @@ A terminal is already a tool execution environment. An AI agent that lives in a 
 
 ## 3. The Tool Interface
 
-Every tool in Slate Agent — built-in or external — exposes the same interface:
+Every tool in Codiv Agent — built-in or external — exposes the same interface:
 
 ```
 <tool> <command> [args] [flags]
@@ -59,8 +59,8 @@ git-commit run --message "fix auth bug" --json-out
 # -> {"commit_hash": "abc123", "files_changed": 3}
 
 # Built-in tool (same interface, runs in-process)
-slate-read --help
-slate-read run --path ./src/main.cpp --offset 10 --limit 50
+codiv-read --help
+codiv-read run --path ./src/main.cpp --offset 10 --limit 50
 ```
 
 ### Daemon-synthesized interface (prompt tools)
@@ -87,27 +87,27 @@ When a tool package has no `[install] bin` in its `tool.toml`, the daemon acts a
 
 The agent sees a flat list of tools, each with a name, a help string, and optionally an agent guide. It doesn't know or care whether a tool is built-in, a CLI binary, a bridged MCP server, or a prompt tool with daemon-synthesized interface.
 
-## 4. Discovery & SLATE_TOOLS_PATH
+## 4. Discovery & CODIV_TOOLS_PATH
 
-Tools are discovered via `SLATE_TOOLS_PATH` — a colon-separated list of directories, just like `PATH`.
+Tools are discovered via `CODIV_TOOLS_PATH` — a colon-separated list of directories, just like `PATH`.
 
 ```bash
-SLATE_TOOLS_PATH=.slate-agent/tools:~/.slate-agent/tools:/usr/local/share/slate-agent/tools
+CODIV_TOOLS_PATH=.codiv/tools:~/.codiv/tools:/usr/local/share/codiv/tools
 ```
 
 ### Discovery order (first match wins)
 
-1. **Project-level**: `.slate-agent/tools/` — project-specific tools
-2. **User-level**: `~/.slate-agent/tools/` — personal tools
-3. **System-level**: `/usr/local/share/slate-agent/tools/` — system-wide installs
+1. **Project-level**: `.codiv/tools/` — project-specific tools
+2. **User-level**: `~/.codiv/tools/` — personal tools
+3. **System-level**: `/usr/local/share/codiv/tools/` — system-wide installs
 
 ### Built-in tools
 
-Read, Write, Edit, Glob, Grep, Bash are always available regardless of `SLATE_TOOLS_PATH`. They are compiled into the daemon but expose the same `--help` / `--agent-guide` interface.
+Read, Write, Edit, Glob, Grep, Bash are always available regardless of `CODIV_TOOLS_PATH`. They are compiled into the daemon but expose the same `--help` / `--agent-guide` interface.
 
 ### Startup behavior
 
-1. Scan `SLATE_TOOLS_PATH` directories
+1. Scan `CODIV_TOOLS_PATH` directories
 2. Run `<tool> --help` for each discovered executable (cached, only re-runs on mtime change)
 3. Build tool index: name -> help text -> optional agent-guide -> location
 4. Agent receives the tool index as available tools
@@ -115,10 +115,10 @@ Read, Write, Edit, Glob, Grep, Bash are always available regardless of `SLATE_TO
 ### Search
 
 ```bash
-slate tools search "database migration"  # grep over cached --help and --agent-guide text
-slate tools search --tag "database"       # filter by tags (from registry metadata)
-slate tools list                          # all installed tools
-slate tools info <tool>                   # full --help + --agent-guide output
+codiv tools search "database migration"  # grep over cached --help and --agent-guide text
+codiv tools search --tag "database"       # filter by tags (from registry metadata)
+codiv tools list                          # all installed tools
+codiv tools info <tool>                   # full --help + --agent-guide output
 ```
 
 Search is grep over the cached help text. No vector DB, no fancy indexing.
@@ -193,8 +193,8 @@ The MCP bridge makes existing MCP servers appear as regular CLI tools. The user 
 
 ### How it works
 
-1. User installs: `slate install mcp:@modelcontextprotocol/server-filesystem`
-2. Registry creates a thin wrapper executable in `~/.slate-agent/tools/` that translates:
+1. User installs: `codiv install mcp:@modelcontextprotocol/server-filesystem`
+2. Registry creates a thin wrapper executable in `~/.codiv/tools/` that trancodivs:
    - `--help` -> MCP `tools/list`
    - `<command> [args]` -> MCP `tools/call`
    - `--json-out` -> passes MCP's JSON response through
@@ -210,12 +210,12 @@ MCP servers are stateful (persistent connections, session state, auth tokens). T
 - **Health-checked** via MCP `ping`
 - **Shut down** with the daemon
 
-The CLI wrapper in `SLATE_TOOLS_PATH` is a thin IPC call back to the daemon, which holds the actual MCP connection. State is preserved naturally because the daemon is the long-lived process.
+The CLI wrapper in `CODIV_TOOLS_PATH` is a thin IPC call back to the daemon, which holds the actual MCP connection. State is preserved naturally because the daemon is the long-lived process.
 
 ### Configuration
 
 ```toml
-# ~/.slate-agent/config.toml
+# ~/.codiv/config.toml
 
 [[tools.mcp]]
 name = "filesystem"
@@ -233,7 +233,7 @@ env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 
 ### Key point
 
-The MCP bridge is an implementation detail of the registry. A developer writing a native Slate tool never thinks about MCP. A developer wanting to use an MCP server just runs `slate install mcp:<package>` and gets a tool.
+The MCP bridge is an implementation detail of the registry. A developer writing a native Codiv tool never thinks about MCP. A developer wanting to use an MCP server just runs `codiv install mcp:<package>` and gets a tool.
 
 ## 7. Hooks as Event-Bound Tools
 
@@ -242,7 +242,7 @@ Hooks are tool invocations triggered by lifecycle events. Not a separate concept
 ### Configuration
 
 ```toml
-# ~/.slate-agent/config.toml or .slate-agent/config.toml
+# ~/.codiv/config.toml or .codiv/config.toml
 
 [[hooks]]
 event = "pre-commit"
@@ -293,7 +293,7 @@ Slash commands are aliases to tool invocations. Not a separate concept.
 ### Configuration
 
 ```toml
-# ~/.slate-agent/config.toml
+# ~/.codiv/config.toml
 
 [[aliases]]
 name = "commit"
@@ -312,7 +312,7 @@ args = ["list"]
 
 [[aliases]]
 name = "search"
-tool = "slate-tools"
+tool = "codiv-tools"
 args = ["search"]
 ```
 
@@ -325,7 +325,7 @@ args = ["search"]
 /tasks                     -> work-item list
 ```
 
-Built-in aliases ship with the daemon (`/help`, `/history`, etc.) but can be overridden in config. Override order follows the same chain as `SLATE_TOOLS_PATH`: project > user > system.
+Built-in aliases ship with the daemon (`/help`, `/history`, etc.) but can be overridden in config. Override order follows the same chain as `CODIV_TOOLS_PATH`: project > user > system.
 
 ### Prompt tools as slash commands
 
@@ -338,14 +338,14 @@ Tools are distributed via an npm/brew-style registry.
 ### CLI commands
 
 ```bash
-slate install <tool>              # install from registry
-slate install mcp:<package>       # install MCP server as a tool (bridge)
-slate install ./path/to/tool      # install from local path
-slate remove <tool>               # uninstall
-slate list                        # show installed tools
-slate update [tool]               # update one or all
-slate search "query"              # search registry (remote)
-slate tools search "query"        # search installed tools (local)
+codiv install <tool>              # install from registry
+codiv install mcp:<package>       # install MCP server as a tool (bridge)
+codiv install ./path/to/tool      # install from local path
+codiv remove <tool>               # uninstall
+codiv list                        # show installed tools
+codiv update [tool]               # update one or all
+codiv search "query"              # search registry (remote)
+codiv tools search "query"        # search installed tools (local)
 ```
 
 ### Tool package structure
@@ -497,9 +497,9 @@ On Tier 2 loading, the daemon:
 - Only has access to `allowed-tools` if specified
 - Results returned to parent session on completion
 
-### Converting a Claude Code skill to a Slate tool
+### Converting a Claude Code skill to a Codiv tool
 
-The conversion from Claude Code skill format to Slate tool is mechanical:
+The conversion from Claude Code skill format to Codiv tool is mechanical:
 
 **Claude Code skill:**
 ```
@@ -531,7 +531,7 @@ Run the rotation script: `scripts/rotate_pdf.py`
 - **API reference**: See references/api_docs.md for all methods
 ```
 
-**Equivalent Slate tool:**
+**Equivalent Codiv tool:**
 ```
 pdf-editor/
 ├── tool.toml
@@ -568,7 +568,7 @@ Run the rotation script: `scripts/rotate_pdf.py`
 - **API reference**: See references/api_docs.md for all methods
 ```
 
-The conversion: frontmatter → `tool.toml`, body → `guide.md`, bundled resources stay in place unchanged (`scripts/`, `references/`, `assets/`). Automatable with `slate import skill ./path/to/skill-dir`.
+The conversion: frontmatter → `tool.toml`, body → `guide.md`, bundled resources stay in place unchanged (`scripts/`, `references/`, `assets/`). Automatable with `codiv import skill ./path/to/skill-dir`.
 
 ## 10. What Was Eliminated
 
@@ -594,14 +594,14 @@ This design replaces FR-011, FR-012, and FR-013 with a single unified FR:
 
 - One primitive: Tool (CLI executable with `--help`, optional `--agent-guide`, optional `--json-in`/`--json-out`)
 - Built-in tools compiled into daemon with same interface
-- Discovery via `SLATE_TOOLS_PATH` (project > user > system)
+- Discovery via `CODIV_TOOLS_PATH` (project > user > system)
 - Progressive loading: Tier 0 (name) -> Tier 1 (help) -> Tier 2 (agent-guide) -> Tier 3 (deep docs)
-- MCP bridge: `slate install mcp:<pkg>` wraps MCP servers as tools, daemon manages state
+- MCP bridge: `codiv install mcp:<pkg>` wraps MCP servers as tools, daemon manages state
 - Hooks: event + tool bindings in config
 - Aliases: slash commands mapped to tool invocations in config
-- Registry: `slate install/remove/update/search` with npm/brew-style distribution
+- Registry: `codiv install/remove/update/search` with npm/brew-style distribution
 - Search: grep over cached help text
 - Prompt tools: tools without a binary — daemon synthesizes the interface from `tool.toml` + `guide.md`; bundled `scripts/`, `references/`, `assets/` support progressive loading; `[skill.inject]` for dynamic context
-- Skill import: `slate import skill ./path` converts Claude Code SKILL.md format to Slate tool package (frontmatter → tool.toml, body → guide.md, bundled resources unchanged)
+- Skill import: `codiv import skill ./path` converts Claude Code SKILL.md format to Codiv tool package (frontmatter → tool.toml, body → guide.md, bundled resources unchanged)
 
 Phase 6 in the implementation plan should be updated to reflect this unified model instead of the separate Plugin/MCP/Skill phases.

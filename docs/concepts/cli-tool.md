@@ -2,7 +2,7 @@
 
 ## "CLI tools are MCP in this shell-agent"
 
-Yes, exactly right. MCP exists because LLMs need a standard way to discover and call external capabilities. But Slate Agent is a shell. CLI tools already have a universal interface: stdin → stdout, exit codes, flags, `--help`. **The shell is the protocol.** You don't need JSON-RPC 2.0 over stdio when you have... stdio. MCP becomes an unnecessary indirection layer — the daemon can discover CLI tools the same way a shell does (PATH, which, help text), and the agent can call them the same way a human does.
+Yes, exactly right. MCP exists because LLMs need a standard way to discover and call external capabilities. But Codiv Agent is a shell. CLI tools already have a universal interface: stdin → stdout, exit codes, flags, `--help`. **The shell is the protocol.** You don't need JSON-RPC 2.0 over stdio when you have... stdio. MCP becomes an unnecessary indirection layer — the daemon can discover CLI tools the same way a shell does (PATH, which, help text), and the agent can call them the same way a human does.
 
 ## "Invoking a skill means the LLM gets power to use some CLI tools better"
 
@@ -20,7 +20,7 @@ This collapses the entire 7-concept taxonomy into one:
 | Old concept | New concept |
 | --- | --- |
 | Built-in tool | CLI tool (compiled into daemon) |
-| MCP server | CLI tool (discovered from SLATE_TOOLS_PATH) |
+| MCP server | CLI tool (discovered from CODIV_TOOLS_PATH) |
 | Skill | CLI tool + expertise prompt |
 | Command | CLI tool alias (slash shortcut) |
 | Plugin | Package of CLI tools (npm-style) |
@@ -41,7 +41,7 @@ Prompt tools can bundle three types of resources:
 | `references/` | Documentation for agent context | Loaded on-demand (Tier 3), maps to `--agent-guide <topic>` |
 | `assets/` | Output resources (templates, images) | Never loaded into context, used directly by path |
 
-This means Claude Code skills (SKILL.md + bundled resources) can be repackaged as Slate tools with minimal transformation: frontmatter → `tool.toml`, body → `guide.md`, bundled `scripts/`/`references/`/`assets/` stay unchanged.
+This means Claude Code skills (SKILL.md + bundled resources) can be repackaged as Codiv tools with minimal transformation: frontmatter → `tool.toml`, body → `guide.md`, bundled `scripts/`/`references/`/`assets/` stay unchanged.
 
 ## Hooks as event-triggered tools
 

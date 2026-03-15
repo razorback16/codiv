@@ -6,28 +6,28 @@
 
 **Architecture:** Use `brush-parser` to parse shell commands into an AST, then walk the tree to classify each command. The riskiest command in a pipeline/chain determines the overall risk. Sensitive target paths escalate risk. Unknown commands default to Medium.
 
-**Tech Stack:** `brush-parser` 0.3 (POSIX/bash AST parser), existing `RiskLevel` enum from `slate-common`.
+**Tech Stack:** `brush-parser` 0.3 (POSIX/bash AST parser), existing `RiskLevel` enum from `codiv-common`.
 
 ---
 
 ### Task 1: Add brush-parser dependency
 
 **Files:**
-- Modify: `crates/slated/Cargo.toml`
+- Modify: `crates/codivd/Cargo.toml`
 
 **Step 1: Add the dependency**
 
-Add `brush-parser = "0.3"` to `[dependencies]` in `crates/slated/Cargo.toml`.
+Add `brush-parser = "0.3"` to `[dependencies]` in `crates/codivd/Cargo.toml`.
 
 **Step 2: Verify it compiles**
 
-Run: `cargo check -p slated`
+Run: `cargo check -p codivd`
 Expected: compiles with no errors
 
 **Step 3: Commit**
 
 ```bash
-git add crates/slated/Cargo.toml Cargo.lock
+git add crates/codivd/Cargo.toml Cargo.lock
 git commit -m "chore: add brush-parser dependency for AST-based command classification"
 ```
 
@@ -36,7 +36,7 @@ git commit -m "chore: add brush-parser dependency for AST-based command classifi
 ### Task 2: Create the AST classifier module with command tier lookup
 
 **Files:**
-- Create: `crates/slated/src/agent/ast_classifier.rs`
+- Create: `crates/codivd/src/agent/ast_classifier.rs`
 - Test: inline `#[cfg(test)]` module
 
 This is the core of the new classifier. It parses a shell command string into an AST using `brush-parser`, walks the tree, and returns the max `RiskLevel` across all commands in the pipeline/chain.
@@ -44,12 +44,12 @@ This is the core of the new classifier. It parses a shell command string into an
 **Step 1: Write failing tests**
 
 ```rust
-// crates/slated/src/agent/ast_classifier.rs
+// crates/codivd/src/agent/ast_classifier.rs
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slate_common::messages::RiskLevel;
+    use codiv_common::messages::RiskLevel;
 
     // --- Simple commands ---
     #[test]
@@ -219,7 +219,7 @@ mod tests {
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p slated ast_classifier`
+Run: `cargo test -p codivd ast_classifier`
 Expected: compilation error (module doesn't exist yet)
 
 **Step 3: Implement the classifier**
@@ -235,13 +235,13 @@ The classifier has these layers:
 7. **Return** the maximum risk across all commands in the tree
 
 ```rust
-// crates/slated/src/agent/ast_classifier.rs
+// crates/codivd/src/agent/ast_classifier.rs
 
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::LazyLock;
 
-use slate_common::messages::RiskLevel;
+use codiv_common::messages::RiskLevel;
 
 /// Tier tables for command classification.
 /// Commands not in any tier default to Medium.
@@ -761,13 +761,13 @@ fn check_compound_readonly(cmd: &brush_parser::ast::CompoundCommand) -> bool {
 
 **Step 4: Run tests**
 
-Run: `cargo test -p slated ast_classifier -- --nocapture`
+Run: `cargo test -p codivd ast_classifier -- --nocapture`
 Expected: all tests pass
 
 **Step 5: Commit**
 
 ```bash
-git add crates/slated/src/agent/ast_classifier.rs
+git add crates/codivd/src/agent/ast_classifier.rs
 git commit -m "feat: add AST-based shell command risk classifier using brush-parser"
 ```
 
@@ -776,13 +776,13 @@ git commit -m "feat: add AST-based shell command risk classifier using brush-par
 ### Task 3: Register the module and wire it into the existing classifier
 
 **Files:**
-- Modify: `crates/slated/src/agent/mod.rs` — add `pub mod ast_classifier;`
-- Modify: `crates/slated/src/agent/risk_classifier.rs` — delegate to `ast_classifier`
-- Modify: `crates/slated/src/agent/permission_evaluator.rs` — use `ast_classifier::is_readonly` instead of `risk_classifier::is_readonly_bash`
+- Modify: `crates/codivd/src/agent/mod.rs` — add `pub mod ast_classifier;`
+- Modify: `crates/codivd/src/agent/risk_classifier.rs` — delegate to `ast_classifier`
+- Modify: `crates/codivd/src/agent/permission_evaluator.rs` — use `ast_classifier::is_readonly` instead of `risk_classifier::is_readonly_bash`
 
 **Step 1: Add module declaration**
 
-In `crates/slated/src/agent/mod.rs`, add:
+In `crates/codivd/src/agent/mod.rs`, add:
 ```rust
 pub mod ast_classifier;
 ```
@@ -808,13 +808,13 @@ Remove the old `CRITICAL_PATTERNS`, `HIGH_PATTERNS`, `LOW_PATTERNS`, and `READON
 
 **Step 3: Run all existing tests**
 
-Run: `cargo test -p slated`
+Run: `cargo test -p codivd`
 Expected: all tests pass (existing `risk_classifier` tests + new `ast_classifier` tests)
 
 **Step 4: Commit**
 
 ```bash
-git add crates/slated/src/agent/mod.rs crates/slated/src/agent/risk_classifier.rs crates/slated/src/agent/permission_evaluator.rs
+git add crates/codivd/src/agent/mod.rs crates/codivd/src/agent/risk_classifier.rs crates/codivd/src/agent/permission_evaluator.rs
 git commit -m "refactor: wire AST classifier into risk classification pipeline"
 ```
 
@@ -823,16 +823,16 @@ git commit -m "refactor: wire AST classifier into risk classification pipeline"
 ### Task 4: Clean up old regex patterns and verify full build
 
 **Files:**
-- Modify: `crates/slated/src/agent/risk_classifier.rs` — remove unused regex import and old statics
-- Verify: `crates/slated/Cargo.toml` — regex dep can be removed if no longer used elsewhere
+- Modify: `crates/codivd/src/agent/risk_classifier.rs` — remove unused regex import and old statics
+- Verify: `crates/codivd/Cargo.toml` — regex dep can be removed if no longer used elsewhere
 
 **Step 1: Remove regex import from risk_classifier.rs if no longer needed**
 
-Check if `regex` is used elsewhere in slated. If only in `risk_classifier.rs` (old patterns), remove the `regex = "1"` dep from `Cargo.toml`.
+Check if `regex` is used elsewhere in codivd. If only in `risk_classifier.rs` (old patterns), remove the `regex = "1"` dep from `Cargo.toml`.
 
 **Step 2: Run full build and clippy**
 
-Run: `cargo build -p slated && cargo clippy -p slated -- -W clippy::all`
+Run: `cargo build -p codivd && cargo clippy -p codivd -- -W clippy::all`
 Expected: clean build, no warnings
 
 **Step 3: Run full test suite**

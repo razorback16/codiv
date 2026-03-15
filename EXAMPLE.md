@@ -1,4 +1,4 @@
-# Slate Agent - Code Examples & Usage Guide
+# Codiv Agent - Code Examples & Usage Guide
 
 ## Quick Start
 
@@ -6,43 +6,43 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/slate-agent.git
-cd slate-agent
+git clone https://github.com/yourusername/codiv.git
+cd codiv
 
 # Build the project
 cargo build --release
 
 # Install binaries
-cargo install --path crates/slate
-cargo install --path crates/slated
+cargo install --path crates/codiv
+cargo install --path crates/codivd
 ```
 
 ### Starting the Daemon
 
 ```bash
-# Start the slated daemon in the background
-slated start
+# Start the codivd daemon in the background
+codivd start
 
 # Check daemon status
-slated status
+codivd status
 
 # Stop the daemon
-slated stop
+codivd stop
 ```
 
 ## Architecture Examples
 
 ### IPC Communication
 
-The slate client communicates with slated daemon using binary serialization over Unix sockets:
+The codiv client communicates with codivd daemon using binary serialization over Unix sockets:
 
 ```rust
-use slate_common::messages::{ClientMessage, ServerMessage};
+use codiv_common::messages::{ClientMessage, ServerMessage};
 use tokio::net::UnixStream;
 
 async fn send_command(command: String) -> Result<(), Box<dyn std::error::Error>> {
     // Connect to daemon socket
-    let socket_path = "/tmp/slated.sock";
+    let socket_path = "/tmp/codivd.sock";
     let mut stream = UnixStream::connect(socket_path).await?;
     
     // Create and send message
@@ -61,7 +61,7 @@ async fn send_command(command: String) -> Result<(), Box<dyn std::error::Error>>
 ### Multi-Agent Task Decomposition
 
 ```rust
-use slate_common::agents::{TaskGraph, Task, Agent};
+use codiv_common::agents::{TaskGraph, Task, Agent};
 
 async fn decompose_task(user_request: &str) -> TaskGraph {
     let planner = Agent::new(AgentType::Planner);
@@ -236,10 +236,10 @@ impl AgentWorkflow {
 ## Configuration
 
 ```toml
-# slated.toml
+# codivd.toml
 
 [daemon]
-socket_path = "/tmp/slated.sock"
+socket_path = "/tmp/codivd.sock"
 log_level = "info"
 max_workers = 8
 
@@ -263,7 +263,7 @@ ai_overhead_threshold_ms = 10
 
 ```bash
 # Fork and clone
-git clone https://github.com/yourusername/slate-agent.git
+git clone https://github.com/yourusername/codiv.git
 
 # Create feature branch
 git checkout -b feature/amazing-feature

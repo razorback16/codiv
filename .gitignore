@@ -4,7 +4,7 @@ target/
 .worktrees/
 .DS_Store
 .claude-octopus/
-slated/.cache/
+codivd/.cache/
 references/
 !.claude/skills/*/references/
 !.claude/skills/*/references/**

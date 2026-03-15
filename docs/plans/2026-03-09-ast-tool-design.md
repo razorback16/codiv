@@ -5,7 +5,7 @@
 
 ## Overview
 
-Add a native `ast` tool to Slate that provides structural code search, inspection, linting, and rewriting using the `ast-grep-core` Rust library. Exposed as a single tool with four modes.
+Add a native `ast` tool to Codiv that provides structural code search, inspection, linting, and rewriting using the `ast-grep-core` Rust library. Exposed as a single tool with four modes.
 
 ## Modes
 
@@ -79,7 +79,7 @@ fn classify_ast_risk(args: &serde_json::Value) -> RiskLevel {
 
 ## Dependencies
 
-Added to `crates/slate-tools/Cargo.toml`:
+Added to `crates/codiv-tools/Cargo.toml`:
 
 - `ast-grep-core` — pattern matching, rewriting, AST inspection
 - `ast-grep-language` — language registry with all supported tree-sitter grammars
@@ -100,10 +100,10 @@ need language-aware matching.
 
 | File | Change |
 |------|--------|
-| `crates/slate-tools/Cargo.toml` | Add `ast-grep-core`, `ast-grep-language` |
-| `crates/slate-tools/src/tools/mod.rs` | Add `pub mod ast;` |
-| `crates/slate-tools/src/tools/ast.rs` | New — `AstInput` schema + `execute()` |
-| `crates/slate-tools/src/agent_guide.rs` | Add `"ast"` entry, update `TOOL_NAMES` |
-| `crates/slated/src/agent/tools.rs` | Register `ast` tool with permissions |
-| `crates/slated/src/agent/risk_classifier.rs` | Add `"ast"` classification |
-| `crates/slate/src/cli/tools.rs` | Add `Ast` CLI subcommand + dispatch |
+| `crates/codiv-tools/Cargo.toml` | Add `ast-grep-core`, `ast-grep-language` |
+| `crates/codiv-tools/src/tools/mod.rs` | Add `pub mod ast;` |
+| `crates/codiv-tools/src/tools/ast.rs` | New — `AstInput` schema + `execute()` |
+| `crates/codiv-tools/src/agent_guide.rs` | Add `"ast"` entry, update `TOOL_NAMES` |
+| `crates/codivd/src/agent/tools.rs` | Register `ast` tool with permissions |
+| `crates/codivd/src/agent/risk_classifier.rs` | Add `"ast"` classification |
+| `crates/codiv/src/cli/tools.rs` | Add `Ast` CLI subcommand + dispatch |
