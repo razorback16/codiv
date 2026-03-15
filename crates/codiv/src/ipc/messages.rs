@@ -92,6 +92,12 @@ pub fn build_list_sessions() -> Option<Vec<u8>> {
     frame_message(&msg).ok()
 }
 
+/// Build a framed NewSession message.
+pub fn build_new_session() -> Option<Vec<u8>> {
+    let msg = ClientMessage::NewSession;
+    frame_message(&msg).ok()
+}
+
 /// Build a framed LoadSession message.
 pub fn build_load_session(session_id: &str) -> Option<Vec<u8>> {
     let msg = ClientMessage::LoadSession {

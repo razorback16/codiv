@@ -593,9 +593,12 @@ pub(crate) fn handle_daemon_message(
             if sessions.is_empty() {
                 parser_push_notice(parser, NoticeKind::Notice, "No saved sessions.");
             } else {
+                use super::state::VISIBLE_SESSIONS;
+                let visible_count = sessions.len().min(VISIBLE_SESSIONS);
                 let mut prompt_lines: u16 = 0;
-                // Session entries (no header — the select line below is sufficient)
-                for (i, s) in sessions.iter().enumerate() {
+
+                // Show only the first `visible_count` sessions
+                for (i, s) in sessions.iter().take(visible_count).enumerate() {
                     let name = s.name.as_deref().unwrap_or("(unnamed)");
                     let time = codiv_common::conversation::relative_time(&s.updated_at);
                     let (prefix, color) = if i == 0 {
@@ -615,9 +618,14 @@ pub(crate) fn handle_daemon_message(
                     prompt_lines += 1;
                 }
                 // Select prompt (blank line + instruction)
+                let scroll_hint = if sessions.len() > VISIBLE_SESSIONS {
+                    " (\u{2191}\u{2193} to scroll)"
+                } else {
+                    ""
+                };
                 let select_line = format!(
-                    "\r\nSelect session [1-{}] or Esc to cancel:\r\n",
-                    sessions.len()
+                    "\r\nSelect session or Esc to cancel:{}\r\n",
+                    scroll_hint
                 );
                 parser.process(select_line.as_bytes());
                 prompt_lines += 2; // blank line + select line
@@ -625,6 +633,7 @@ pub(crate) fn handle_daemon_message(
                 *pending_session_picker = Some(PendingSessionPicker {
                     sessions,
                     selected_index: 0,
+                    viewport_offset: 0,
                     prompt_lines,
                 });
             }
