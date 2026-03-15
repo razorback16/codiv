@@ -129,15 +129,25 @@
   const cursor = document.getElementById('cursor');
   if (!body || !cursor) return;
 
-  const P = '\x01'; // prompt marker
   const T = '\x02'; // tool header marker
   const C = '\x03'; // cyan code marker
   const G = '\x04'; // green marker
   const W = '\x05'; // white/bright marker
   const E = '\x06'; // end color marker
+  const D = '\x07'; // dim marker
 
   // Demo script steps
   const steps = [
+    {
+      cmd: '',
+      prompt: '',
+      promptCls: '',
+      speed: 0,
+      output: D + '  codiv v0.1.0 \u2014 type \'exit\' to quit' + E,
+      pause: 800,
+      stream: false,
+      skipPrompt: true
+    },
     {
       cmd: 'ls',
       prompt: '$ ',
@@ -163,11 +173,11 @@
       speed: 60,
       output:
         'I\'ll create a Hello World program in Rust, compile it, and run it.\n\n' +
-        T + '\u25b6 Write  src/main.rs' + E + '\n' +
+        G + '\u25cf Write(src/main.rs)' + E + '\n' +
         C + 'fn main() {\n    println!("Hello, world!");\n}' + E + '\n\n' +
-        T + '\u25b6 Bash  rustc src/main.rs -o hello' + E + '\n' +
-        G + '  exit code: 0' + E + '\n\n' +
-        T + '\u25b6 Bash  ./hello' + E + '\n' +
+        G + '\u25cf Bash(rustc src/main.rs -o hello)' + E + '\n' +
+        '  exit code: 0\n\n' +
+        G + '\u25cf Bash(./hello)' + E + '\n' +
         W + 'Hello, world!' + E + '\n\n' +
         'Done \u2014 created and ran hello world successfully.',
       pause: 3000,
@@ -234,8 +244,8 @@
     let i = 0;
     while (i < text.length) {
       const ch = text[i];
-      if (ch === T || ch === C || ch === G || ch === W) {
-        const cls = ch === T ? 'tm-tool' : ch === C ? 'tm-code' : ch === G ? 'tm-green' : 'tm-white';
+      if (ch === T || ch === C || ch === G || ch === W || ch === D) {
+        const cls = ch === T ? 'tm-tool' : ch === C ? 'tm-code' : ch === G ? 'tm-green' : ch === D ? 'tm-dim' : 'tm-white';
         let end = text.indexOf(E, i + 1);
         if (end === -1) end = text.length;
         appendSpan(cls, text.substring(i + 1, end));
@@ -243,7 +253,7 @@
       } else {
         // Collect plain text
         let j = i;
-        while (j < text.length && text[j] !== T && text[j] !== C && text[j] !== G && text[j] !== W) j++;
+        while (j < text.length && text[j] !== T && text[j] !== C && text[j] !== G && text[j] !== W && text[j] !== D) j++;
         appendText(text.substring(i, j));
         i = j;
       }
@@ -257,15 +267,15 @@
       let i = 0;
       while (i < text.length) {
         const ch = text[i];
-        if (ch === T || ch === C || ch === G || ch === W) {
-          const cls = ch === T ? 'tm-tool' : ch === C ? 'tm-code' : ch === G ? 'tm-green' : 'tm-white';
+        if (ch === T || ch === C || ch === G || ch === W || ch === D) {
+          const cls = ch === T ? 'tm-tool' : ch === C ? 'tm-code' : ch === G ? 'tm-green' : ch === D ? 'tm-dim' : 'tm-white';
           let end = text.indexOf(E, i + 1);
           if (end === -1) end = text.length;
           tokens.push({ cls: cls, text: text.substring(i + 1, end) });
           i = end + 1;
         } else {
           let j = i;
-          while (j < text.length && text[j] !== T && text[j] !== C && text[j] !== G && text[j] !== W) j++;
+          while (j < text.length && text[j] !== T && text[j] !== C && text[j] !== G && text[j] !== W && text[j] !== D) j++;
           tokens.push({ cls: null, text: text.substring(i, j) });
           i = j;
         }
@@ -314,10 +324,12 @@
   }
 
   async function runStep(step) {
-    // Prompt
-    appendSpan(step.promptCls, step.prompt);
-    await typeText(step.cmd, step.speed);
-    appendText('\n');
+    if (!step.skipPrompt) {
+      // Prompt
+      appendSpan(step.promptCls, step.prompt);
+      await typeText(step.cmd, step.speed);
+      appendText('\n');
+    }
 
     if (step.stream) {
       await streamOutput(step.output, 15);
@@ -343,7 +355,7 @@
 
   // Inject dynamic styles for colored spans
   const st = document.createElement('style');
-  st.textContent = '.tm-gutter-ai{color:#67e8f9}.tm-gutter-cmd{color:#d4d4d4}.tm-tool{color:#facc15}.tm-code{color:#67e8f9}.tm-green{color:#4ade80}.tm-white{color:#f0f0f0}';
+  st.textContent = '.tm-gutter-ai{color:#67e8f9}.tm-gutter-cmd{color:#d4d4d4}.tm-tool{color:#facc15}.tm-code{color:#67e8f9}.tm-green{color:#4ade80}.tm-white{color:#f0f0f0}.tm-dim{color:#666}';
   document.head.appendChild(st);
 })();
 </script>
