@@ -59,7 +59,7 @@ ClientMessage::CommandResult {
 
 ### Output Truncation
 
-A reusable utility in `slate-common` truncates long command output:
+A reusable utility in `codiv-common` truncates long command output:
 - Keep first N lines (default 20) and last N lines (default 20)
 - If output fits within head + tail, return unchanged
 - Otherwise insert `... (X lines omitted) ...` in the middle
@@ -78,10 +78,10 @@ The existing take/return oneshot pattern continues — if the agent is currently
 
 | File | Change |
 |------|--------|
-| `crates/slate-common/src/messages.rs` | Add `ClientMessage::CommandResult` variant |
-| `crates/slate-common/src/truncate.rs` | New: reusable output truncation utility |
-| `crates/slate-common/src/lib.rs` | Export `truncate` module |
-| `crates/slated/src/agent/agent.rs` | `SessionEvent` enum, `build_messages()` with synthetic tool calls, use aisdk `Messages` API |
-| `crates/slated/src/agent/config.rs` | Accept `Messages` instead of `&str` prompt; use `.messages()` builder |
-| `crates/slated/src/daemon.rs` | Handle `CommandResult` in dispatch, append to session agent timeline |
-| `crates/slate/src/ui/terminal.rs` | Send `CommandResult` after shell commands complete |
+| `crates/codiv-common/src/messages.rs` | Add `ClientMessage::CommandResult` variant |
+| `crates/codiv-common/src/truncate.rs` | New: reusable output truncation utility |
+| `crates/codiv-common/src/lib.rs` | Export `truncate` module |
+| `crates/codivd/src/agent/agent.rs` | `SessionEvent` enum, `build_messages()` with synthetic tool calls, use aisdk `Messages` API |
+| `crates/codivd/src/agent/config.rs` | Accept `Messages` instead of `&str` prompt; use `.messages()` builder |
+| `crates/codivd/src/daemon.rs` | Handle `CommandResult` in dispatch, append to session agent timeline |
+| `crates/codiv/src/ui/terminal.rs` | Send `CommandResult` after shell commands complete |

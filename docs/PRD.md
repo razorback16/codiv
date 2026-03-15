@@ -1,4 +1,4 @@
-# Slate Agent — Product Requirements Document
+# Codiv Agent — Product Requirements Document
 
 **Version**: 2.0 **Date**: 2026-02-26 **Author**: Subhagato **Status**: Draft
 
@@ -6,7 +6,7 @@
 
 ## 1. Executive Summary
 
-**Slate Agent** is a Rust terminal-native coding agent (Rust client, Rust daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
+**Codiv Agent** is a Rust terminal-native coding agent (Rust client, Rust daemon) that replaces the traditional shell with an intelligent, multi-model AI assistant. It looks and behaves like a normal terminal but seamlessly switches between instant command execution and AI-powered task orchestration.
 
 **Key differentiators:**
 
@@ -16,7 +16,7 @@
 - **Shared state over agent chat**: agents coordinate through explicit artifacts and task state, not implicit message passing; single-writer ownership ensures no two agents can corrupt shared state — a pattern validated by Cursor's failure with reader-writer locks (agents held locks too long, 20 agents degraded to throughput of 2-3)
 - **Rust performance**: Rust client with ratatui TUI for memory-safe terminal handling; Rust daemon with Tokio for async concurrent execution
 
-**Vision**: The terminal becomes the IDE — developers think in natural language, and Slate Agent decomposes, executes, reviews, and summarizes the work end-to-end.
+**Vision**: The terminal becomes the IDE — developers think in natural language, and Codiv Agent decomposes, executes, reviews, and summarizes the work end-to-end.
 
 ---
 
@@ -46,7 +46,7 @@
 | **Amp** (Sourcegraph) | CLI + IDE | Multi-model | "Deep mode" extended reasoning; built-in code review agent | Session-based | No | Free ad-supported tier | N/A |
 | **Warp AI** | Rust GPU-rendered terminal | Multi-model (OpenAI, Anthropic, Google) | "Full Terminal Control" — agent interacts with live processes | Session-based | No (terminal replacement, not agent) | Free tier + paid | N/A |
 | **Devin** (Cognition) | Cloud VM (terminal+editor+browser) | Proprietary | Full autonomous environment | Cloud-persistent | N/A | $500/mo | N/A |
-| **Slate Agent** | **Rust CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
+| **Codiv Agent** | **Rust CLI** | **Any provider via catalog** | **Recursive tree (TeamLead/Engineer/Reviewer)** | **Bounded + Narrator-curated (global + per-project)** | **Yes (<10ms overhead)** | **Free (pay LLM API)** | **TBD** |
 
 **Key competitive insight**: No existing tool combines terminal-native command fast-pass with recursive multi-agent orchestration and multi-model support. Claude Code has the strongest agent architecture but is locked to Anthropic models. Aider and Cline have the broadest model support but flat agent architectures. Cursor pioneered multi-agent coding but is IDE-bound and learned hard lessons about coordination (see Section 6, FR-004).
 
@@ -58,7 +58,7 @@
 
 | Priority | Goal | Success Metric | Target |
 | --- | --- | --- | --- |
-| **P0** | Slate binary + slated daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
+| **P0** | Codiv binary + codivd daemon IPC with streaming | End-to-end command execution via Unix socket | Phase 1 complete |
 | **P0** | Command fast-pass with near-zero latency | Recognized commands execute in <10ms overhead vs raw shell | Phase 1 complete |
 | **P0** | Single-model agent loop (Orchestrator → Engineer → output) | Natural language task → file edits + test runs working | Phase 2 complete |
 | **P1** | Basic safety controls (risk classification, confirmation prompts) | Destructive commands require confirmation; no auto-execution of critical-risk commands | Phase 2 complete |
@@ -87,9 +87,9 @@
 The following are **not** in scope for the MVP or near-term roadmap:
 
 - **GUI or IDE integration** — this is terminal-only by design
-- **Fish/Zsh native mode** — slate uses its own persistent bash co-process; native Fish/Zsh integration is not planned
+- **Fish/Zsh native mode** — codiv uses its own persistent bash co-process; native Fish/Zsh integration is not planned
 - **Voice agent integration** — text input only
-- **MCP server hosting** — Slate Agent bridges MCP servers as tools (MCP client), but does not host/expose its own MCP server (may add later)
+- **MCP server hosting** — Codiv Agent bridges MCP servers as tools (MCP client), but does not host/expose its own MCP server (may add later)
 - **Multi-model forked work trees** — deferred until real usage patterns emerge
 - **Backpressure system** — deferred
 - **Scoped capability tokens** — deferred
@@ -162,12 +162,12 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - **AC**: Commands in the high/critical risk list (e.g., `rm -rf`, `git push --force`, `DROP TABLE`) trigger a confirmation prompt. No auto-execution. User must explicitly approve.
 
 **US-010**: As Marcus, I want a full audit trail of every command the agent executes, so that I can review what happened during a session for compliance.
-- **AC**: All commands, outputs, diffs, and decisions are logged to `~/.slate-agent/audit/`. Logs are machine-parseable and include timestamps, Work Item IDs, and agent roles.
+- **AC**: All commands, outputs, diffs, and decisions are logged to `~/.codiv/audit/`. Logs are machine-parseable and include timestamps, Work Item IDs, and agent roles.
 
 #### Tool System
 
-**US-011**: As Alex, I want to install a custom tool with `slate install ./my-tool` and have it immediately available to the agent, so that I can extend the agent's capabilities.
-- **AC**: After `slate install`, the tool appears in `slate tools list`. Agent sees it in Tier 0 context. Tool's `--help` and `--agent-guide` are accessible. No daemon restart required.
+**US-011**: As Alex, I want to install a custom tool with `codiv install ./my-tool` and have it immediately available to the agent, so that I can extend the agent's capabilities.
+- **AC**: After `codiv install`, the tool appears in `codiv tools list`. Agent sees it in Tier 0 context. Tool's `--help` and `--agent-guide` are accessible. No daemon restart required.
 
 #### Multi-Model
 
@@ -178,9 +178,9 @@ The following are **not** in scope for the MVP or near-term roadmap:
 
 ## 6. Functional Requirements
 
-### FR-001: Slate Binary (Terminal Client)
+### FR-001: Codiv Binary (Terminal Client)
 
-- Standalone Rust binary (`slate`) as the user-facing terminal client
+- Standalone Rust binary (`codiv`) as the user-facing terminal client
 - Uses **ratatui + crossterm** as the terminal UI framework — owns the entire terminal: input, output rendering, layout, and colors
 - **Linear scroll-down flow** — everything scrolls down like a normal terminal (no fixed zones or panels):
   - Shell commands render inline with no border (normal terminal feel)
@@ -202,7 +202,7 @@ The following are **not** in scope for the MVP or near-term roadmap:
   | User commands | Default terminal color | No border, no prefix |
   Multiple Engineers: cycle through cyan variants (cyan, bright cyan, teal) per Work Item ID.
 - Spawns a **persistent bash co-process** (`bash --noediting --norc --noprofile -i`) at startup via **portable-pty**
-- Commands piped to bash co-process stdin; output read from PTY with **sentinel-based boundary detection** (`cmd; __SLATE_EXIT=$?; echo "SENTINEL${__SLATE_EXIT}__"` to detect output boundaries and capture exit codes)
+- Commands piped to bash co-process stdin; output read from PTY with **sentinel-based boundary detection** (`cmd; __CODIV_EXIT=$?; echo "SENTINEL${__CODIV_EXIT}__"` to detect output boundaries and capture exit codes)
 - Maintains shell state continuity: env vars, aliases, cwd persist across commands
 - User command output renders inline with no border, no prefix (feels like normal terminal)
 - **VT100 terminal emulation**: uses tui-term + vt100 crate for ANSI-preserved output rendering in the ratatui widget tree
@@ -216,34 +216,34 @@ The following are **not** in scope for the MVP or near-term roadmap:
 - **Markdown rendering** (planned): comrak for CommonMark+GFM parsing + syntect for syntax highlighting in code blocks; emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
 - **Communication**: Unix domain socket at well-known path (see FR-002)
 - **Tab completion**: 3-tier system — programmable completions (bash-completion integration) → command completions → file completions
-- **Structured logging**: `--debug` flag enables structured logging via log + env_logger to `/tmp/slate-debug.log`
+- **Structured logging**: `--debug` flag enables structured logging via log + env_logger to `/tmp/codiv-debug.log`
 
-### FR-002: Daemon (Persistent Rust Process — `slated`)
+### FR-002: Daemon (Persistent Rust Process — `codivd`)
 
 - Rust singleton daemon process (Tokio async runtime)
-- Listen on Unix domain socket (`/tmp/slated-{uid}.sock`) for slate client connections
-- PID file at `~/.slate-agent/slated.pid`
-- Manage lifecycle: start on first slate client connection, stay resident, graceful shutdown
-- Handle multiple concurrent slate client sessions
+- Listen on Unix domain socket (`/tmp/codivd-{uid}.sock`) for codiv client connections
+- PID file at `~/.codiv/codivd.pid`
+- Manage lifecycle: start on first codiv client connection, stay resident, graceful shutdown
+- Handle multiple concurrent codiv client sessions
 - Provide streaming responses (token-by-token for AI, chunked for command output)
 - **serde+bincode IPC protocol**: 4-byte big-endian length prefix + bincode payload; ClientMessage variants: AgentRequest (with SessionContext), EnvSnapshot, Confirmation, Heartbeat, Shutdown. DaemonMessage variants: AgentStreamChunk, AgentComplete, ConfirmationRequest, TaskTreeUpdate, Heartbeat, Error
-- **Env snapshot protocol**: `slate` captures an env snapshot on connect to `slated` — session_id, env_vars, PATH, cwd. Stored per-session in `slated` (each slate client has its own snapshot).
+- **Env snapshot protocol**: `codiv` captures an env snapshot on connect to `codivd` — session_id, env_vars, PATH, cwd. Stored per-session in `codivd` (each codiv client has its own snapshot).
 - **Heartbeat mechanism**: 5-second interval from client, 30-second stale timeout in daemon for detecting disconnected clients
-- **Worker bash sessions**: `slated` spawns a **fresh bash process** per Work Item that needs shell execution. Each worker initialized from the latest env snapshot: env vars injected, cwd set. Worker killed when Work Item completes — no reuse, no stale state. Workers are non-interactive (pipe stdin/stdout/stderr). Bash startup is ~5-10ms — negligible vs LLM latency, no need for a warm pool. Multiple Work Items run their own bash processes concurrently (true parallelism).
+- **Worker bash sessions**: `codivd` spawns a **fresh bash process** per Work Item that needs shell execution. Each worker initialized from the latest env snapshot: env vars injected, cwd set. Worker killed when Work Item completes — no reuse, no stale state. Workers are non-interactive (pipe stdin/stdout/stderr). Bash startup is ~5-10ms — negligible vs LLM latency, no need for a warm pool. Multiple Work Items run their own bash processes concurrently (true parallelism).
 - **Command execution routing**:
-  - **User commands** → `slate`'s persistent bash co-process (interactive, stateful)
-  - **Agent Bash tool calls** → `slated`'s worker bash sessions (parallel, env-snapshot-initialized)
-  - **Bidirectional IPC** carries: env snapshots (slate→slated), streaming output from worker sessions + confirmation requests (slated→slate)
-- **Daemon logging**: logs to `~/.slate-agent/slated.log`
+  - **User commands** → `codiv`'s persistent bash co-process (interactive, stateful)
+  - **Agent Bash tool calls** → `codivd`'s worker bash sessions (parallel, env-snapshot-initialized)
+  - **Bidirectional IPC** carries: env snapshots (codiv→codivd), streaming output from worker sessions + confirmation requests (codivd→codiv)
+- **Daemon logging**: logs to `~/.codiv/codivd.log`
 - **Async I/O**: Tokio runtime with async/await
 
 ### FR-003: Command Fast-Pass
 
-- Build command index on startup in `slate` binary from: PATH executables (scanning) + 65 bash builtins
+- Build command index on startup in `codiv` binary from: PATH executables (scanning) + 65 bash builtins
 - Store in **O(1) hash map**: command name → type + path/builtin
 - **Input classification categories**: Execute (recognized command), Interactive (vim, ssh, python, etc.), AiQuery (natural language), NotFound, Clear, Reset, Exit, Empty
 - Recognized commands execute immediately through bash co-process; unknown commands route to agent mode; `?` prefix forces AI
-- Provide completion hints via tab completion in `slate` binary
+- Provide completion hints via tab completion in `codiv` binary
 
 ### FR-004: Agent System
 
@@ -261,7 +261,7 @@ The following are **not** in scope for the MVP or near-term roadmap:
 
 The Orchestrator-Worker pattern is the dominant architecture across all production multi-agent systems (Microsoft Agent Framework, CrewAI, LangGraph, Anthropic's internal research system). Anthropic's multi-agent research system with Opus orchestrator + Sonnet subagents outperformed single-agent Opus by 90.2% on complex tasks.
 
-**Lessons from Cursor's multi-agent failures**: Cursor initially used reader-writer locks for multi-agent file coordination, but this failed in practice. Agents held locks too long, causing 20 concurrent agents to degrade to throughput of 2-3. They switched to a role-based Planner/Worker/Judge pattern — which validates Slate Agent's TeamLead/Engineer/Reviewer split.
+**Lessons from Cursor's multi-agent failures**: Cursor initially used reader-writer locks for multi-agent file coordination, but this failed in practice. Agents held locks too long, causing 20 concurrent agents to degrade to throughput of 2-3. They switched to a role-based Planner/Worker/Judge pattern — which validates Codiv Agent's TeamLead/Engineer/Reviewer split.
 
 **Coordination model**: Shared state over message passing. All coordination through Shared Project State reads/writes (FR-008), not inter-agent chat. This aligns with the blackboard architecture (Hayes-Roth 1985, revived for LLM agents) and AWS's Arbiter pattern (shared semantic blackboard where agents read/write task state). Claude Code uses a similar file-based artifact model (progress files + git history).
 
@@ -277,9 +277,9 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 - Work Items form a DAG (directed acyclic graph)
 - Scheduler runs Work Items concurrently via worker thread pool, respecting dependencies
 - Work Item states: pending → running → completed | failed | blocked
-- Each running Work Item gets a **dedicated worker bash session** in `slated` (spawned on demand, killed on completion)
+- Each running Work Item gets a **dedicated worker bash session** in `codivd` (spawned on demand, killed on completion)
 - Workers initialized from the latest env snapshot with independent cwd — no cross-contamination between concurrent Work Items
-- Worker output streamed to `slate` and rendered in color-coded agent output blocks
+- Worker output streamed to `codiv` and rendered in color-coded agent output blocks
 - Outputs are stored as artifacts in Shared Project State
 - Budget enforcement: Work Items that exceed token or cost budget are paused and escalated to TeamLead
 
@@ -287,7 +287,7 @@ The Orchestrator-Worker pattern is the dominant architecture across all producti
 
 The following tools are **built-in** — compiled into the daemon binary, always available regardless of installed tool packages:
 
-- `Bash`: shell command execution via `slated`'s worker bash sessions (parallel per Work Item, env-snapshot-initialized), with timeout, background support, output streamed to `slate` for display
+- `Bash`: shell command execution via `codivd`'s worker bash sessions (parallel per Work Item, env-snapshot-initialized), with timeout, background support, output streamed to `codiv` for display
 - `Read`: file content retrieval with line range support
 - `Write`: file creation/overwrite (requires prior read)
 - `Edit`: exact string replacement in files
@@ -296,7 +296,7 @@ The following tools are **built-in** — compiled into the daemon binary, always
 - `WebFetch`: URL content retrieval
 - `Task`: sub-agent spawning for complex subtasks
 
-External tools (binary and prompt) are discovered via `SLATE_TOOLS_PATH` and present the same interface to the agent (see FR-011, FR-012). All tools — built-in and external — expose `--help` and optionally `--agent-guide` for progressive loading (Tier 0 → Tier 2), so the agent interacts with them uniformly.
+External tools (binary and prompt) are discovered via `CODIV_TOOLS_PATH` and present the same interface to the agent (see FR-011, FR-012). All tools — built-in and external — expose `--help` and optionally `--agent-guide` for progressive loading (Tier 0 → Tier 2), so the agent interacts with them uniformly.
 
 ### FR-007: Memory System
 
@@ -310,16 +310,16 @@ External tools (binary and prompt) are discovered via `SLATE_TOOLS_PATH` and pre
 The Narrator should implement MemGPT-style bounded memory management:
 
 - **Cognitive triage**: The Narrator LLM evaluates the future value of each piece of information before deciding what to keep, compress, or evict. Approximately 70% of conversational messages should be evicted to maintain continuity on long tasks.
-- **Recursive summarization**: When memory approaches capacity, older entries are recursively summarized into increasingly compressed forms. Core memory blocks default to ~2,000 characters each (MemGPT convention), though Slate Agent's 64KB/128KB caps are appropriate for a coding context.
+- **Recursive summarization**: When memory approaches capacity, older entries are recursively summarized into increasingly compressed forms. Core memory blocks default to ~2,000 characters each (MemGPT convention), though Codiv Agent's 64KB/128KB caps are appropriate for a coding context.
 - **Preservation priorities**: Architectural decisions, unresolved bugs, user-stated preferences, and project conventions are high-value and should resist eviction. This mirrors Claude Code's compaction behavior (preserves architectural decisions, keeps 5 most recently accessed files, compacts at ~95% of ~33,000-token buffer).
-- **No vector DB for MVP**: Unlike Cursor (Turbopuffer vector DB + Merkle trees for re-indexing), Slate Agent's bounded text memory with Narrator curation is simpler and sufficient for the terminal-native use case. Vector-based RAG can be added later if recall accuracy falls below target.
+- **No vector DB for MVP**: Unlike Cursor (Turbopuffer vector DB + Merkle trees for re-indexing), Codiv Agent's bounded text memory with Narrator curation is simpler and sufficient for the terminal-native use case. Vector-based RAG can be added later if recall accuracy falls below target.
 
 ### FR-008: Shared Project State
 
 - **Artifacts**: command transcripts, stdout/stderr, diffs, files, benchmarks
 - **Decisions**: short rationale for key choices made during execution
 - **Task state**: Work Item status + pointers to artifacts
-- Stored at `~/.slate-agent/` or XDG-compliant location
+- Stored at `~/.codiv/` or XDG-compliant location
 - **No agent-to-agent chat:** all coordination through state reads/writes
 - **Single-writer ownership**: one agent owns writes to a given resource at a time; multiple agents can read concurrently — avoids the lock contention problems Cursor encountered with reader-writer locks
 
@@ -347,7 +347,7 @@ The Narrator should implement MemGPT-style bounded memory management:
 - Phase 7: OS-level sandboxing using Linux bubblewrap or macOS seatbelt profiles, covering all spawned scripts and subprocesses. Claude Code's implementation reduced permission prompts by 84%.
 - Docker-based sandboxing as an advanced option: dedicated microVM with own Docker daemon, running the agent with full permissions inside (safe because isolated).
 
-**Autonomy-Capability tradeoff**: High-functionality agents (broad tool access) require constrained autonomy (human approval). High-autonomy agents (fewer prompts) require sandboxed functionality (OS-level isolation). Slate Agent starts with the first model and moves toward the second as sandboxing matures.
+**Autonomy-Capability tradeoff**: High-functionality agents (broad tool access) require constrained autonomy (human approval). High-autonomy agents (fewer prompts) require sandboxed functionality (OS-level isolation). Codiv Agent starts with the first model and moves toward the second as sandboxing matures.
 
 **Standards alignment**: Design with OWASP LLM Top 10 in mind (especially LLM06: Excessive Agency) and NIST AI Risk Management Framework.
 
@@ -372,7 +372,7 @@ The Narrator should implement MemGPT-style bounded memory management:
   - Support bundled resources: `scripts/` (executable helpers), `references/` (on-demand docs), `assets/` (output files)
   - Support `[skill.inject]` for dynamic context injection (shell commands run at Tier 2 loading, subject to same safety controls as Bash tool)
   - Execution model: `inline` (inject into current context) or `fork` (sub-session via Task tool pattern)
-- **Skill import**: see FR-012 (`slate import skill`) for converting Claude Code SKILL.md format to Slate tool packages
+- **Skill import**: see FR-012 (`codiv import skill`) for converting Claude Code SKILL.md format to Codiv tool packages
 
 ### FR-012: Tool Registry & Distribution
 
@@ -381,20 +381,20 @@ The Narrator should implement MemGPT-style bounded memory management:
 - **Tool package** is the single distribution unit: `tool.toml` manifest + either a `bin/` directory (binary tool) or `guide.md` + bundled resources (prompt tool)
 - **Registry CLI**:
   ```bash
-  slate install <tool>              # install from registry
-  slate install mcp:<package>       # install MCP server as a tool (bridge)
-  slate install ./path/to/tool      # install from local path
-  slate import skill ./path         # convert Claude Code skill to Slate tool
-  slate remove <tool>               # uninstall
-  slate list                        # show installed tools
-  slate update [tool]               # update one or all
-  slate search "query"              # search registry (remote)
-  slate tools search "query"        # search installed tools (local)
+  codiv install <tool>              # install from registry
+  codiv install mcp:<package>       # install MCP server as a tool (bridge)
+  codiv install ./path/to/tool      # install from local path
+  codiv import skill ./path         # convert Claude Code skill to Codiv tool
+  codiv remove <tool>               # uninstall
+  codiv list                        # show installed tools
+  codiv update [tool]               # update one or all
+  codiv search "query"              # search registry (remote)
+  codiv tools search "query"        # search installed tools (local)
   ```
-- **Discovery via `SLATE_TOOLS_PATH`** (colon-separated, first match wins):
-  1. Project-level: `.slate-agent/tools/`
-  2. User-level: `~/.slate-agent/tools/`
-  3. System-level: `/usr/local/share/slate-agent/tools/`
+- **Discovery via `CODIV_TOOLS_PATH`** (colon-separated, first match wins):
+  1. Project-level: `.codiv/tools/`
+  2. User-level: `~/.codiv/tools/`
+  3. System-level: `/usr/local/share/codiv/tools/`
 - **Hooks** are tool invocations bound to lifecycle events (not a separate concept):
   ```toml
   [[hooks]]
@@ -416,14 +416,14 @@ The Narrator should implement MemGPT-style bounded memory management:
 
 *Redesigned per the [Unified Tool Model](../design-docs/unified-tool-model-design.md). MCP is an implementation detail — MCP servers appear as regular tools.*
 
-- **Install**: `slate install mcp:<package>` creates a thin wrapper executable in `SLATE_TOOLS_PATH` that translates the standard tool interface (`--help`, `--agent-guide`, commands) to MCP protocol calls
+- **Install**: `codiv install mcp:<package>` creates a thin wrapper executable in `CODIV_TOOLS_PATH` that trancodivs the standard tool interface (`--help`, `--agent-guide`, commands) to MCP protocol calls
 - **Transparent to agent**: The agent sees MCP-bridged tools identically to native tools — no special handling
 - **Transport support**: stdio (subprocess spawning) and HTTP/SSE (remote servers)
 - **Protocol**: JSON-RPC 2.0; `--help` → MCP `tools/list`, commands → MCP `tools/call`, `--json-out` → passthrough
 - **State management**: Daemon manages MCP server subprocesses — spawned lazily on first tool call, stay alive for session, health-checked via MCP `ping`, shut down with daemon
 - **Configuration**:
   ```toml
-  # ~/.slate-agent/config.toml
+  # ~/.codiv/config.toml
   [[tools.mcp]]
   name = "filesystem"
   package = "@modelcontextprotocol/server-filesystem"
@@ -451,24 +451,24 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 
 **Goal**: A working terminal client that can execute commands via daemon IPC.
 
-**Status**: Complete. The `slate` binary (~4,300 lines of Rust) and `slated` daemon (~1,240 lines of C++20) are fully implemented and functional. *Note: The C++ daemon from Phase 1 is being replaced by a Rust daemon in Phase 2. See the [Rust Daemon Design Doc](design-docs/rust-daemon-rewrite-design.md) for the current architecture.*
+**Status**: Complete. The `codiv` binary (~4,300 lines of Rust) and `codivd` daemon (~1,240 lines of C++20) are fully implemented and functional. *Note: The C++ daemon from Phase 1 is being replaced by a Rust daemon in Phase 2. See the [Rust Daemon Design Doc](design-docs/rust-daemon-rewrite-design.md) for the current architecture.*
 
 **Delivered summary**:
 
-- Rust TUI client (`slate`) with ratatui + crossterm for linear scroll-down terminal flow
+- Rust TUI client (`codiv`) with ratatui + crossterm for linear scroll-down terminal flow
 - Persistent bash co-process via portable-pty with sentinel-based output boundary detection
 - Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
-- C++ daemon (`slated`) with Unix socket IPC, FlatBuffers protocol, streaming output
+- C++ daemon (`codivd`) with Unix socket IPC, FlatBuffers protocol, streaming output
 - Command fast-pass: PATH scanning + bash builtins in O(1) hash map, input classification routing
 - 3-tier tab completion: programmable (bash-completion) → command → file
 - Env snapshot protocol, heartbeat mechanism, worker bash sessions
 - Structured logging with `--debug` flag
 
-**Verified outcome**: User launches `slate`, types `ls`, `git status`, `make` — commands execute via persistent bash co-process with near-zero overhead. Interactive commands work correctly with PTY passthrough. Tab completion works across all three tiers. Unknown commands are classified for future agent routing.
+**Verified outcome**: User launches `codiv`, types `ls`, `git status`, `make` — commands execute via persistent bash co-process with near-zero overhead. Interactive commands work correctly with PTY passthrough. Tab completion works across all three tiers. Unknown commands are classified for future agent routing.
 
 **Dependencies**: None (greenfield)
 
-**Key tech choices**: Rust (Cargo) for `slate`, C++20 (CMake) for `slated`, FlatBuffers IPC over Unix socket, portable-pty for PTY management, tui-term + vt100 for terminal emulation.
+**Key tech choices**: Rust (Cargo) for `codiv`, C++20 (CMake) for `codivd`, FlatBuffers IPC over Unix socket, portable-pty for PTY management, tui-term + vt100 for terminal emulation.
 
 See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for full module tables and tech stack.
 
@@ -483,7 +483,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 - Integration with aisdk.rs for streaming LLM access + tool calling
 - Single agent (combined Orchestrator+Engineer role) that receives user input, reasons, calls tools
 - Tool implementations: Bash, Read, Write, Edit, Glob, Grep
-- Streaming token output back to terminal via slate binary
+- Streaming token output back to terminal via codiv binary
 - Basic TOML config for API keys and model selection
 - Terminal markdown rendering: comrak for CommonMark+GFM parsing + syntect for syntax highlighting in code blocks; walk AST to emit ANSI escape codes; for streaming, maintain growing buffer and re-parse on significant updates
 - **Basic safety controls**:
@@ -491,9 +491,9 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
   - Confirmation prompts for destructive commands (`rm -rf`, `git push --force`, `DROP TABLE`, etc. — see FR-009 for full list)
   - Command allowlist/denylist (configurable via TOML config)
   - No agent auto-execution of critical-risk commands
-- **Worker bash sessions in `slated`**: spawn fresh bash per Work Item, initialize from env snapshot, kill on completion
-- **Env snapshot refresh**: auto-refresh on `cd`/`source`/manual `slate sync-env`
-- **Color-coded output streaming**: worker bash output streamed to `slate`, rendered in color-bordered agent output blocks per Work Item
+- **Worker bash sessions in `codivd`**: spawn fresh bash per Work Item, initialize from env snapshot, kill on completion
+- **Env snapshot refresh**: auto-refresh on `cd`/`source`/manual `codiv sync-env`
+- **Color-coded output streaming**: worker bash output streamed to `codiv`, rendered in color-bordered agent output blocks per Work Item
 
 **Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
@@ -518,7 +518,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 - Work Item data structure (goal, acceptance criteria, dependencies, outputs, state, token/cost budgets)
 - DAG construction: agent produces a plan as a set of Work Items with dependency edges
 - Scheduler: Tokio-based concurrent execution respecting dependencies
-- Worker bash sessions serve as the execution substrate — each scheduled Work Item gets its own bash process via `slated`
+- Worker bash sessions serve as the execution substrate — each scheduled Work Item gets its own bash process via `codivd`
 - Work Item state machine: pending → running → completed | failed
 - Artifact storage: each Work Item's output stored in Shared Project State
 - User-visible progress: streaming status of Work Items as they execute
@@ -581,13 +581,13 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 - Recursive summarization when memory approaches capacity
 - Project auto-switching: Orchestrator detects project context from cwd, git remote, repo fingerprint
 - Memory injected into Orchestrator's context at session start
-- Storage at `~/.slate-agent/memory/` (or XDG path)
+- Storage at `~/.codiv/memory/` (or XDG path)
 
 **Testable outcome**: User completes a task in repo A ("always use pytest, not unittest"). User starts a new session in repo A — agent remembers the preference. User cd's to repo B — agent switches to repo B's context automatically.
 
 **Dependencies**: Phase 4
 
-**Backwards compatibility**: Memory storage is entirely new (`~/.slate-agent/memory/`). No prior data to migrate. Config extends with `[memory]` section; existing config keys preserved.
+**Backwards compatibility**: Memory storage is entirely new (`~/.codiv/memory/`). No prior data to migrate. Config extends with `[memory]` section; existing config keys preserved.
 
 ---
 
@@ -597,19 +597,19 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 
 **Deliverables**:
 
-- Tool registry with `slate install/remove/update/search` and `SLATE_TOOLS_PATH` discovery
-- MCP bridge: `slate install mcp:<pkg>` wraps MCP servers as tools, daemon manages lifecycle
+- Tool registry with `codiv install/remove/update/search` and `CODIV_TOOLS_PATH` discovery
+- MCP bridge: `codiv install mcp:<pkg>` wraps MCP servers as tools, daemon manages lifecycle
 - Prompt tool runtime: daemon synthesizes `--help`/`--agent-guide` for tools without binaries; `guide.md` + bundled resources (`scripts/`, `references/`, `assets/`)
-- `slate import skill` for converting Claude Code skills to Slate tool packages
+- `codiv import skill` for converting Claude Code skills to Codiv tool packages
 - Built-in tools (commit, plan, tasks, help, history) hardcoded in daemon; always available
 - Hooks as event-bound tool invocations; aliases as slash command mappings
 - Progressive loading: Tier 0 (names) → Tier 1 (help) → Tier 2 (agent-guide) → Tier 3 (deep docs)
 
-**Testable outcome**: User types `/commit` — built-in tool produces a commit message and stages changes. User runs `slate install ./my-tool` and the tool becomes available. User runs `slate install mcp:@modelcontextprotocol/server-filesystem` and the MCP server appears as a regular tool.
+**Testable outcome**: User types `/commit` — built-in tool produces a commit message and stages changes. User runs `codiv install ./my-tool` and the tool becomes available. User runs `codiv install mcp:@modelcontextprotocol/server-filesystem` and the MCP server appears as a regular tool.
 
 **Dependencies**: Phase 5
 
-**Backwards compatibility**: Tool discovery is new (`SLATE_TOOLS_PATH`). Built-in tools (Bash, Read, Write, Edit, Glob, Grep) remain unchanged and always available. Config extends with `[[tools.mcp]]`, `[[hooks]]`, and `[[aliases]]` sections; existing config keys preserved.
+**Backwards compatibility**: Tool discovery is new (`CODIV_TOOLS_PATH`). Built-in tools (Bash, Read, Write, Edit, Glob, Grep) remain unchanged and always available. Config extends with `[[tools.mcp]]`, `[[hooks]]`, and `[[aliases]]` sections; existing config keys preserved.
 
 ---
 
@@ -674,8 +674,8 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Tokio task spawning with async/await and `futures::future::join_all` instead of hand-rolling scheduler; channel-based coordination for dependency edges |
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
 | **Security of executed commands** — agent could run destructive commands | Low | Critical | Basic risk classification + confirmation prompts (Phase 2); allowlists; audit trail (Phase 7); never auto-execute critical-risk commands; future OS-level sandboxing (bubblewrap/seatbelt, Phase 7) |
-| **Env snapshot drift** — snapshot captured at connect may diverge from slate's actual environment if user modifies env outside of tracked operations (e.g., manual `export` in a subshell) | Low | Medium | Auto-refresh on `cd`/`source`; manual `slate sync-env` command; snapshot includes timestamp for staleness detection |
-| **Unified Rust build** — single language and build system simplifies CI/CD and contributor onboarding | Low | Low | Cargo workspace builds all crates with `cargo build --workspace`. Shared types via `slate-common` crate eliminate schema generation. No cross-language complexity. |
+| **Env snapshot drift** — snapshot captured at connect may diverge from codiv's actual environment if user modifies env outside of tracked operations (e.g., manual `export` in a subshell) | Low | Medium | Auto-refresh on `cd`/`source`; manual `codiv sync-env` command; snapshot includes timestamp for staleness detection |
+| **Unified Rust build** — single language and build system simplifies CI/CD and contributor onboarding | Low | Low | Cargo workspace builds all crates with `cargo build --workspace`. Shared types via `codiv-common` crate eliminate schema generation. No cross-language complexity. |
 
 ---
 
@@ -683,28 +683,28 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Decision | Choice | Rationale |
 | --- | --- | --- |
-| Client language | Rust (`slate` binary) | ratatui ecosystem, memory safety for UI handling untrusted input, excellent cross-platform PTY support via portable-pty. |
-| Daemon language | Rust (`slated` daemon) | aisdk.rs compatibility, Tokio async runtime for concurrent execution, unified language with client. |
+| Client language | Rust (`codiv` binary) | ratatui ecosystem, memory safety for UI handling untrusted input, excellent cross-platform PTY support via portable-pty. |
+| Daemon language | Rust (`codivd` daemon) | aisdk.rs compatibility, Tokio async runtime for concurrent execution, unified language with client. |
 | Terminal UI framework | ratatui 0.30 + crossterm 0.28 | Most mature terminal UI ecosystem in Rust, proven by Zellij. Linear scroll-down flow with inline agent blocks — everything scrolls down like a normal terminal. |
 | PTY management | portable-pty 0.9 | Cross-platform PTY abstraction (macOS + Linux), clean API for spawning and managing pseudo-terminal pairs, avoids platform-specific `forkpty()` calls. |
 | VT100 emulation | tui-term 0.3 + vt100 0.16 | ANSI escape sequence parsing and rendering within ratatui's widget tree, preserving colors and formatting from command output. |
 | Build system | Cargo workspace (all crates) | Unified build system — single `cargo build --workspace` for all crates. |
 | IPC serialization | serde + bincode over Unix domain socket with 4-byte BE length prefix | Both sides are Rust — no need for cross-language serialization. Zero schema compiler, compile-time checked. |
-| IPC schema | `slate-common/src/messages.rs` with ClientMessage/DaemonMessage enums | Shared Rust crate — types checked at compile time across client and daemon. |
+| IPC schema | `codiv-common/src/messages.rs` with ClientMessage/DaemonMessage enums | Shared Rust crate — types checked at compile time across client and daemon. |
 | Config format | TOML | Human-readable, well-supported in Rust, good for nested config (model catalog). |
 | LLM SDK | aisdk.rs (lazy-hq) | Rust LLM SDK with streaming + multi-step tool calling for OpenAI + Anthropic. Native async/await integration with Tokio runtime. |
 | LLM SDK fallback | Direct HTTP via reqwest + custom SSE parser | For providers not yet in aisdk.rs. reqwest is the standard Rust HTTP client with async support. llama.cpp server supports OpenAI-compatible + Anthropic Messages API for local models. |
 | DAG scheduler | Tokio tasks | Tokio task spawning with async/await. `futures::future::join_all` for concurrent Work Item execution. |
 | Terminal markdown rendering | comrak + syntect (planned) | comrak for CommonMark+GFM parsing, syntect for syntax highlighting (same engine as Sublime Text). Walk AST, emit ANSI escape codes. Streaming: maintain growing buffer, re-parse on significant updates, diff rendered output. |
 | Command execution (user) | Persistent bash co-process via portable-pty | Maintains shell state (env, aliases, cwd) across commands. Sentinel-based output boundary detection. Interactive passthrough via dedicated PTY with raw terminal mode. |
-| Command execution (agent) | Spawn-on-demand bash in `slated` | Fresh bash process per Work Item, initialized from env snapshot (env vars, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
+| Command execution (agent) | Spawn-on-demand bash in `codivd` | Fresh bash process per Work Item, initialized from env snapshot (env vars, cwd), killed on completion. No pool management, no reuse, no stale state. ~5-10ms startup negligible vs LLM latency. |
 | Tab completion | 3-tier: programmable → command → file | Programmable completions via bash-completion integration, command name completions from command index, file path completions as fallback. |
-| Storage location | `~/.slate-agent/` | Simple, user-local, follows common CLI tool conventions. |
+| Storage location | `~/.codiv/` | Simple, user-local, follows common CLI tool conventions. |
 | Agent coordination | Single-writer ownership (no reader-writer locks) | Cursor's lock-based approach failed at scale. One writer per resource, concurrent readers. Role separation reduces contention. |
 | Memory architecture | Bounded text with Narrator curation (MemGPT-informed) | 64KB global + 128KB per project caps. Cognitive triage + recursive summarization. No vector DB for MVP (add later if needed). |
 | Tool package format | `tool.toml` manifest + binary or `guide.md` + bundled resources | Single primitive for both binary and prompt tools; TOML consistent with rest of config. |
 | MCP bridge | Custom Rust client (serde_json + tokio subprocess) | JSON-RPC 2.0 over stdio; thin wrapper makes MCP servers appear as regular tools. |
-| Tool discovery | `SLATE_TOOLS_PATH` (project > user > system) | First-match-wins, mirrors Unix `PATH` semantics; built-in tools always available regardless. |
+| Tool discovery | `CODIV_TOOLS_PATH` (project > user > system) | First-match-wins, mirrors Unix `PATH` semantics; built-in tools always available regardless. |
 | Testing | cargo test (built-in) | Unified testing across all crates. |
 
 ---
@@ -735,7 +735,7 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `session_id` | string | Identifies the `slate` client session |
+| `session_id` | string | Identifies the `codiv` client session |
 | `env_vars` | map\<string, string\> | Captured environment variables (filtered by allowlist) |
 | `path` | string | `PATH` value at capture time |
 | `cwd` | string | Working directory at capture time |
@@ -788,7 +788,7 @@ Semantic memory is stored as markdown files (`user.md`, `project.md`, `topics/*.
 
 ### 10.5 Analytics & Instrumentation Requirements
 
-All metrics are stored locally at `~/.slate-agent/metrics/` — no telemetry is sent externally.
+All metrics are stored locally at `~/.codiv/metrics/` — no telemetry is sent externally.
 
 | Metric | Granularity | Description |
 | --- | --- | --- |
@@ -801,7 +801,7 @@ All metrics are stored locally at `~/.slate-agent/metrics/` — no telemetry is 
 | Agent turn count | Per Work Item | Number of LLM turns needed to complete a Work Item |
 | Tool invocation frequency | Per tool, per session | Which tools are called most often; average execution time |
 
-Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per session. A `slate metrics` command provides summary reports.
+Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per session. A `codiv metrics` command provides summary reports.
 
 ---
 
@@ -811,25 +811,25 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 
 | Scenario | Behavior |
 | --- | --- |
-| **Daemon (`slated`) crashes mid-task** | Work Items in `running` state transition to `failed`. The `slate` client detects the crash via heartbeat timeout, notifies the user, and offers to restart the daemon or continue in standalone mode (fast-pass only, no agent). |
+| **Daemon (`codivd`) crashes mid-task** | Work Items in `running` state transition to `failed`. The `codiv` client detects the crash via heartbeat timeout, notifies the user, and offers to restart the daemon or continue in standalone mode (fast-pass only, no agent). |
 | **LLM API times out** | Retry with exponential backoff (3 attempts: 2s, 4s, 8s). If all retries fail, the Work Item transitions to `failed` and the TeamLead is notified for re-planning or model fallback. Token budget is debited for the failed attempt. |
 | **Work Item exceeds token/cost budget** | The Work Item is paused immediately. TeamLead is notified and can re-plan (split into smaller items), request user approval for budget increase, or fail the Work Item. |
 | **Two Work Items try to edit the same file** | Single-writer ownership prevents this by design. Only one agent holds write ownership of a file at a time. If a second Work Item needs the same file, it is blocked until the first completes and releases ownership. |
-| **User's environment changes while agent is running** | Env snapshot is refreshed on `cd`, `source`, and `slate sync-env`. Running Work Items continue with their original snapshot (they use their own bash process initialized at spawn time). New Work Items use the latest snapshot. |
+| **User's environment changes while agent is running** | Env snapshot is refreshed on `cd`, `source`, and `codiv sync-env`. Running Work Items continue with their original snapshot (they use their own bash process initialized at spawn time). New Work Items use the latest snapshot. |
 | **Memory hits its size cap** | The Narrator compresses aggressively: merges related entries, removes low-value content, performs recursive summarization, and as a last resort evicts the oldest low-value entries. See the [Memory System Design](design-docs/memory-system-design.md) for retention policy. |
-| **Command index is stale** | PATH is scanned on `slate` startup. The user can force a rescan with `slate rescan`. Commands installed mid-session are detected on the next tab completion attempt (incremental PATH check). |
-| **Interactive program (vim) running when agent needs attention** | Agent work queues until the interactive session exits. The `slate` client buffers agent output and displays a notification indicator. When the user exits the interactive program, queued agent output is rendered. |
+| **Command index is stale** | PATH is scanned on `codiv` startup. The user can force a rescan with `codiv rescan`. Commands installed mid-session are detected on the next tab completion attempt (incremental PATH check). |
+| **Interactive program (vim) running when agent needs attention** | Agent work queues until the interactive session exits. The `codiv` client buffers agent output and displays a notification indicator. When the user exits the interactive program, queued agent output is rendered. |
 
 ### Error States
 
 | Error | Detection | Recovery |
 | --- | --- | --- |
-| **Daemon dies** | `slate` detects via heartbeat timeout (30s with no response) | Offers restart (auto-launch `slated`) or standalone mode (fast-pass only). In-progress Work Items are lost and must be re-run. |
+| **Daemon dies** | `codiv` detects via heartbeat timeout (30s with no response) | Offers restart (auto-launch `codivd`) or standalone mode (fast-pass only). In-progress Work Items are lost and must be re-run. |
 | **LLM times out** | HTTP response timeout or SSE stream stalls | Retry with exponential backoff (3 attempts). After 3 failures, fail the Work Item and notify TeamLead for re-planning or model substitution. |
 | **Tool execution fails** | Non-zero exit code from tool | Work Item transitions to `failed`. Reviewer analyzes the failure and creates a fix Work Item, or escalates to TeamLead for re-planning. |
-| **IPC connection lost** | Socket read/write returns error | `slate` attempts reconnection with exponential backoff (3 attempts: 1s, 2s, 4s). User input is buffered during reconnection. If reconnection fails, falls back to standalone mode. |
+| **IPC connection lost** | Socket read/write returns error | `codiv` attempts reconnection with exponential backoff (3 attempts: 1s, 2s, 4s). User input is buffered during reconnection. If reconnection fails, falls back to standalone mode. |
 | **Disk full** | Write syscall returns `ENOSPC` | Memory writes fail gracefully — agent continues with in-memory context only. Audit log writes are best-effort. User is warned that persistence is degraded. |
-| **Invalid config** | TOML parse error or schema validation failure on startup | `slate`/`slated` prints a clear error message identifying the problematic key and expected format, then exits with non-zero status. |
+| **Invalid config** | TOML parse error or schema validation failure on startup | `codiv`/`codivd` prints a clear error message identifying the problematic key and expected format, then exits with non-zero status. |
 
 ---
 
@@ -867,7 +867,7 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 
 > **Note**: The C++ daemon described below has been replaced by a Rust daemon in Phase 2. See the [Rust Daemon Design Doc](design-docs/rust-daemon-rewrite-design.md) for current architecture.
 
-### Module structure (`slate` binary, ~4,300 lines)
+### Module structure (`codiv` binary, ~4,300 lines)
 
 | Module | Responsibility | Lines |
 | --- | --- | --- |
@@ -885,12 +885,12 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 | `ipc/daemon_launcher.rs` | Daemon discovery/startup | — |
 | `ipc/messages.rs` | FlatBuffers message building | — |
 
-### Module structure (`slated` daemon, ~1,240 lines)
+### Module structure (`codivd` daemon, ~1,240 lines)
 
 | Module | Responsibility |
 | --- | --- |
 | `main.cpp` | Entry point, daemonization, signal handlers |
-| `daemon.h/.cpp` | SlatedDaemon class, message dispatch, session management |
+| `daemon.h/.cpp` | CodivdDaemon class, message dispatch, session management |
 | `types.h` | Constants, paths, version |
 | `session.h` | ClientSession state tracking |
 | `worker_process.h/.cpp` | Subprocess management for command execution |
@@ -900,35 +900,35 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 
 ### Full delivered feature list
 
-- `slate` binary in **Rust** with **ratatui 0.30 + crossterm 0.28** for linear scroll-down terminal flow, input handling, history, and tab completion
+- `codiv` binary in **Rust** with **ratatui 0.30 + crossterm 0.28** for linear scroll-down terminal flow, input handling, history, and tab completion
 - Persistent bash co-process (`bash --noediting --norc --noprofile -i`) spawned via **portable-pty 0.9** at startup
-- Sentinel-based output boundary detection for command completion and exit code capture (`cmd; __SLATE_EXIT=$?; echo "SENTINEL${__SLATE_EXIT}__"`)
+- Sentinel-based output boundary detection for command completion and exit code capture (`cmd; __CODIV_EXIT=$?; echo "SENTINEL${__CODIV_EXIT}__"`)
 - Interactive command passthrough with dedicated PTY and raw terminal mode (vim, ssh, python REPL, etc.)
 - Signal forwarding (Ctrl+C → bash child process)
 - VT100 terminal emulation via **tui-term 0.3 + vt100 0.16** for ANSI-preserved output rendering
 - 10,000 line scrollback limit
 - Mouse support (scroll, click) and clipboard integration (arboard 3)
-- `slated` daemon (C++20) that listens on Unix socket (`/tmp/slated-{uid}.sock`), receives commands, streams output back
+- `codivd` daemon (C++20) that listens on Unix socket (`/tmp/codivd-{uid}.sock`), receives commands, streams output back
 - FlatBuffers IPC protocol (flatbuffers 24.12.23 for Rust, v24.3.25 for C++) with message types: ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error
-- Command index built in `slate` from PATH scanning + 65 bash builtins (O(1) hash map lookup)
+- Command index built in `codiv` from PATH scanning + 65 bash builtins (O(1) hash map lookup)
 - Input classification: Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty
 - 3-tier tab completion: programmable completions (bash-completion integration) → command completions → file completions
 - Env snapshot protocol: session_id, env_vars, path, cwd (captured on connect, stored per-session in daemon)
 - Heartbeat mechanism (5s interval from client, 30s stale timeout in daemon)
 - Worker bash sessions: spawn-on-demand per Work Item, initialized from env snapshot, killed on completion
-- Graceful daemon lifecycle (start, stay resident, shutdown) with PID file at `~/.slate-agent/slated.pid`
-- Structured logging with `--debug` flag to `/tmp/slate-debug.log` (log + env_logger); daemon logs to `~/.slate-agent/slated.log`
+- Graceful daemon lifecycle (start, stay resident, shutdown) with PID file at `~/.codiv/codivd.pid`
+- Structured logging with `--debug` flag to `/tmp/codiv-debug.log` (log + env_logger); daemon logs to `~/.codiv/codivd.log`
 
 ### Tech stack
 
-- **Rust** (Cargo) for `slate`: ratatui 0.30, crossterm 0.28, portable-pty 0.9, vt100 0.16, tui-term 0.3, nix 0.29, arboard 3, log + env_logger
-- **C++20** (CMake 3.20+) for `slated` *(Phase 1 historical — replaced by Rust daemon in Phase 2)*: FlatBuffers v24.3.25, GoogleTest v1.14.0
+- **Rust** (Cargo) for `codiv`: ratatui 0.30, crossterm 0.28, portable-pty 0.9, vt100 0.16, tui-term 0.3, nix 0.29, arboard 3, log + env_logger
+- **C++20** (CMake 3.20+) for `codivd` *(Phase 1 historical — replaced by Rust daemon in Phase 2)*: FlatBuffers v24.3.25, GoogleTest v1.14.0
 - **IPC (Phase 1 historical)**: FlatBuffers over Unix domain socket (4-byte BE length prefix) — *replaced by serde+bincode in Phase 2*
 - **IPC (current)**: serde + bincode over Unix domain socket (4-byte BE length prefix)
-- **Schema (current)**: `slate-common/src/messages.rs` (shared Rust crate)
+- **Schema (current)**: `codiv-common/src/messages.rs` (shared Rust crate)
 - **Build (current)**: Cargo workspace (`cargo build --workspace`)
 - No AI/LLM needed yet
 
 ---
 
-*PRD v2.0 for Slate Agent — a Rust terminal-native multi-model coding agent. Rust client (`slate`) using ratatui + crossterm with portable-pty for PTY management, tui-term + vt100 for terminal emulation, 3-tier tab completion, and linear scroll-down terminal flow. Rust daemon (`slated`) with serde+bincode IPC, Tokio async runtime, worker bash sessions for parallel agent command execution, heartbeat-based session management, and env snapshot protocol. Phase 1 (Terminal Foundation) complete. Future phases: agent system, Work Item DAG, multi-model orchestration, memory, unified tool system, and safety/audit.*
+*PRD v2.0 for Codiv Agent — a Rust terminal-native multi-model coding agent. Rust client (`codiv`) using ratatui + crossterm with portable-pty for PTY management, tui-term + vt100 for terminal emulation, 3-tier tab completion, and linear scroll-down terminal flow. Rust daemon (`codivd`) with serde+bincode IPC, Tokio async runtime, worker bash sessions for parallel agent command execution, heartbeat-based session management, and env snapshot protocol. Phase 1 (Terminal Foundation) complete. Future phases: agent system, Work Item DAG, multi-model orchestration, memory, unified tool system, and safety/audit.*

@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Rewrite slated from C++ to Rust, integrate aisdk.rs for LLM access, and implement a single-agent AI loop with Tier 0 builtin tools.
+**Goal:** Rewrite codivd from C++ to Rust, integrate aisdk.rs for LLM access, and implement a single-agent AI loop with Tier 0 builtin tools.
 
-**Architecture:** Cargo workspace with three crates — `slate-common` (shared IPC types), `slated` (Tokio-based daemon with aisdk.rs), and `slate` (existing TUI client, updated to use serde+bincode IPC). The daemon runs a custom agent loop that calls aisdk.rs for LLM inference, executes tools, and streams results to the client over Unix socket IPC.
+**Architecture:** Cargo workspace with three crates — `codiv-common` (shared IPC types), `codivd` (Tokio-based daemon with aisdk.rs), and `codiv` (existing TUI client, updated to use serde+bincode IPC). The daemon runs a custom agent loop that calls aisdk.rs for LLM inference, executes tools, and streams results to the client over Unix socket IPC.
 
 **Tech Stack:** Rust, Tokio, aisdk.rs, serde + bincode, ratatui (client unchanged), nix, tracing
 
@@ -16,37 +16,37 @@
 
 **Files:**
 - Create: `Cargo.toml` (workspace root)
-- Move: `slate/` → `crates/slate/`
-- Create: `crates/slate-common/Cargo.toml`
-- Create: `crates/slate-common/src/lib.rs`
-- Create: `crates/slated/Cargo.toml`
-- Create: `crates/slated/src/main.rs`
+- Move: `codiv/` → `crates/codiv/`
+- Create: `crates/codiv-common/Cargo.toml`
+- Create: `crates/codiv-common/src/lib.rs`
+- Create: `crates/codivd/Cargo.toml`
+- Create: `crates/codivd/src/main.rs`
 
 **Step 1: Create workspace root Cargo.toml**
 
 ```toml
 [workspace]
-members = ["crates/slate", "crates/slate-common", "crates/slated"]
+members = ["crates/codiv", "crates/codiv-common", "crates/codivd"]
 resolver = "2"
 ```
 
-**Step 2: Move slate into crates/**
+**Step 2: Move codiv into crates/**
 
 ```bash
 mkdir -p crates
-git mv slate crates/slate
+git mv codiv crates/codiv
 ```
 
-**Step 3: Create slate-common crate**
+**Step 3: Create codiv-common crate**
 
 ```bash
-mkdir -p crates/slate-common/src
+mkdir -p crates/codiv-common/src
 ```
 
-`crates/slate-common/Cargo.toml`:
+`crates/codiv-common/Cargo.toml`:
 ```toml
 [package]
-name = "slate-common"
+name = "codiv-common"
 version = "0.1.0"
 edition = "2021"
 
@@ -55,28 +55,28 @@ serde = { version = "1", features = ["derive"] }
 bincode = "1"
 ```
 
-`crates/slate-common/src/lib.rs`:
+`crates/codiv-common/src/lib.rs`:
 ```rust
 pub mod config;
 pub mod messages;
 pub mod types;
 ```
 
-**Step 4: Create slated crate skeleton**
+**Step 4: Create codivd crate skeleton**
 
 ```bash
-mkdir -p crates/slated/src
+mkdir -p crates/codivd/src
 ```
 
-`crates/slated/Cargo.toml`:
+`crates/codivd/Cargo.toml`:
 ```toml
 [package]
-name = "slated"
+name = "codivd"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-slate-common = { path = "../slate-common" }
+codiv-common = { path = "../codiv-common" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -86,10 +86,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
-`crates/slated/src/main.rs`:
+`crates/codivd/src/main.rs`:
 ```rust
 fn main() {
-    println!("slated daemon placeholder");
+    println!("codivd daemon placeholder");
 }
 ```
 
@@ -105,21 +105,21 @@ Expected: All three crates compile successfully.
 
 ```bash
 git add -A
-git commit -m "Set up Cargo workspace with slate, slate-common, and slated crates"
+git commit -m "Set up Cargo workspace with codiv, codiv-common, and codivd crates"
 ```
 
 ---
 
-## Task 2: Shared IPC Types in slate-common
+## Task 2: Shared IPC Types in codiv-common
 
 **Files:**
-- Create: `crates/slate-common/src/config.rs`
-- Create: `crates/slate-common/src/messages.rs`
-- Create: `crates/slate-common/src/types.rs`
+- Create: `crates/codiv-common/src/config.rs`
+- Create: `crates/codiv-common/src/messages.rs`
+- Create: `crates/codiv-common/src/types.rs`
 
 **Step 1: Write config.rs — shared paths and constants**
 
-`crates/slate-common/src/config.rs`:
+`crates/codiv-common/src/config.rs`:
 ```rust
 use std::path::PathBuf;
 
@@ -128,30 +128,30 @@ pub const FRAME_HEADER_SIZE: usize = 4;
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 
 pub fn socket_path() -> String {
-    format!("/tmp/slated-{}.sock", unsafe { libc::getuid() })
+    format!("/tmp/codivd-{}.sock", unsafe { libc::getuid() })
 }
 
 pub fn pid_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".slate-agent/slated.pid")
+    PathBuf::from(home).join(".codiv/codivd.pid")
 }
 
 pub fn log_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".slate-agent/slated.log")
+    PathBuf::from(home).join(".codiv/codivd.log")
 }
 
 pub fn config_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".slate-agent")
+    PathBuf::from(home).join(".codiv")
 }
 ```
 
-Add `libc = "0.2"` to `crates/slate-common/Cargo.toml` dependencies.
+Add `libc = "0.2"` to `crates/codiv-common/Cargo.toml` dependencies.
 
 **Step 2: Write messages.rs — IPC message enums**
 
-`crates/slate-common/src/messages.rs`:
+`crates/codiv-common/src/messages.rs`:
 ```rust
 use serde::{Deserialize, Serialize};
 
@@ -174,7 +174,7 @@ pub struct SessionContext {
     pub env_vars: Vec<(String, String)>,
 }
 
-/// Messages sent from the slate client to the slated daemon.
+/// Messages sent from the codiv client to the codivd daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
     AgentRequest {
@@ -199,7 +199,7 @@ pub enum ClientMessage {
     },
 }
 
-/// Messages sent from the slated daemon to the slate client.
+/// Messages sent from the codivd daemon to the codiv client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonMessage {
     AgentStreamChunk {
@@ -258,7 +258,7 @@ pub fn parse_frame_header(header: &[u8; 4]) -> u32 {
 
 **Step 3: Write types.rs — shared domain types**
 
-`crates/slate-common/src/types.rs`:
+`crates/codiv-common/src/types.rs`:
 ```rust
 use serde::{Deserialize, Serialize};
 
@@ -275,7 +275,7 @@ pub enum AgentRole {
 **Step 4: Verify it compiles**
 
 ```bash
-cargo build -p slate-common
+cargo build -p codiv-common
 ```
 
 Expected: PASS
@@ -283,8 +283,8 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add crates/slate-common/
-git commit -m "Add slate-common crate with IPC messages, config, and shared types"
+git add crates/codiv-common/
+git commit -m "Add codiv-common crate with IPC messages, config, and shared types"
 ```
 
 ---
@@ -292,23 +292,23 @@ git commit -m "Add slate-common crate with IPC messages, config, and shared type
 ## Task 3: Rust Daemon — Core Skeleton
 
 **Files:**
-- Modify: `crates/slated/Cargo.toml`
-- Create: `crates/slated/src/main.rs` (full daemon entry point)
-- Create: `crates/slated/src/daemon.rs`
-- Create: `crates/slated/src/session.rs`
-- Create: `crates/slated/src/ipc/mod.rs`
-- Create: `crates/slated/src/ipc/server.rs`
+- Modify: `crates/codivd/Cargo.toml`
+- Create: `crates/codivd/src/main.rs` (full daemon entry point)
+- Create: `crates/codivd/src/daemon.rs`
+- Create: `crates/codivd/src/session.rs`
+- Create: `crates/codivd/src/ipc/mod.rs`
+- Create: `crates/codivd/src/ipc/server.rs`
 
 **Step 1: Write daemon main.rs — startup, PID file, daemonize, signal handling**
 
-`crates/slated/src/main.rs`:
+`crates/codivd/src/main.rs`:
 ```rust
 mod daemon;
 mod ipc;
 mod session;
 mod worker;
 
-use slate_common::config;
+use codiv_common::config;
 use std::fs;
 use std::process;
 use tracing::{error, info};
@@ -318,7 +318,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--version") {
-        println!("slated {}", config::VERSION);
+        println!("codivd {}", config::VERSION);
         return;
     }
 
@@ -333,7 +333,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "slated=info".into()),
+                .unwrap_or_else(|_| "codivd=info".into()),
         )
         .with_writer(move || {
             fs::OpenOptions::new()
@@ -366,7 +366,7 @@ async fn main() {
     }
     fs::write(&pid_path, format!("{}", process::id())).expect("cannot write PID file");
 
-    info!("slated started (pid {})", process::id());
+    info!("codivd started (pid {})", process::id());
 
     // Run daemon
     match daemon::Daemon::new().await {
@@ -381,7 +381,7 @@ async fn main() {
 
     // Cleanup
     fs::remove_file(&pid_path).ok();
-    info!("slated shutdown complete");
+    info!("codivd shutdown complete");
 }
 
 fn daemonize() {
@@ -402,7 +402,7 @@ fn daemonize() {
 
 **Step 2: Write session.rs — client session tracking**
 
-`crates/slated/src/session.rs`:
+`crates/codivd/src/session.rs`:
 ```rust
 use std::time::Instant;
 
@@ -431,15 +431,15 @@ impl ClientSession {
 
 **Step 3: Write IPC server — async Unix socket with length-prefixed framing**
 
-`crates/slated/src/ipc/mod.rs`:
+`crates/codivd/src/ipc/mod.rs`:
 ```rust
 pub mod server;
 ```
 
-`crates/slated/src/ipc/server.rs`:
+`crates/codivd/src/ipc/server.rs`:
 ```rust
-use slate_common::config;
-use slate_common::messages::{self, ClientMessage, DaemonMessage};
+use codiv_common::config;
+use codiv_common::messages::{self, ClientMessage, DaemonMessage};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -575,12 +575,12 @@ async fn client_connection(
 
 **Step 4: Write daemon.rs — event loop and message dispatch**
 
-`crates/slated/src/daemon.rs`:
+`crates/codivd/src/daemon.rs`:
 ```rust
 use crate::ipc::server::{ClientId, IpcServer};
 use crate::session::ClientSession;
 use crate::worker;
-use slate_common::messages::{ClientMessage, DaemonMessage};
+use codiv_common::messages::{ClientMessage, DaemonMessage};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -701,7 +701,7 @@ impl Daemon {
 
 The worker module is used internally by the agent's Bash tool for executing shell commands as part of the agent's tool loop. It is NOT triggered by IPC messages from the client. Command results flow back to the client as `AgentStreamChunk` messages (ToolCall/ToolResult variants).
 
-`crates/slated/src/worker.rs`:
+`crates/codivd/src/worker.rs`:
 ```rust
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -776,7 +776,7 @@ pub async fn execute_command(
 **Step 6: Verify it compiles**
 
 ```bash
-cargo build -p slated
+cargo build -p codivd
 ```
 
 Expected: PASS
@@ -784,27 +784,27 @@ Expected: PASS
 **Step 7: Commit**
 
 ```bash
-git add crates/slated/
-git commit -m "Add Rust slated daemon with Tokio event loop, IPC server, and worker execution"
+git add crates/codivd/
+git commit -m "Add Rust codivd daemon with Tokio event loop, IPC server, and worker execution"
 ```
 
 ---
 
-## Task 4: Migrate slate Client to serde+bincode IPC
+## Task 4: Migrate codiv Client to serde+bincode IPC
 
 **Files:**
-- Modify: `crates/slate/Cargo.toml` — remove flatbuffers, add slate-common + bincode + serde
-- Rewrite: `crates/slate/src/ipc/messages.rs` — use slate-common message types
-- Modify: `crates/slate/src/ipc/client.rs` — use bincode deserialization
-- Modify: `crates/slate/src/app.rs` — use slate-common config
-- Delete: `crates/slate/build.rs` (FlatBuffers codegen)
-- Modify: `crates/slate/src/ipc/daemon_launcher.rs` — use slate-common paths
+- Modify: `crates/codiv/Cargo.toml` — remove flatbuffers, add codiv-common + bincode + serde
+- Rewrite: `crates/codiv/src/ipc/messages.rs` — use codiv-common message types
+- Modify: `crates/codiv/src/ipc/client.rs` — use bincode deserialization
+- Modify: `crates/codiv/src/app.rs` — use codiv-common config
+- Delete: `crates/codiv/build.rs` (FlatBuffers codegen)
+- Modify: `crates/codiv/src/ipc/daemon_launcher.rs` — use codiv-common paths
 
-**Step 1: Update slate/Cargo.toml**
+**Step 1: Update codiv/Cargo.toml**
 
 Remove `flatbuffers = "24.12.23"`. Add:
 ```toml
-slate-common = { path = "../slate-common" }
+codiv-common = { path = "../codiv-common" }
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 ```
@@ -814,17 +814,17 @@ bincode = "1"
 The FlatBuffers codegen build script is no longer needed.
 
 ```bash
-rm crates/slate/build.rs
+rm crates/codiv/build.rs
 ```
 
-**Step 3: Rewrite ipc/messages.rs — use slate-common**
+**Step 3: Rewrite ipc/messages.rs — use codiv-common**
 
-Replace the entire file with a thin wrapper that re-exports slate-common types and provides the same API the rest of slate expects:
+Replace the entire file with a thin wrapper that re-exports codiv-common types and provides the same API the rest of codiv expects:
 
-`crates/slate/src/ipc/messages.rs`:
+`crates/codiv/src/ipc/messages.rs`:
 ```rust
-pub use slate_common::config::{FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE};
-pub use slate_common::messages::{
+pub use codiv_common::config::{FRAME_HEADER_SIZE, MAX_MESSAGE_SIZE};
+pub use codiv_common::messages::{
     frame_message, parse_frame_header, ClientMessage, DaemonMessage, SessionContext,
     CommandRecord, StreamChunk,
 };
@@ -882,7 +882,7 @@ pub fn build_shutdown(reason: &str) -> Option<Vec<u8>> {
 
 **Step 4: Update ipc/client.rs — bincode deserialization**
 
-In `crates/slate/src/ipc/client.rs`, the `reader_loop` function currently uses FlatBuffers to parse incoming messages. Replace the parsing logic:
+In `crates/codiv/src/ipc/client.rs`, the `reader_loop` function currently uses FlatBuffers to parse incoming messages. Replace the parsing logic:
 
 Find the FlatBuffers parsing in reader_loop (around line 66-100) and replace with:
 ```rust
@@ -901,25 +901,25 @@ match bincode::deserialize::<DaemonMessage>(&payload_buf) {
 
 The `DaemonMessage` enum has variants for agent streaming (AgentStreamChunk, AgentComplete), confirmations, heartbeats, and errors.
 
-**Step 5: Update daemon_launcher.rs — use slate-common paths**
+**Step 5: Update daemon_launcher.rs — use codiv-common paths**
 
-Replace the hardcoded `socket_path()` and `pid_file_path()` functions with imports from `slate_common::config`:
+Replace the hardcoded `socket_path()` and `pid_file_path()` functions with imports from `codiv_common::config`:
 
 ```rust
-use slate_common::config::{socket_path, pid_file_path};
+use codiv_common::config::{socket_path, pid_file_path};
 ```
 
 Remove the local `socket_path()` and `pid_file_path()` functions.
 
-**Step 6: Update app.rs — use slate-common config**
+**Step 6: Update app.rs — use codiv-common config**
 
-Replace the IPC import to use slate-common paths. The `connect_to_daemon` call uses the socket path from config.
+Replace the IPC import to use codiv-common paths. The `connect_to_daemon` call uses the socket path from config.
 
 **Step 7: Verify it compiles and tests pass**
 
 ```bash
-cargo build -p slate
-cargo test -p slate
+cargo build -p codiv
+cargo test -p codiv
 ```
 
 Expected: PASS (existing tests should still work since the PTY/sentinel logic is untouched)
@@ -927,8 +927,8 @@ Expected: PASS (existing tests should still work since the PTY/sentinel logic is
 **Step 8: Commit**
 
 ```bash
-git add crates/slate/
-git commit -m "Migrate slate client IPC from FlatBuffers to serde+bincode via slate-common"
+git add crates/codiv/
+git commit -m "Migrate codiv client IPC from FlatBuffers to serde+bincode via codiv-common"
 ```
 
 ---
@@ -936,15 +936,15 @@ git commit -m "Migrate slate client IPC from FlatBuffers to serde+bincode via sl
 ## Task 5: Integration Test — Client ↔ Daemon Round-Trip
 
 **Files:**
-- Create: `crates/slated/tests/ipc_roundtrip.rs`
+- Create: `crates/codivd/tests/ipc_roundtrip.rs`
 
 **Step 1: Write the integration test**
 
 This test starts the daemon, connects the IPC client, sends messages, and verifies responses:
 
-`crates/slated/tests/ipc_roundtrip.rs`:
+`crates/codivd/tests/ipc_roundtrip.rs`:
 ```rust
-use slate_common::messages::{ClientMessage, DaemonMessage, frame_message, parse_frame_header};
+use codiv_common::messages::{ClientMessage, DaemonMessage, frame_message, parse_frame_header};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -952,7 +952,7 @@ use tokio::net::UnixStream;
 #[tokio::test]
 async fn test_heartbeat_roundtrip() {
     // Use a unique socket path for this test
-    let socket_path = format!("/tmp/slated-test-{}.sock", std::process::id());
+    let socket_path = format!("/tmp/codivd-test-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
@@ -1003,7 +1003,7 @@ async fn test_heartbeat_roundtrip() {
 **Step 2: Run the test**
 
 ```bash
-cargo test -p slated --test ipc_roundtrip
+cargo test -p codivd --test ipc_roundtrip
 ```
 
 Expected: PASS
@@ -1011,7 +1011,7 @@ Expected: PASS
 **Step 3: Commit**
 
 ```bash
-git add crates/slated/tests/
+git add crates/codivd/tests/
 git commit -m "Add IPC round-trip integration test for heartbeat"
 ```
 
@@ -1020,17 +1020,17 @@ git commit -m "Add IPC round-trip integration test for heartbeat"
 ## Task 6: aisdk.rs Integration — First LLM Call
 
 **Files:**
-- Modify: `crates/slated/Cargo.toml` — add aisdk dependency
-- Create: `crates/slated/src/agent/mod.rs`
-- Create: `crates/slated/src/agent/config.rs`
-- Create: `crates/slated/src/agent/agent.rs`
-- Modify: `crates/slated/src/main.rs` — add agent module
+- Modify: `crates/codivd/Cargo.toml` — add aisdk dependency
+- Create: `crates/codivd/src/agent/mod.rs`
+- Create: `crates/codivd/src/agent/config.rs`
+- Create: `crates/codivd/src/agent/agent.rs`
+- Modify: `crates/codivd/src/main.rs` — add agent module
 
 Note: The `aisdk` crate must be available. Check its actual crate name and registry availability. If it's not on crates.io, it may need to be added as a git dependency from the lazy-hq/aisdk repo.
 
 **Step 1: Add aisdk dependency**
 
-Add to `crates/slated/Cargo.toml`:
+Add to `crates/codivd/Cargo.toml`:
 ```toml
 # Check actual crate name — may be 'aisdk' or need git source
 aisdk = { git = "https://github.com/lazy-hq/aisdk.git", features = ["openai", "anthropic", "google"] }
@@ -1039,16 +1039,16 @@ futures = "0.3"
 
 **Step 2: Write agent config — model catalog loading**
 
-`crates/slated/src/agent/mod.rs`:
+`crates/codivd/src/agent/mod.rs`:
 ```rust
 pub mod agent;
 pub mod config;
 ```
 
-`crates/slated/src/agent/config.rs`:
+`crates/codivd/src/agent/config.rs`:
 ```rust
 use serde::Deserialize;
-use slate_common::types::AgentRole;
+use codiv_common::types::AgentRole;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -1068,7 +1068,7 @@ pub struct ModelAssignment {
 
 impl ModelCatalog {
     pub fn load() -> Self {
-        let config_path = slate_common::config::config_dir().join("models.toml");
+        let config_path = codiv_common::config::config_dir().join("models.toml");
         if let Ok(contents) = std::fs::read_to_string(&config_path) {
             if let Ok(catalog) = toml::from_str(&contents) {
                 return catalog;
@@ -1103,11 +1103,11 @@ impl ModelCatalog {
 
 **Step 3: Write agent.rs — single-agent loop skeleton**
 
-`crates/slated/src/agent/agent.rs`:
+`crates/codivd/src/agent/agent.rs`:
 ```rust
 use crate::agent::config::ModelAssignment;
-use slate_common::messages::{DaemonMessage, StreamChunk};
-use slate_common::types::AgentRole;
+use codiv_common::messages::{DaemonMessage, StreamChunk};
+use codiv_common::types::AgentRole;
 use tracing::info;
 
 pub enum AgentStep {
@@ -1171,12 +1171,12 @@ impl Agent {
 
 **Step 4: Add agent module to main.rs**
 
-Add `mod agent;` to `crates/slated/src/main.rs` module declarations.
+Add `mod agent;` to `crates/codivd/src/main.rs` module declarations.
 
 **Step 5: Verify it compiles**
 
 ```bash
-cargo build -p slated
+cargo build -p codivd
 ```
 
 Expected: PASS (aisdk dependency resolves and compiles)
@@ -1186,7 +1186,7 @@ Note: If the aisdk crate is not available via git, this step will fail. In that 
 **Step 6: Commit**
 
 ```bash
-git add crates/slated/src/agent/
+git add crates/codivd/src/agent/
 git commit -m "Add agent module with model catalog config and single-agent loop skeleton"
 ```
 
@@ -1195,9 +1195,9 @@ git commit -m "Add agent module with model catalog config and single-agent loop 
 ## Task 7: Wire Agent to Daemon — AgentRequest → AgentComplete Flow
 
 **Files:**
-- Modify: `crates/slated/src/daemon.rs` — handle AgentRequest, spawn agent task
-- Modify: `crates/slate/src/ui/terminal.rs` — send AgentRequest on AI input, render AgentStreamChunk
-- Modify: `crates/slate/src/shell/command_index.rs` — ensure AiQuery classification triggers AgentRequest
+- Modify: `crates/codivd/src/daemon.rs` — handle AgentRequest, spawn agent task
+- Modify: `crates/codiv/src/ui/terminal.rs` — send AgentRequest on AI input, render AgentStreamChunk
+- Modify: `crates/codiv/src/shell/command_index.rs` — ensure AiQuery classification triggers AgentRequest
 
 **Step 1: Handle AgentRequest in daemon.rs**
 
@@ -1206,7 +1206,7 @@ In `daemon.rs`, replace the `ClientMessage::AgentRequest { .. }` placeholder:
 ```rust
 ClientMessage::AgentRequest { prompt, request_id, context } => {
     let model_catalog = agent::config::ModelCatalog::load();
-    let assignment = model_catalog.assignment_for(&slate_common::types::AgentRole::Engineer);
+    let assignment = model_catalog.assignment_for(&codiv_common::types::AgentRole::Engineer);
 
     let ipc = /* clone sender for client_id */;
     let rid = request_id.clone();
@@ -1215,7 +1215,7 @@ ClientMessage::AgentRequest { prompt, request_id, context } => {
     // history, and environment variables from the client session.
     tokio::spawn(async move {
         let mut agent = agent::agent::Agent::new(
-            slate_common::types::AgentRole::Engineer,
+            codiv_common::types::AgentRole::Engineer,
             assignment,
             "You are a helpful coding assistant. Answer concisely.".to_string(),
         );
@@ -1250,9 +1250,9 @@ ClientMessage::AgentRequest { prompt, request_id, context } => {
 }
 ```
 
-**Step 2: Update slate client to send AgentRequest**
+**Step 2: Update codiv client to send AgentRequest**
 
-In `crates/slate/src/ui/terminal.rs`, find the `InputAction::AiQuery` handler (the `"?"` prefix classification) and send an AgentRequest over IPC instead of displaying a placeholder:
+In `crates/codiv/src/ui/terminal.rs`, find the `InputAction::AiQuery` handler (the `"?"` prefix classification) and send an AgentRequest over IPC instead of displaying a placeholder:
 
 ```rust
 InputAction::AiQuery => {
@@ -1307,7 +1307,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add crates/slated/src/daemon.rs crates/slate/src/ui/terminal.rs crates/slate/src/shell/command_index.rs
+git add crates/codivd/src/daemon.rs crates/codiv/src/ui/terminal.rs crates/codiv/src/shell/command_index.rs
 git commit -m "Wire AgentRequest flow from client through daemon to agent and back"
 ```
 
@@ -1316,17 +1316,17 @@ git commit -m "Wire AgentRequest flow from client through daemon to agent and ba
 ## Task 8: Delete C++ Daemon and FlatBuffers Schema
 
 **Files:**
-- Delete: `slated/` (entire C++ daemon directory)
+- Delete: `codivd/` (entire C++ daemon directory)
 - Delete: `schemas/ipc.fbs`
-- Modify: `Makefile` — remove slated build targets if any
+- Modify: `Makefile` — remove codivd build targets if any
 
 **Step 1: Remove C++ daemon source**
 
 ```bash
-git rm -r slated/src/ slated/CMakeLists.txt
+git rm -r codivd/src/ codivd/CMakeLists.txt
 ```
 
-Keep `slated/build/` in .gitignore if not already tracked.
+Keep `codivd/build/` in .gitignore if not already tracked.
 
 **Step 2: Remove FlatBuffers schema**
 
@@ -1352,7 +1352,7 @@ Expected: PASS
 
 ```bash
 git add -A
-git commit -m "Remove C++ slated daemon and FlatBuffers schema — fully replaced by Rust"
+git commit -m "Remove C++ codivd daemon and FlatBuffers schema — fully replaced by Rust"
 ```
 
 ---
@@ -1371,16 +1371,16 @@ cargo build --workspace --release
 **Step 2: Start the daemon in foreground**
 
 ```bash
-./target/release/slated --foreground
+./target/release/codivd --foreground
 ```
 
-Verify: PID file created at `~/.slate-agent/slated.pid`, log output to `~/.slate-agent/slated.log`.
+Verify: PID file created at `~/.codiv/codivd.pid`, log output to `~/.codiv/codivd.log`.
 
 **Step 3: Start the client**
 
 In another terminal:
 ```bash
-./target/release/slate
+./target/release/codiv
 ```
 
 Verify:
@@ -1391,7 +1391,7 @@ Verify:
 
 **Step 4: Test AI query (if aisdk.rs is wired)**
 
-In the slate client:
+In the codiv client:
 ```
 ? what is 2+2
 ```
@@ -1401,7 +1401,7 @@ Verify: Agent placeholder response appears.
 **Step 5: Kill daemon, verify client handles disconnect**
 
 ```bash
-kill $(cat ~/.slate-agent/slated.pid)
+kill $(cat ~/.codiv/codivd.pid)
 ```
 
 Verify: Client continues working (shell commands still execute via local PTY). Daemon disconnect logged.
@@ -1420,11 +1420,11 @@ git commit -m "Fix issues found during end-to-end smoke testing"
 | Task | Description | Key Deliverable |
 |------|-------------|-----------------|
 | 1 | Cargo workspace setup | 3-crate workspace builds |
-| 2 | Shared IPC types | `slate-common` with serde messages |
+| 2 | Shared IPC types | `codiv-common` with serde messages |
 | 3 | Rust daemon skeleton | Tokio event loop, IPC server, worker execution |
 | 4 | Client IPC migration | FlatBuffers → serde+bincode |
 | 5 | Integration test | Heartbeat round-trip test |
 | 6 | aisdk.rs integration | Agent module, model catalog |
 | 7 | Agent request flow | End-to-end AgentRequest → AgentComplete |
-| 8 | Delete C++ daemon | Remove slated/ C++ and FlatBuffers |
+| 8 | Delete C++ daemon | Remove codivd/ C++ and FlatBuffers |
 | 9 | End-to-end smoke test | Manual verification of full system |

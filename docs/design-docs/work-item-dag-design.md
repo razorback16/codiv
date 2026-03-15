@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-This document specifies the architecture of Slate Agent's Work Item system — the data model, DAG construction, state machine, Tokio task integration, artifact storage, budget enforcement, and concurrency model. Work Items are the unit of agent work: each represents a discrete goal with acceptance criteria, inputs, outputs, and budget constraints. Work Items form a directed acyclic graph (DAG) expressing execution dependencies, and the Tokio runtime executes them concurrently where the graph permits.
+This document specifies the architecture of Codiv Agent's Work Item system — the data model, DAG construction, state machine, Tokio task integration, artifact storage, budget enforcement, and concurrency model. Work Items are the unit of agent work: each represents a discrete goal with acceptance criteria, inputs, outputs, and budget constraints. Work Items form a directed acyclic graph (DAG) expressing execution dependencies, and the Tokio runtime executes them concurrently where the graph permits.
 
 The PRD (FR-005, Phase 3) defines Work Items at a requirements level. This design provides the concrete implementation.
 
@@ -114,7 +114,7 @@ enum RiskLevel {
 
 ### Storage
 
-Work Items are stored in-memory during a session and persisted to disk as JSON at `~/.slate-agent/state/<session_id>/work_items.json`. Persistence enables session recovery if the daemon restarts.
+Work Items are stored in-memory during a session and persisted to disk as JSON at `~/.codiv/state/<session_id>/work_items.json`. Persistence enables session recovery if the daemon restarts.
 
 ## 4. State Machine
 
@@ -266,7 +266,7 @@ Dynamic modifications are applied atomically — the scheduler pauses briefly wh
 
 ### 5.4 DAG Visualization
 
-The DAG tree is rendered in slate's task header block, updated live as Work Items change state:
+The DAG tree is rendered in codiv's task header block, updated live as Work Items change state:
 
 ```
 Task: Refactor auth module to use JWT
@@ -314,7 +314,7 @@ futures::future::join_all(handles).await;
 When a Tokio task runs, `execute_work_item()`:
 
 1. Transitions the Work Item to `Running`
-2. Spawns a worker bash process in slated (initialized from env snapshot)
+2. Spawns a worker bash process in codivd (initialized from env snapshot)
 3. Creates an AgentSession with the Work Item's assigned model and role-specific system prompt
 4. Runs the agent tool calling loop (see agent-system-design.md, Section 3.2)
 5. On completion: stores artifacts, transitions to `Completed` or `Failed`
@@ -356,7 +356,7 @@ Dynamic modification is handled by updating the DAG state and spawning new tasks
 ### 7.1 Storage Layout
 
 ```
-~/.slate-agent/state/<session_id>/
+~/.codiv/state/<session_id>/
 ├── work_items.json                    # All Work Items for this session
 └── artifacts/
     └── <work_item_id>/
@@ -414,7 +414,7 @@ Artifacts are referenced by ID in Work Item outputs and in Shared Project State.
 Session artifacts are deleted after a configurable retention period:
 
 ```toml
-# ~/.slate-agent/config.toml
+# ~/.codiv/config.toml
 [state]
 retention_days = 7          # Delete session state older than this
 max_state_size_mb = 500     # If total state exceeds this, delete oldest sessions first
@@ -458,7 +458,7 @@ When a Work Item fails due to budget:
 2. The TeamLead can:
    a. **Split**: Decompose the remaining work into smaller Work Items with their own budgets
    b. **Downgrade**: Re-assign with a cheaper model (lower cost-per-token)
-   c. **Increase budget**: Request user approval for a budget increase (confirmation prompt in slate)
+   c. **Increase budget**: Request user approval for a budget increase (confirmation prompt in codiv)
    d. **Fail**: Accept the failure and report to the user
 
 ### 8.4 Session-Level Budget
@@ -466,7 +466,7 @@ When a Work Item fails due to budget:
 An optional session-level budget caps total spending across all Work Items:
 
 ```toml
-# ~/.slate-agent/config.toml
+# ~/.codiv/config.toml
 [budget]
 session_token_limit = 1000000       # Max tokens per session
 session_cost_limit_cents = 500      # Max cost per session ($5.00)
@@ -483,7 +483,7 @@ Each running Work Item is fully isolated:
 | Resource | Isolation |
 |----------|-----------|
 | LLM session | Own `AgentSession` with own conversation history and system prompt |
-| Bash process | Own worker bash process, spawned by slated from env snapshot |
+| Bash process | Own worker bash process, spawned by codivd from env snapshot |
 | Artifact directory | Own directory at `artifacts/<work_item_id>/` |
 | File write ownership | Single-writer — daemon tracks which Work Item owns writes to which files |
 | Environment | Initialized from env snapshot at spawn time; changes do not propagate to other Work Items |
@@ -499,7 +499,7 @@ Concurrent Work Items share no mutable state:
 ### 9.3 Concurrency Limits
 
 ```toml
-# ~/.slate-agent/config.toml
+# ~/.codiv/config.toml
 [scheduler]
 max_concurrent_work_items = 4       # Matches default Tokio concurrent task limit
 ```

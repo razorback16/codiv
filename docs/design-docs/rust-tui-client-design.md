@@ -8,23 +8,23 @@
 
 ## 1. Overview
 
-Replace the FTXUI-based C++ terminal client (`slate`) with a Rust binary built on **ratatui + crossterm**. The daemon (`slated`) has been rewritten to Rust (see [Rust Daemon Design](../plans/2026-02-26-rust-daemon-aisdk-design.md)). The two processes communicate over a Unix domain socket using serde+bincode IPC.
+Replace the FTXUI-based C++ terminal client (`codiv`) with a Rust binary built on **ratatui + crossterm**. The daemon (`codivd`) has been rewritten to Rust (see [Rust Daemon Design](../plans/2026-02-26-rust-daemon-aisdk-design.md)). The two processes communicate over a Unix domain socket using serde+bincode IPC.
 
 ```
-slate (Rust binary)
+codiv (Rust binary)
   - ratatui + crossterm terminal UI
   - PTY management for shell passthrough
   - Markdown/syntax highlighting renderer
   - Multi-agent inline block rendering
   - serde+bincode IPC client
           ↕ Unix socket + serde+bincode
-slated (Rust daemon)
+codivd (Rust daemon)
   - Agent orchestration, memory, scheduler
   - Worker bash sessions, tool execution
   - LLM access (aisdk.rs)
 ```
 
-Both client and daemon are Rust, sharing types via the `slate-common` crate. IPC uses serde+bincode over Unix socket.
+Both client and daemon are Rust, sharing types via the `codiv-common` crate. IPC uses serde+bincode over Unix socket.
 
 ---
 
@@ -55,12 +55,12 @@ The key design decision: **no multi-pane split layout**. Everything flows linear
 ### Flow
 
 ```
-slate> ls -la                          ← user types, output below (normal terminal)
+codiv> ls -la                          ← user types, output below (normal terminal)
 total 48
 drwxr-xr-x  12 user staff  384 Feb 23 .
 -rw-r--r--   1 user staff 1200 Feb 23 auth.ts
 
-slate> refactor auth module to use JWT  ← natural language triggers agent
+codiv> refactor auth module to use JWT  ← natural language triggers agent
 
 ── Task: refactor auth module to use JWT ──────────────
 │
@@ -88,7 +88,7 @@ slate> refactor auth module to use JWT  ← natural language triggers agent
 │ ⚠ Missing error handling on token expiry (line 42)   │
 └──────────────────────────────────────────────────────┘
 
-slate> _                                ← back to prompt when done
+codiv> _                                ← back to prompt when done
 ```
 
 ### Key Behaviors
@@ -159,7 +159,7 @@ For interactive commands: ratatui suspends, terminal goes raw, child process own
 
 ## 5. IPC Protocol
 
-Unix domain socket with 4-byte length prefix + bincode payload. Both client and daemon use the `slate-common` crate for shared IPC types (serde + bincode serialization).
+Unix domain socket with 4-byte length prefix + bincode payload. Both client and daemon use the `codiv-common` crate for shared IPC types (serde + bincode serialization).
 
 ---
 
@@ -171,7 +171,7 @@ Unix domain socket with 4-byte length prefix + bincode payload. Both client and 
 | `crossterm` | Cross-platform terminal manipulation |
 | `syntect` | Syntax highlighting for code blocks |
 | `comrak` | CommonMark markdown parsing |
-| `slate-common` | Shared IPC types (serde + bincode) |
+| `codiv-common` | Shared IPC types (serde + bincode) |
 | `serde` | Serialization framework |
 | `bincode` | Binary serialization format |
 | `tokio` | Async runtime for IPC + PTY I/O |
@@ -187,14 +187,14 @@ Unix domain socket with 4-byte length prefix + bincode payload. Both client and 
 | Component | Before | After |
 |-----------|--------|-------|
 | Terminal UI framework | FTXUI | ratatui + crossterm |
-| Language for `slate` binary | C++ | Rust |
+| Language for `codiv` binary | C++ | Rust |
 | Markdown rendering | cmark-gfm + tree-sitter | comrak + syntect |
-| Build system (slate only) | CMake | Cargo |
+| Build system (codiv only) | CMake | Cargo |
 
 ### Unchanged
 
-- `slated` daemon — rewritten to Rust (see daemon design doc).
-- serde+bincode IPC protocol — shared via `slate-common` crate.
+- `codivd` daemon — rewritten to Rust (see daemon design doc).
+- serde+bincode IPC protocol — shared via `codiv-common` crate.
 - Unix domain socket transport.
 - Persistent bash co-process model.
 - Command fast-pass logic.

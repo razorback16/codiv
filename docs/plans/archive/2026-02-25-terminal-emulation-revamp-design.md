@@ -127,10 +127,10 @@ impl Drop for BashCoprocess {
 
 | File | Change | Lines |
 |------|--------|-------|
-| `slate/Cargo.toml` | Add `portable-pty = "0.9"` | ~1 |
-| `slate/src/shell/bash_coprocess.rs` | Rewrite spawn, read, write, resize, drain, drop | ~250 |
-| `slate/src/shell/interactive.rs` | Rewrite `spawn_and_enter()`, adapt fd access | ~80 |
-| `slate/src/ui/terminal.rs` | Adapt `master_raw_fd()` usage if API changes | ~5 |
+| `codiv/Cargo.toml` | Add `portable-pty = "0.9"` | ~1 |
+| `codiv/src/shell/bash_coprocess.rs` | Rewrite spawn, read, write, resize, drain, drop | ~250 |
+| `codiv/src/shell/interactive.rs` | Rewrite `spawn_and_enter()`, adapt fd access | ~80 |
+| `codiv/src/ui/terminal.rs` | Adapt `master_raw_fd()` usage if API changes | ~5 |
 
 ## Risk Mitigation
 

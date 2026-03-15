@@ -1,8 +1,8 @@
-# Hierarchical Memory: How Slate Agent Remembers
+# Hierarchical Memory: How Codiv Agent Remembers
 
 ## The analogy: human memory, not file storage
 
-Most AI agents treat memory as a flat key-value store or an append-only log. Slate Agent models memory on how human cognition actually works — information flows through temporal stages, gets consolidated from raw experience into lasting knowledge, and is recalled associatively by context rather than by filename.
+Most AI agents treat memory as a flat key-value store or an append-only log. Codiv Agent models memory on how human cognition actually works — information flows through temporal stages, gets consolidated from raw experience into lasting knowledge, and is recalled associatively by context rather than by filename.
 
 This gives the agent three capabilities no flat memory system provides:
 
@@ -47,9 +47,9 @@ Episodes are raw material. Semantic knowledge is the refined product. The Narrat
 
 | Scope | What it captures | Storage |
 |-------|-----------------|---------|
-| **User** | Cross-project preferences, tool habits, communication style | `~/.slate-agent/memory/user.md` |
-| **Project** | Per-repo conventions, architecture decisions, known gotchas | `~/.slate-agent/memory/projects/<fingerprint>/project.md` |
-| **Topic** | Clusters within a project — "auth module," "build system," "API layer" | `~/.slate-agent/memory/projects/<fingerprint>/topics/<name>.md` |
+| **User** | Cross-project preferences, tool habits, communication style | `~/.codiv/memory/user.md` |
+| **Project** | Per-repo conventions, architecture decisions, known gotchas | `~/.codiv/memory/projects/<fingerprint>/project.md` |
+| **Topic** | Clusters within a project — "auth module," "build system," "API layer" | `~/.codiv/memory/projects/<fingerprint>/topics/<name>.md` |
 
 Topics are the associative layer. They aren't directories or file paths — they're semantic clusters that the Narrator creates, merges, splits, and retires as the project evolves. Thinking about "auth" might pull knowledge from topics spanning multiple directories and sessions.
 
@@ -78,7 +78,7 @@ The Narrator is triggered after every completed Work Item. It follows a structur
 5. **Merge/Split** — periodically check if topics should be merged (high overlap) or split (too large)
 6. **Prune** — mark episodic entries as consolidated; they become candidates for age-based cleanup
 
-The Narrator is not a single instance — multiple Narrators can run concurrently for different scopes or topics, as long as each markdown file has a single writer at a time (consistent with the single-writer ownership pattern used throughout Slate Agent).
+The Narrator is not a single instance — multiple Narrators can run concurrently for different scopes or topics, as long as each markdown file has a single writer at a time (consistent with the single-writer ownership pattern used throughout Codiv Agent).
 
 ---
 

@@ -1,4 +1,4 @@
-# Slate Agent — One-Pager
+# Codiv Agent — One-Pager
 
 **Date**: 2026-02-26 | **Author**: Subhagato | **Status**: Draft
 
@@ -16,7 +16,7 @@ Terminal-centric developers — senior backend engineers, full-stack developers,
 
 ### Core Solution
 
-A terminal that **is** your shell. Slate Agent replaces your terminal emulator with one that:
+A terminal that **is** your shell. Codiv Agent replaces your terminal emulator with one that:
 
 - **Runs commands instantly** — recognized shell commands execute with near-zero overhead, no different from a regular terminal.
 - **Handles AI tasks natively** — natural-language requests are automatically decomposed into a dependency graph of work items, assigned to specialized agent roles (planning, coding, review, research), and executed in parallel.
@@ -24,7 +24,7 @@ A terminal that **is** your shell. Slate Agent replaces your terminal emulator w
 
 ### Why Now / Differentiation
 
-| Capability | Claude Code / Codex CLI | Aider / Cursor | Slate Agent |
+| Capability | Claude Code / Codex CLI | Aider / Cursor | Codiv Agent |
 |---|---|---|---|
 | Instant command execution (no AI overhead) | No | No | Yes |
 | Multi-agent task decomposition | No | No | Yes |

@@ -6,28 +6,28 @@
 
 ## 1. Overview
 
-Rewrite the `slated` daemon from C++ to Rust and integrate `aisdk.rs` as the LLM primitive. The C++ daemon (~400 lines) has no AI logic yet — this is a clean rewrite, not a port. The Rust client (`slate`) remains unchanged except for switching IPC serialization from FlatBuffers to serde+bincode.
+Rewrite the `codivd` daemon from C++ to Rust and integrate `aisdk.rs` as the LLM primitive. The C++ daemon (~400 lines) has no AI logic yet — this is a clean rewrite, not a port. The Rust client (`codiv`) remains unchanged except for switching IPC serialization from FlatBuffers to serde+bincode.
 
 ### Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Architecture | Two-process (slate + slated) | Daemon outlives terminal sessions, serves multiple clients, runs background AI |
+| Architecture | Two-process (codiv + codivd) | Daemon outlives terminal sessions, serves multiple clients, runs background AI |
 | IPC format | serde + bincode | Both sides are Rust — no need for cross-language FlatBuffers. Zero schema compiler. |
 | Agent layer | Custom orchestration on aisdk.rs primitives | Full control over DAG, budget, role system. aisdk.rs for LLM calls only. |
 | Tool system | aisdk.rs `Tool` type, "everything is a CLI tool" | Binary tools, prompt tools, builtins — all present the same interface. |
 | Migration | Clean rewrite | C++ code is small, no AI logic. Idiomatic Rust from scratch. |
-| Workspace | Cargo monorepo | `slate/`, `slated/`, `slate-common/` crates. Shared IPC types compile-checked. |
+| Workspace | Cargo monorepo | `codiv/`, `codivd/`, `codiv-common/` crates. Shared IPC types compile-checked. |
 
 ---
 
 ## 2. Project Structure
 
 ```
-slate-agent/
+codiv/
 ├── Cargo.toml                  # workspace root
 ├── crates/
-│   ├── slate/                  # TUI client binary (existing, mostly unchanged)
+│   ├── codiv/                  # TUI client binary (existing, mostly unchanged)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs
@@ -36,7 +36,7 @@ slate-agent/
 │   │       ├── ui/             # terminal.rs, rendering
 │   │       └── ipc/            # client-side IPC (serde+bincode)
 │   │
-│   ├── slated/                 # daemon binary (NEW — replaces C++ slated)
+│   ├── codivd/                 # daemon binary (NEW — replaces C++ codivd)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs         # daemon startup, PID file, signal handling
@@ -47,7 +47,7 @@ slate-agent/
 │   │       ├── tools/          # tool registry, builtins, CLI tool discovery
 │   │       └── memory/         # project memory, context management (future)
 │   │
-│   └── slate-common/           # shared library crate
+│   └── codiv-common/           # shared library crate
 │       ├── Cargo.toml
 │       └── src/
 │           ├── lib.rs
@@ -62,12 +62,12 @@ slate-agent/
 
 ### Transport
 
-Same as before: Unix domain socket at `/tmp/slated-{uid}.sock`, 4-byte big-endian length prefix framing. Payload changes from FlatBuffers to bincode.
+Same as before: Unix domain socket at `/tmp/codivd-{uid}.sock`, 4-byte big-endian length prefix framing. Payload changes from FlatBuffers to bincode.
 
 ### Message Types
 
 ```rust
-// slate-common/src/messages.rs
+// codiv-common/src/messages.rs
 
 #[derive(Serialize, Deserialize)]
 pub struct CommandRecord {
@@ -162,7 +162,7 @@ User prompt → Orchestrator → TeamLead agent (aisdk.rs call)
                         ↓
                    Tool execution
                         ↓
-                   Stream results → IPC → slate client
+                   Stream results → IPC → codiv client
 ```
 
 ### Agent Struct
@@ -226,7 +226,7 @@ impl Agent {
 Models configured per-role in TOML, using aisdk.rs `DynamicModel` for runtime selection:
 
 ```toml
-# ~/.slate-agent/models.toml
+# ~/.codiv/models.toml
 default_provider = "anthropic"
 
 [roles.team_lead]
@@ -294,7 +294,7 @@ The shell is the protocol. CLI tools already have a universal interface: stdin, 
 
 | Type | Implementation | Discovery |
 |------|---------------|-----------|
-| **Binary tool** | Executable in `bin/` | `SLATE_TOOLS_PATH` + PATH |
+| **Binary tool** | Executable in `bin/` | `CODIV_TOOLS_PATH` + PATH |
 | **Prompt tool** | No binary — daemon is runtime | `tool.toml` + `guide.md` |
 | **Builtin** | Compiled into daemon | Always available |
 
@@ -303,8 +303,8 @@ The shell is the protocol. CLI tools already have a universal interface: stdin, 
 | Tier                      | When Loaded                      | Tools                                                                                         |
 | ------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
 | **Tier 0** (always)       | Every LLM call                   | Read, Edit, Write, Bash, Glob, Grep, AskUser, Todo, WebFetch, WebSearch, ToolSearch, ToolLoad |
-| **Tier 1** (project)      | Auto-loaded from `.slate/tools/` | Project-specific tools                                                                        |
-| **Tier 2** (on-demand)    | After `ToolSearch` + `ToolLoad`  | Global tools from `~/.slate-agent/tools/`                                                     |
+| **Tier 1** (project)      | Auto-loaded from `.codiv/tools/` | Project-specific tools                                                                        |
+| **Tier 2** (on-demand)    | After `ToolSearch` + `ToolLoad`  | Global tools from `~/.codiv/tools/`                                                     |
 | **Tier 3** (deep context) | When agent calls `--agent-guide` | Reference docs, detailed guides                                                               |
 
 ### Tier 0 Built-in Tools
@@ -327,9 +327,9 @@ The shell is the protocol. CLI tools already have a universal interface: stdin, 
 
 ### Tool Categories
 
-**Daemon-local** (execute entirely in slated): Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch, ToolSearch, ToolLoad
+**Daemon-local** (execute entirely in codivd): Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch, ToolSearch, ToolLoad
 
-**Client-interactive** (require IPC round-trip to slate): AskUser, Confirm, Todo updates
+**Client-interactive** (require IPC round-trip to codiv): AskUser, Confirm, Todo updates
 
 ### Tool Registry
 
@@ -452,11 +452,11 @@ pub async fn execute_command(
 
 ## 7. Key Dependencies
 
-### slated (daemon)
+### codivd (daemon)
 
 ```toml
 [dependencies]
-slate-common = { path = "../slate-common" }
+codiv-common = { path = "../codiv-common" }
 aisdk = { features = ["openai", "anthropic", "google"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -469,7 +469,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 ```
 
-### slate-common (shared)
+### codiv-common (shared)
 
 ```toml
 [dependencies]
@@ -477,9 +477,9 @@ serde = { version = "1", features = ["derive"] }
 bincode = "1"
 ```
 
-### slate (client — updated deps)
+### codiv (client — updated deps)
 
-Remove `flatbuffers`. Add `slate-common`, `bincode`, `serde`.
+Remove `flatbuffers`. Add `codiv-common`, `bincode`, `serde`.
 
 ---
 
@@ -487,8 +487,8 @@ Remove `flatbuffers`. Add `slate-common`, `bincode`, `serde`.
 
 | Phase | Name | Status | What Changes |
 |-------|------|--------|-------------|
-| **1** | Terminal Foundation | COMPLETE | No change — slate client stays as-is |
-| **2** | Rust Daemon + Single-Agent AI Loop | NEXT | Rewrite slated in Rust, aisdk.rs, single-agent tool loop |
+| **1** | Terminal Foundation | COMPLETE | No change — codiv client stays as-is |
+| **2** | Rust Daemon + Single-Agent AI Loop | NEXT | Rewrite codivd in Rust, aisdk.rs, single-agent tool loop |
 | **3** | Work Item DAG + Scheduler | Planned | Tokio tasks, DAG execution engine |
 | **4** | Multi-Agent Roles + Multi-Model | Planned | Orchestrator, TeamLead, Delegate, per-role model config |
 | **5** | Memory + Project Context | Planned | SQLite via rusqlite |
@@ -498,11 +498,11 @@ Remove `flatbuffers`. Add `slate-common`, `bincode`, `serde`.
 ### Phase 2 Deliverables
 
 1. Cargo workspace setup (root Cargo.toml, 3 crates)
-2. `slate-common` crate (IPC messages, config, paths)
-3. `slated` Rust daemon (Tokio event loop, Unix socket, sessions, workers)
-4. IPC migration in slate client (FlatBuffers → serde+bincode)
+2. `codiv-common` crate (IPC messages, config, paths)
+3. `codivd` Rust daemon (Tokio event loop, Unix socket, sessions, workers)
+4. IPC migration in codiv client (FlatBuffers → serde+bincode)
 5. aisdk.rs integration (provider config, first LLM call)
 6. Single-agent loop (Agent struct, Tier 0 builtins)
 7. Streaming to client (AgentStreamChunk IPC messages)
 8. Basic safety gate (risk classification, user confirmation)
-9. Delete C++ slated source
+9. Delete C++ codivd source

@@ -12,9 +12,9 @@ test:
 	cargo test --workspace
 
 debug:
-	-pkill -f slated
-	RUST_LOG=slated=debug cargo run -p slated
-	cargo run -p slate -- --debug
+	@pkill -f codivd 2>/dev/null || true
+	RUST_LOG=codivd=debug cargo run -p codivd
+	cargo run -p codiv -- --debug
 
 release:
 	cargo build --workspace --release

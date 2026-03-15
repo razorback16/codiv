@@ -13,11 +13,11 @@
 ### Task 1: Add portable-pty dependency
 
 **Files:**
-- Modify: `slate/Cargo.toml`
+- Modify: `codiv/Cargo.toml`
 
 **Step 1: Add dependency**
 
-In `slate/Cargo.toml`, add `portable-pty` to `[dependencies]`:
+In `codiv/Cargo.toml`, add `portable-pty` to `[dependencies]`:
 
 ```toml
 portable-pty = "0.9"
@@ -25,13 +25,13 @@ portable-pty = "0.9"
 
 **Step 2: Verify it compiles**
 
-Run: `cd slate && cargo check`
+Run: `cd codiv && cargo check`
 Expected: Compiles with no errors
 
 **Step 3: Commit**
 
 ```bash
-git add slate/Cargo.toml
+git add codiv/Cargo.toml
 git commit -m "Add portable-pty dependency for cross-platform PTY support"
 ```
 
@@ -40,7 +40,7 @@ git commit -m "Add portable-pty dependency for cross-platform PTY support"
 ### Task 2: Rewrite BashCoprocess struct and spawn()
 
 **Files:**
-- Modify: `slate/src/shell/bash_coprocess.rs:1-103` (imports, struct, spawn method)
+- Modify: `codiv/src/shell/bash_coprocess.rs:1-103` (imports, struct, spawn method)
 
 **Step 1: Update imports**
 
@@ -148,7 +148,7 @@ impl BashCoprocess {
 
 **Step 4: Verify it compiles (with errors expected for removed methods)**
 
-Run: `cd slate && cargo check 2>&1 | head -30`
+Run: `cd codiv && cargo check 2>&1 | head -30`
 Expected: Compilation errors for methods not yet updated (send_signal, send_interrupt, etc.) — this is expected. The struct and spawn should compile.
 
 ---
@@ -156,7 +156,7 @@ Expected: Compilation errors for methods not yet updated (send_signal, send_inte
 ### Task 3: Rewrite I/O methods (write, read, resize, signal)
 
 **Files:**
-- Modify: `slate/src/shell/bash_coprocess.rs` (methods from send_signal through drain_for)
+- Modify: `codiv/src/shell/bash_coprocess.rs` (methods from send_signal through drain_for)
 
 **Step 1: Rewrite send_signal, send_interrupt, send_bytes**
 
@@ -247,7 +247,7 @@ Note: `MasterPty::as_raw_fd()` returns `Option<RawFd>`. Update call site in `ter
 ### Task 4: Rewrite read_until_sentinel and drain_initial_output
 
 **Files:**
-- Modify: `slate/src/shell/bash_coprocess.rs` (read_until_sentinel, drain_initial_output)
+- Modify: `codiv/src/shell/bash_coprocess.rs` (read_until_sentinel, drain_initial_output)
 
 **Step 1: Rewrite read_until_sentinel()**
 
@@ -300,7 +300,7 @@ Note: `MasterPty::as_raw_fd()` returns `Option<RawFd>`. Update call site in `ter
 
 **Step 3: Verify compilation**
 
-Run: `cd slate && cargo check`
+Run: `cd codiv && cargo check`
 Expected: May still have errors in execute() and other methods that use `&self` but now need `&mut self` for write. Fix in next task.
 
 ---
@@ -308,9 +308,9 @@ Expected: May still have errors in execute() and other methods that use `&self` 
 ### Task 5: Fix mutability — execute() and start_command() need &mut self
 
 **Files:**
-- Modify: `slate/src/shell/bash_coprocess.rs` (execute, execute_default, start_command, capture_cwd, capture_env)
-- Modify: `slate/src/ui/terminal.rs` (call sites)
-- Modify: `slate/src/app.rs` (call sites)
+- Modify: `codiv/src/shell/bash_coprocess.rs` (execute, execute_default, start_command, capture_cwd, capture_env)
+- Modify: `codiv/src/ui/terminal.rs` (call sites)
+- Modify: `codiv/src/app.rs` (call sites)
 
 **Step 1: Update method signatures in bash_coprocess.rs**
 
@@ -346,7 +346,7 @@ let mut bash = BashCoprocess::spawn(500, rows)?;
 And in `connect_to_daemon`, change parameter to `&mut BashCoprocess`:
 
 ```rust
-fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<SlatedClient> {
+fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<CodivdClient> {
 ```
 
 **Step 3: Update terminal.rs**
@@ -363,7 +363,7 @@ All call sites within terminal.rs already use `bash.xxx()` which will work with 
 
 **Step 4: Verify compilation**
 
-Run: `cd slate && cargo check`
+Run: `cd codiv && cargo check`
 Expected: Should compile. May need to fix a few more borrow issues if `bash` is borrowed immutably somewhere while a mutable borrow is active.
 
 ---
@@ -371,7 +371,7 @@ Expected: Should compile. May need to fix a few more borrow issues if `bash` is 
 ### Task 6: Rewrite Drop impl
 
 **Files:**
-- Modify: `slate/src/shell/bash_coprocess.rs` (Drop impl)
+- Modify: `codiv/src/shell/bash_coprocess.rs` (Drop impl)
 
 **Step 1: Replace the Drop implementation**
 
@@ -388,13 +388,13 @@ This replaces the manual SIGTERM → sleep → SIGKILL → waitpid dance. portab
 
 **Step 2: Verify compilation**
 
-Run: `cd slate && cargo check`
+Run: `cd codiv && cargo check`
 Expected: Compiles with no errors
 
 **Step 3: Commit all BashCoprocess changes**
 
 ```bash
-git add slate/src/shell/bash_coprocess.rs slate/src/app.rs slate/src/ui/terminal.rs
+git add codiv/src/shell/bash_coprocess.rs codiv/src/app.rs codiv/src/ui/terminal.rs
 git commit -m "Rewrite BashCoprocess to use portable-pty with reader thread"
 ```
 
@@ -403,7 +403,7 @@ git commit -m "Rewrite BashCoprocess to use portable-pty with reader thread"
 ### Task 7: Rewrite InteractiveSession::spawn_and_enter()
 
 **Files:**
-- Modify: `slate/src/shell/interactive.rs:1-112` (imports, spawn_and_enter)
+- Modify: `codiv/src/shell/interactive.rs:1-112` (imports, spawn_and_enter)
 
 **Step 1: Update imports**
 
@@ -476,13 +476,13 @@ The `get_terminal_winsize()` function used `libc::ioctl(TIOCGWINSZ)` — we now 
 
 **Step 4: Verify compilation**
 
-Run: `cd slate && cargo check`
+Run: `cd codiv && cargo check`
 Expected: Compiles with no errors
 
 **Step 5: Commit**
 
 ```bash
-git add slate/src/shell/interactive.rs
+git add codiv/src/shell/interactive.rs
 git commit -m "Rewrite InteractiveSession::spawn_and_enter() to use portable-pty"
 ```
 
@@ -491,7 +491,7 @@ git commit -m "Rewrite InteractiveSession::spawn_and_enter() to use portable-pty
 ### Task 8: Update terminal.rs for master_raw_fd() Option return
 
 **Files:**
-- Modify: `slate/src/ui/terminal.rs:246-247`
+- Modify: `codiv/src/ui/terminal.rs:246-247`
 
 **Step 1: Handle Option<RawFd>**
 
@@ -528,19 +528,19 @@ let accumulated = interactive_session.enter_with_sentinel(
 
 Search for `send_signal` in terminal.rs. If found, replace with `send_interrupt()` (which writes `\x03` to PTY — the correct way to interrupt via terminal).
 
-Run: `grep -n send_signal slate/src/ui/terminal.rs`
+Run: `grep -n send_signal codiv/src/ui/terminal.rs`
 
 If any uses found, replace `bash.send_signal(nix::sys::signal::Signal::SIGINT)` with `bash.send_interrupt()`.
 
 **Step 3: Verify compilation**
 
-Run: `cd slate && cargo check`
+Run: `cd codiv && cargo check`
 Expected: Compiles with no errors
 
 **Step 4: Commit**
 
 ```bash
-git add slate/src/ui/terminal.rs
+git add codiv/src/ui/terminal.rs
 git commit -m "Handle Option<RawFd> from portable-pty master_raw_fd()"
 ```
 
@@ -549,11 +549,11 @@ git commit -m "Handle Option<RawFd> from portable-pty master_raw_fd()"
 ### Task 9: Run existing tests
 
 **Files:**
-- Test: `slate/src/shell/bash_coprocess.rs` (existing tests)
+- Test: `codiv/src/shell/bash_coprocess.rs` (existing tests)
 
 **Step 1: Run all tests**
 
-Run: `cd slate && cargo test 2>&1`
+Run: `cd codiv && cargo test 2>&1`
 Expected: All existing tests pass. Key tests to watch:
 - `test_execute_echo_hello` — basic command execution
 - `test_execute_false_exit_code` — exit code capture
@@ -579,7 +579,7 @@ In tests, `send_signal` is not directly used — `send_interrupt()` is. Verify a
 **Step 4: Commit test fixes if any**
 
 ```bash
-git add slate/src/shell/bash_coprocess.rs
+git add codiv/src/shell/bash_coprocess.rs
 git commit -m "Fix tests for portable-pty migration"
 ```
 
@@ -588,14 +588,14 @@ git commit -m "Fix tests for portable-pty migration"
 ### Task 10: Clean up unused imports and build full project
 
 **Files:**
-- Modify: `slate/src/shell/bash_coprocess.rs` (remove unused nix imports)
-- Modify: `slate/src/shell/interactive.rs` (remove unused nix imports)
+- Modify: `codiv/src/shell/bash_coprocess.rs` (remove unused nix imports)
+- Modify: `codiv/src/shell/interactive.rs` (remove unused nix imports)
 
 **Step 1: Remove unused imports from bash_coprocess.rs**
 
 Remove any remaining unused imports from the old forkpty/poll/waitpid code. The compiler warnings will tell you exactly which ones.
 
-Run: `cd slate && cargo check 2>&1 | grep "unused import"`
+Run: `cd codiv && cargo check 2>&1 | grep "unused import"`
 
 **Step 2: Remove unused imports from interactive.rs**
 
@@ -614,7 +614,7 @@ Note: Keep `"signal"` if any signal-related code remains. Keep `"term"` for term
 **Step 4: Full build**
 
 Run: `make clean && make all`
-Expected: Both slated and slate build successfully
+Expected: Both codivd and codiv build successfully
 
 **Step 5: Run full test suite**
 
@@ -624,7 +624,7 @@ Expected: All tests pass
 **Step 6: Commit**
 
 ```bash
-git add slate/Cargo.toml slate/src/shell/bash_coprocess.rs slate/src/shell/interactive.rs
+git add codiv/Cargo.toml codiv/src/shell/bash_coprocess.rs codiv/src/shell/interactive.rs
 git commit -m "Clean up unused imports after portable-pty migration"
 ```
 
@@ -632,9 +632,9 @@ git commit -m "Clean up unused imports after portable-pty migration"
 
 ### Task 11: Manual smoke test
 
-**Step 1: Run slate**
+**Step 1: Run codiv**
 
-Run: `cd slate && cargo run`
+Run: `cd codiv && cargo run`
 
 Test the following:
 1. Type `ls -al` — should execute immediately (no hang)

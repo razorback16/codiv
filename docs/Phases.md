@@ -1,4 +1,4 @@
-# Slate Agent — Implementation Plan
+# Codiv Agent — Implementation Plan
 
 **Date**: 2026-02-26 **Author**: Subhagato **Status**: Active
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-**Slate Agent** is a Rust terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`slate`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the Rust daemon (`slated`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands that execute instantly (zero-latency fast-pass), or natural language that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
+**Codiv Agent** is a Rust terminal-native coding agent that replaces the traditional shell with an intelligent, multi-model AI assistant. The Rust client (`codiv`) provides a ratatui-based TUI that looks and behaves like a normal terminal, while the Rust daemon (`codivd`) handles AI orchestration, Work Item scheduling, and tool execution. Users type shell commands that execute instantly (zero-latency fast-pass), or natural language that triggers a recursive multi-agent system with different models assigned to different roles (planning, coding, review, research). Memory persists across sessions, project context auto-switches on `cd`, and a unified tool system supports binary tools, prompt tools, MCP bridges, hooks, and aliases.
 
 **Current status**: Phase 1 (Terminal Foundation) is complete. Phase 2 (Single-Agent AI Loop) is next.
 
@@ -58,14 +58,14 @@ Each phase is a **vertical slice** — fully functional and manually testable on
 
 ### Phase 1: Terminal Foundation — COMPLETE
 
-**Note**: The C++ daemon originally built in Phase 1 has been fully replaced by a Rust daemon (`slated`). See the [Rust daemon design doc](plans/2026-02-26-rust-daemon-aisdk-design.md) for the current architecture.
+**Note**: The C++ daemon originally built in Phase 1 has been fully replaced by a Rust daemon (`codivd`). See the [Rust daemon design doc](plans/2026-02-26-rust-daemon-aisdk-design.md) for the current architecture.
 
 The foundation layer provides a working terminal client that executes commands via daemon IPC with near-zero overhead.
 
 **What was built:**
 
-- `slate` binary (~4,300 lines of Rust) with ratatui 0.30 + crossterm 0.28 for linear scroll-down terminal flow
-- `slated` daemon (Rust, Tokio async) listening on Unix socket with serde+bincode IPC protocol (replaced original C++20 daemon)
+- `codiv` binary (~4,300 lines of Rust) with ratatui 0.30 + crossterm 0.28 for linear scroll-down terminal flow
+- `codivd` daemon (Rust, Tokio async) listening on Unix socket with serde+bincode IPC protocol (replaced original C++20 daemon)
 - Persistent bash co-process via portable-pty with sentinel-based output boundary detection
 - Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
 - Command fast-pass: PATH scanning + 65 bash builtins in O(1) hash map with input classification (Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty)
@@ -73,9 +73,9 @@ The foundation layer provides a working terminal client that executes commands v
 - Env snapshot protocol: session_id, env_vars, PATH, cwd captured on connect, stored per-session in daemon
 - Heartbeat mechanism (5s interval from client, 30s stale timeout in daemon)
 - Worker bash sessions: spawn-on-demand per Work Item, initialized from env snapshot, killed on completion
-- Structured logging with `--debug` flag to `/tmp/slate-debug.log`
+- Structured logging with `--debug` flag to `/tmp/codiv-debug.log`
 
-**Tech stack**: Rust (Cargo workspace) for both `slate` and `slated`, serde+bincode over Unix domain socket, portable-pty, tui-term + vt100, aisdk 0.5.2. See the [PRD Appendix A](PRD.md#appendix-a-phase-1-module-details) for full module tables.
+**Tech stack**: Rust (Cargo workspace) for both `codiv` and `codivd`, serde+bincode over Unix domain socket, portable-pty, tui-term + vt100, aisdk 0.5.2. See the [PRD Appendix A](PRD.md#appendix-a-phase-1-module-details) for full module tables.
 
 ---
 
@@ -89,20 +89,20 @@ The foundation layer provides a working terminal client that executes commands v
 
 - **Unified session timeline** — Shell commands, user queries, and AI responses stored as `Vec<SessionEvent>` in the `Agent` struct. Commands are embedded as assistant/user message pairs so the AI has full terminal context. See [Session Timeline Design](plans/2026-02-27-session-timeline-design.md).
 
-- **Real-time CommandResult IPC** — Client sends `ClientMessage::CommandResult` to daemon after every shell command completes. Daemon stores in agent timeline. Output truncated to first/last 20 lines via `slate-common::truncate`.
+- **Real-time CommandResult IPC** — Client sends `ClientMessage::CommandResult` to daemon after every shell command completes. Daemon stores in agent timeline. Output truncated to first/last 20 lines via `codiv-common::truncate`.
 
 - **Agent persistence per session** — Agent stored in `ClientSession`, taken via `Option::take()` for async streaming, returned via `oneshot` channel, polled by `collect_returned_agents()`.
 
-- **Rust daemon replaced C++ daemon** — `slated` is now pure Rust with Tokio async runtime, serde+bincode IPC.
+- **Rust daemon replaced C++ daemon** — `codivd` is now pure Rust with Tokio async runtime, serde+bincode IPC.
 
 #### Remaining Sub-tasks
 
 1. **Implement tool calling loop**
-   - Agent receives user input classified as `AiQuery` from the `slate` client
+   - Agent receives user input classified as `AiQuery` from the `codiv` client
    - System prompt defines the combined Orchestrator+Engineer role
    - Agent reasons, decides which tool to call, receives tool output, continues reasoning
    - Loop terminates when agent produces a final response (no more tool calls)
-   - Agent state managed in `slated` daemon per session
+   - Agent state managed in `codivd` daemon per session
 
 2. **Implement built-in tools: Bash, Read, Write, Edit, Glob, Grep**
    - `Bash`: execute commands via worker bash sessions (already built in Phase 1), capture stdout/stderr/exit code
@@ -121,22 +121,22 @@ The foundation layer provides a working terminal client that executes commands v
 
 4. **Basic risk classification + confirmation prompts for destructive commands**
    - Classify commands as low/medium/high/critical risk
-   - High/critical risk triggers confirmation prompt sent from `slated` → `slate` → user
+   - High/critical risk triggers confirmation prompt sent from `codivd` → `codiv` → user
    - Command allowlist/denylist configurable in TOML config
    - No agent auto-execution of critical-risk commands (e.g., `rm -rf /`, `git push --force`, `DROP TABLE`)
 
 5. **Env snapshot refresh on cd/source**
-   - Detect `cd` and `source` commands in the `slate` bash co-process
-   - Auto-capture fresh env snapshot and send to `slated`
-   - Manual `slate sync-env` command for edge cases
+   - Detect `cd` and `source` commands in the `codiv` bash co-process
+   - Auto-capture fresh env snapshot and send to `codivd`
+   - Manual `codiv sync-env` command for edge cases
 
 6. **Agent output streaming with tool block headers** *(descoped from bordered boxes)*
-   - Agent output streams from `slated` to `slate` via IPC
+   - Agent output streams from `codivd` to `codiv` via IPC
    - Tool calls rendered with yellow/green/red header lines (sufficient for v1)
    - Bordered boxes and auto-collapse are descoped to a later phase
 
 7. **TOML config for API keys and model selection**
-   - Config file at `~/.slate-agent/config.toml`
+   - Config file at `~/.codiv/config.toml`
    - `[models]` section with API key and model ID
    - `[safety]` section with allowlist/denylist
 
@@ -163,19 +163,19 @@ The foundation layer provides a working terminal client that executes commands v
    - Validation: no cycles, all referenced IDs exist, at least one root node
 
 3. **Tokio-based concurrent execution**
-   - Use Tokio task spawning in `slated`
+   - Use Tokio task spawning in `codivd`
    - Map Work Item DAG to Tokio tasks with dependency tracking
    - Tokio runtime manages concurrent task execution
    - Each scheduled Work Item gets its own worker bash session
 
 4. **State machine (pending → running → completed/failed)**
    - Track Work Item state transitions in daemon memory
-   - Stream state updates to `slate` for progress display
+   - Stream state updates to `codiv` for progress display
    - Handle failure: Work Item → `failed`, dependents → `blocked`
 
 5. **Artifact storage in Shared Project State**
    - Each Work Item's outputs (files, diffs, stdout) stored as artifacts
-   - Storage at `~/.slate-agent/state/`
+   - Storage at `~/.codiv/state/`
    - Artifacts keyed by Work Item ID
 
 6. **Budget enforcement (token + cost caps)**
@@ -245,7 +245,7 @@ Architecture is defined in the [Memory System Design](design-docs/memory-system-
 #### Sub-tasks
 
 1. **SQLite episodic store**
-   - Create `~/.slate-agent/memory/memory.db` with the episodes table schema
+   - Create `~/.codiv/memory/memory.db` with the episodes table schema
    - Write episodes at tool execution, Work Item completion, and explicit `memory_write_episode` calls
    - Append-only during sessions; Narrator marks episodes as `consolidated`
    - Retention policy: consolidated episodes pruned after 90 days (365 for high-value), DB size cap 50MB
@@ -272,7 +272,7 @@ Architecture is defined in the [Memory System Design](design-docs/memory-system-
 5. **Project auto-switching with fingerprint detection**
    - Detection signals (priority order): explicit config → git remote → git root → cwd path
    - Fingerprint is a stable hash of the primary identifier
-   - On switch: unload previous project.md, load new project.md, update `SLATE_PROJECT_FINGERPRINT` env var
+   - On switch: unload previous project.md, load new project.md, update `CODIV_PROJECT_FINGERPRINT` env var
    - In-flight Work Items continue with their original project context
 
 **Testable outcome**: User completes a task in repo A ("always use pytest, not unittest"). User starts a new session in repo A — agent remembers the preference. User cd's to repo B — agent switches to repo B's context automatically.
@@ -290,18 +290,18 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 #### Sub-tasks
 
 1. **Tool registry CLI**
-   - `slate install <tool>` / `slate install mcp:<package>` / `slate install ./path`
-   - `slate remove <tool>` / `slate update [tool]` / `slate search "query"`
-   - `slate tools search "query"` / `slate tools list` / `slate tools info <tool>`
-   - `slate import skill ./path` for converting Claude Code SKILL.md format
+   - `codiv install <tool>` / `codiv install mcp:<package>` / `codiv install ./path`
+   - `codiv remove <tool>` / `codiv update [tool]` / `codiv search "query"`
+   - `codiv tools search "query"` / `codiv tools list` / `codiv tools info <tool>`
+   - `codiv import skill ./path` for converting Claude Code SKILL.md format
 
-2. **SLATE_TOOLS_PATH discovery**
-   - Scan directories: project-level (`.slate-agent/tools/`), user-level (`~/.slate-agent/tools/`), system-level (`/usr/local/share/slate-agent/tools/`)
+2. **CODIV_TOOLS_PATH discovery**
+   - Scan directories: project-level (`.codiv/tools/`), user-level (`~/.codiv/tools/`), system-level (`/usr/local/share/codiv/tools/`)
    - Run `<tool> --help` for each discovered executable (cached, re-run on mtime change)
    - Build tool index: name → help text → optional agent-guide → location
 
 3. **MCP bridge**
-   - Thin wrapper executables that translate CLI interface to MCP protocol
+   - Thin wrapper executables that trancodiv CLI interface to MCP protocol
    - `--help` → MCP `tools/list`; commands → MCP `tools/call`; `--json-out` → passthrough
    - Daemon manages MCP server subprocesses: lazy spawn, session-lifetime, health-check via `ping`
    - Transport: stdio (subprocess) and HTTP/SSE (remote)
@@ -324,9 +324,9 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
    - Aliases: `[[aliases]]` in config — slash command → tool invocation
    - Prompt tools with `user-invocable = true` auto-register as slash commands
 
-**Testable outcome**: `/commit` works. `slate install ./my-tool` works. `slate install mcp:@modelcontextprotocol/server-filesystem` makes the MCP server appear as a regular tool.
+**Testable outcome**: `/commit` works. `codiv install ./my-tool` works. `codiv install mcp:@modelcontextprotocol/server-filesystem` makes the MCP server appear as a regular tool.
 
-**Tech**: Tool registry, Rust MCP client (serde_json + tokio subprocess management), prompt tool synthesis, SLATE_TOOLS_PATH discovery.
+**Tech**: Tool registry, Rust MCP client (serde_json + tokio subprocess management), prompt tool synthesis, CODIV_TOOLS_PATH discovery.
 
 ---
 
@@ -337,15 +337,15 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 #### Sub-tasks
 
 1. **Full audit trail**
-   - Log every command, tool invocation, LLM call, output, diff, and decision to `~/.slate-agent/audit/`
+   - Log every command, tool invocation, LLM call, output, diff, and decision to `~/.codiv/audit/`
    - Machine-parseable JSON lines format with timestamps, Work Item IDs, agent roles, model IDs
-   - `slate audit` command for session review and search
+   - `codiv audit` command for session review and search
    - Configurable retention policy
 
 2. **Privacy settings**
    - `[privacy]` section in config
    - Options: exclude command output from LLM context, redact env vars, mask file paths
-   - Per-project overrides via `.slate-agent/config.toml` in repo root
+   - Per-project overrides via `.codiv/config.toml` in repo root
 
 3. **OS-level sandboxing roadmap**
    - Linux: bubblewrap (bwrap) for filesystem and network isolation of spawned scripts
@@ -379,7 +379,7 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 | Rust daemon unit tests | `cargo test` (built-in) | IPC protocol, session management, worker execution, agent loop |
 | Rust client unit tests | `cargo test` (built-in) | Input classification, command index, completion engine, IPC message building |
 | Rust integration tests | `cargo test` (integration test modules) | End-to-end command execution, daemon connection, env snapshot round-trip |
-| End-to-end tests | expect-style scripting (e.g., rexpect or custom) | Full user scenarios: launch `slate`, type commands, verify output, test agent interactions |
+| End-to-end tests | expect-style scripting (e.g., rexpect or custom) | Full user scenarios: launch `codiv`, type commands, verify output, test agent interactions |
 | LLM interaction tests | Mock LLM server (record/replay) | Agent tool calling loop, Work Item creation, role delegation, error handling |
 
 ### CI/CD
@@ -394,7 +394,7 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 - Design docs per phase in `docs/design-docs/`
 - PRD kept up-to-date as phases complete
 - Plan.md (this document) updated with status changes
-- In-code documentation: Rustdoc for all crates (`slate`, `slated`)
+- In-code documentation: Rustdoc for all crates (`codiv`, `codivd`)
 
 ### Code Quality
 
@@ -420,4 +420,4 @@ Architecture is defined in the [Unified Tool Model Design](design-docs/unified-t
 
 ---
 
-*Slate Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Rust daemon has fully replaced the original C++ daemon. Phase 1 complete. Phase 2 in progress (session timeline implemented, tool calling loop next).*
+*Codiv Agent Implementation Plan — 7 phases from terminal foundation to production-grade safety. Rust daemon has fully replaced the original C++ daemon. Phase 1 complete. Phase 2 in progress (session timeline implemented, tool calling loop next).*
