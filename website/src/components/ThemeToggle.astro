@@ -1,0 +1,142 @@
+---
+// ThemeToggle.astro — 3-state toggle: Light / Dark / System
+---
+
+<button
+  class="theme-toggle"
+  type="button"
+  aria-label="Toggle color theme"
+  title="Toggle color theme"
+>
+  <!-- Sun icon (light mode) -->
+  <svg class="icon icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <circle cx="12" cy="12" r="5"/>
+    <line x1="12" y1="1" x2="12" y2="4"/>
+    <line x1="12" y1="20" x2="12" y2="23"/>
+    <line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/>
+    <line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/>
+    <line x1="1" y1="12" x2="4" y2="12"/>
+    <line x1="20" y1="12" x2="23" y2="12"/>
+    <line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/>
+    <line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/>
+  </svg>
+  <!-- Moon icon (dark mode) -->
+  <svg class="icon icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+  </svg>
+  <!-- Monitor icon (system mode) -->
+  <svg class="icon icon-monitor" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <rect x="2" y="3" width="20" height="14" rx="2"/>
+    <line x1="8" y1="21" x2="16" y2="21"/>
+    <line x1="12" y1="17" x2="12" y2="21"/>
+  </svg>
+</button>
+
+<style>
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    background: var(--color-bg);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--color-text);
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+
+  .theme-toggle:hover {
+    background: var(--color-bg-alt);
+  }
+
+  .theme-toggle:active {
+    background: var(--color-bg-alt);
+  }
+
+  .icon {
+    display: none;
+  }
+
+  /* Show the correct icon based on data-theme */
+  :global([data-theme="light"]) .icon-sun {
+    display: block;
+  }
+
+  :global([data-theme="dark"]) .icon-moon {
+    display: block;
+  }
+
+  :global(:not([data-theme="light"]):not([data-theme="dark"])) .icon-monitor,
+  :global([data-theme="system"]) .icon-monitor {
+    display: block;
+  }
+</style>
+
+<script>
+  (function () {
+    const btn = document.querySelector('.theme-toggle');
+    if (!btn) return;
+
+    const STORAGE_KEY = 'theme';
+    const cycle = ['light', 'dark', 'system'];
+
+    function getCurrentTheme() {
+      return document.documentElement.getAttribute('data-theme') || 'system';
+    }
+
+    function applyTheme(theme: string) {
+      if (theme === 'system') {
+        localStorage.removeItem(STORAGE_KEY);
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', 'system');
+        // Apply actual colors based on system preference
+        if (prefersDark) {
+          document.documentElement.style.colorScheme = 'dark';
+        } else {
+          document.documentElement.style.colorScheme = 'light';
+        }
+        // Re-apply as the actual theme for CSS custom properties
+        // We keep data-theme="system" so the monitor icon shows,
+        // but we need the color variables from either light or dark.
+        // The global.css only has :root (light) and [data-theme="dark"].
+        // For system mode, we apply/remove dark based on preference.
+        if (prefersDark) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+          // Override: we store system to know it's system mode
+          document.documentElement.dataset.themeMode = 'system';
+        } else {
+          document.documentElement.setAttribute('data-theme', 'light');
+          document.documentElement.dataset.themeMode = 'system';
+        }
+      } else {
+        localStorage.setItem(STORAGE_KEY, theme);
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme;
+        delete document.documentElement.dataset.themeMode;
+      }
+    }
+
+    function getEffectiveMode() {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === 'light' || stored === 'dark') return stored;
+      return 'system';
+    }
+
+    btn.addEventListener('click', () => {
+      const current = getEffectiveMode();
+      const idx = cycle.indexOf(current);
+      const next = cycle[(idx + 1) % cycle.length];
+      applyTheme(next);
+    });
+
+    // Listen for system preference changes when in system mode
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (getEffectiveMode() === 'system') {
+        applyTheme('system');
+      }
+    });
+  })();
+</script>

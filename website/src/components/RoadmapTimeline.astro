@@ -1,0 +1,167 @@
+---
+import Badge from './Badge.astro';
+
+const phases = [
+  {
+    number: 1,
+    name: 'Terminal Foundation',
+    description: 'Working terminal client with daemon IPC, command fast-pass, and zero-overhead shell experience.',
+    status: 'complete' as const,
+  },
+  {
+    number: 2,
+    name: 'Single-Agent AI Loop',
+    description: 'Natural language routes to an AI agent with streaming, tool calling, markdown rendering, and safety controls.',
+    status: 'complete' as const,
+  },
+  {
+    number: 3,
+    name: 'Work Item DAG + Scheduler',
+    description: 'Complex tasks decompose into concurrent Work Items with dependency tracking and budget enforcement.',
+    status: 'planned' as const,
+  },
+  {
+    number: 4,
+    name: 'Multi-Agent Roles',
+    description: 'Specialized roles (Orchestrator, TeamLead, Engineer, Reviewer, Narrator) with per-role model assignment.',
+    status: 'planned' as const,
+  },
+  {
+    number: 5,
+    name: 'Memory + Project Context',
+    description: 'Persistent memory across sessions with SQLite episodic store and semantic markdown files.',
+    status: 'planned' as const,
+  },
+  {
+    number: 6,
+    name: 'Tool System',
+    description: 'Unified tool registry with MCP bridge, prompt tools, progressive loading, hooks, and aliases.',
+    status: 'planned' as const,
+  },
+  {
+    number: 7,
+    name: 'Advanced Safety + Audit',
+    description: 'Full audit trail, privacy controls, OS-level sandboxing, and compliance alignment.',
+    status: 'planned' as const,
+  },
+];
+---
+
+<section class="roadmap-section">
+  <div class="container">
+    <h2 class="roadmap-heading">Roadmap</h2>
+    <div class="timeline">
+      {phases.map((phase) => (
+        <div class="timeline-entry">
+          <div class="timeline-marker-col">
+            <div class:list={['timeline-dot', `dot-${phase.status}`]} />
+            <div class="timeline-line" />
+          </div>
+          <div class="timeline-content">
+            <h3 class="phase-name">Phase {phase.number}: {phase.name}</h3>
+            <p class="phase-description">{phase.description}</p>
+            <Badge variant={phase.status} />
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .roadmap-section {
+    padding: var(--space-16) 0;
+  }
+
+  .roadmap-heading {
+    text-align: center;
+    font-size: var(--text-4xl);
+    margin-bottom: var(--space-12);
+  }
+
+  .timeline {
+    max-width: 720px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .timeline-entry {
+    display: flex;
+    gap: var(--space-6);
+  }
+
+  .timeline-marker-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    width: 24px;
+  }
+
+  .timeline-dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: var(--border);
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .dot-complete {
+    background-color: var(--color-success);
+  }
+
+  .dot-in-progress {
+    background: linear-gradient(
+      to bottom,
+      var(--color-warning) 50%,
+      var(--color-bg) 50%
+    );
+  }
+
+  .dot-planned {
+    background-color: var(--color-bg);
+  }
+
+  .timeline-line {
+    width: 2px;
+    flex: 1;
+    background-color: var(--color-border);
+    min-height: var(--space-6);
+  }
+
+  .timeline-entry:last-child .timeline-line {
+    display: none;
+  }
+
+  .timeline-content {
+    padding-bottom: var(--space-10);
+  }
+
+  .timeline-entry:last-child .timeline-content {
+    padding-bottom: 0;
+  }
+
+  .phase-name {
+    font-size: var(--text-xl);
+    margin-bottom: var(--space-2);
+  }
+
+  .phase-description {
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-3);
+    font-size: var(--text-base);
+    line-height: 1.6;
+  }
+
+  @media (max-width: 480px) {
+    .timeline-entry {
+      gap: var(--space-4);
+    }
+
+    .phase-name {
+      font-size: var(--text-lg);
+    }
+  }
+</style>
