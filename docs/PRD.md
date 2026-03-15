@@ -459,7 +459,7 @@ Each phase produces a **fully functional, manually testable** deliverable. Later
 - Persistent bash co-process via portable-pty with sentinel-based output boundary detection
 - Interactive command passthrough (vim, ssh, python REPL) with dedicated PTY and raw terminal mode
 - C++ daemon (`codivd`) with Unix socket IPC, FlatBuffers protocol, streaming output
-- Command fast-pass: PATH scanning + bash builtins in O(1) hash map, input classification routing
+- Dual-mode input: AI mode (default) and Command mode with Tab toggle; PATH scanning + bash builtins in O(1) hash map
 - 3-tier tab completion: programmable (bash-completion) → command → file
 - Env snapshot protocol, heartbeat mechanism, worker bash sessions
 - Structured logging with `--debug` flag
@@ -495,7 +495,7 @@ See [Appendix A: Phase 1 Module Details](#appendix-a-phase-1-module-details) for
 - **Env snapshot refresh**: auto-refresh on `cd`/`source`/manual `codiv sync-env`
 - **Color-coded output streaming**: worker bash output streamed to `codiv`, rendered in color-bordered agent output blocks per Work Item
 
-**Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` — still fast-passes. Agent attempting `rm -rf /` triggers a confirmation prompt.
+**Testable outcome**: User types "create a hello world C++ program, compile it, and run it" — agent creates the file, runs g++, executes the binary, and streams the output. User types `ls` in Command mode — still executes directly. Agent attempting `rm -rf /` triggers a confirmation prompt.
 
 **Dependencies**: Phase 1
 
@@ -669,7 +669,7 @@ Each phase is a **vertical slice** — fully functional and testable on its own.
 | **aisdk.rs maturity** — Rust LLM SDK from lazy-hq; supports streaming + tool calling for OpenAI + Anthropic. Provider coverage may lag behind the rapidly evolving LLM API landscape. | Medium | Medium | Evaluate SDK early in Phase 2. Rust ecosystem has strong HTTP and async primitives (reqwest, tokio) for extending provider support. For unsupported providers, extend with direct HTTP (reqwest + custom SSE parser). |
 | **Multi-agent token costs** — multi-agent systems use ~15x more tokens than single-agent chat | High | High | Budget fields on every Work Item; cost_tier in model catalog; TeamLead considers cost in model selection; user-configurable spending limits; demand-driven decomposition (ADAPT) to avoid unnecessary subtask explosion |
 | **Lock contention in multi-agent coordination** — Cursor's reader-writer locks failed; agents held locks too long, 20 agents degraded to throughput of 2-3 | Medium | High | Use single-writer ownership pattern instead of reader-writer locks. One agent owns writes to a resource; others read. Role-based separation (Planner/Worker/Judge) reduces contention by design. |
-| **Multi-model latency** — orchestrating multiple LLM calls adds overhead | Medium | Medium | Keep fast-pass path completely AI-free; pipeline model calls where possible; cache model selections |
+| **Multi-model latency** — orchestrating multiple LLM calls adds overhead | Medium | Medium | Keep Command mode completely AI-free; pipeline model calls where possible; cache model selections |
 | **Memory bloat** — unbounded context accumulation | Low | Medium | Hard size caps enforced by Narrator; MemGPT-style cognitive triage with recursive summarization; ~70% eviction rate for conversational messages |
 | **DAG scheduler complexity** — concurrent execution with dependencies is error-prone | Medium | Medium | Use Tokio task spawning with async/await and `futures::future::join_all` instead of hand-rolling scheduler; channel-based coordination for dependency edges |
 | **API cost overruns** — multi-model usage can be expensive | Medium | Low | Budget fields on Work Items; TeamLead considers cost_tier; user-configurable spending limits |
@@ -793,7 +793,7 @@ All metrics are stored locally at `~/.codiv/metrics/` — no telemetry is sent e
 | Metric | Granularity | Description |
 | --- | --- | --- |
 | Token usage | Per Work Item, per agent role, per model | Total input/output tokens consumed |
-| Command execution latency | Per command | Time from input to first output byte; segmented by fast-pass vs agent-routed |
+| Command execution latency | Per command | Time from input to first output byte; segmented by Command mode vs AI mode |
 | Work Item throughput | Per session | Concurrent execution count, completion rate, failure rate |
 | Memory utilization | Per project, per scope | Current size vs cap, compression ratio after Narrator passes |
 | Session duration & command count | Per session | Wall-clock session time and total commands executed |
@@ -811,7 +811,7 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 
 | Scenario | Behavior |
 | --- | --- |
-| **Daemon (`codivd`) crashes mid-task** | Work Items in `running` state transition to `failed`. The `codiv` client detects the crash via heartbeat timeout, notifies the user, and offers to restart the daemon or continue in standalone mode (fast-pass only, no agent). |
+| **Daemon (`codivd`) crashes mid-task** | Work Items in `running` state transition to `failed`. The `codiv` client detects the crash via heartbeat timeout, notifies the user, and offers to restart the daemon or continue in standalone mode (Command mode only, no agent). |
 | **LLM API times out** | Retry with exponential backoff (3 attempts: 2s, 4s, 8s). If all retries fail, the Work Item transitions to `failed` and the TeamLead is notified for re-planning or model fallback. Token budget is debited for the failed attempt. |
 | **Work Item exceeds token/cost budget** | The Work Item is paused immediately. TeamLead is notified and can re-plan (split into smaller items), request user approval for budget increase, or fail the Work Item. |
 | **Two Work Items try to edit the same file** | Single-writer ownership prevents this by design. Only one agent holds write ownership of a file at a time. If a second Work Item needs the same file, it is blocked until the first completes and releases ownership. |
@@ -824,7 +824,7 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 
 | Error | Detection | Recovery |
 | --- | --- | --- |
-| **Daemon dies** | `codiv` detects via heartbeat timeout (30s with no response) | Offers restart (auto-launch `codivd`) or standalone mode (fast-pass only). In-progress Work Items are lost and must be re-run. |
+| **Daemon dies** | `codiv` detects via heartbeat timeout (30s with no response) | Offers restart (auto-launch `codivd`) or standalone mode (Command mode only). In-progress Work Items are lost and must be re-run. |
 | **LLM times out** | HTTP response timeout or SSE stream stalls | Retry with exponential backoff (3 attempts). After 3 failures, fail the Work Item and notify TeamLead for re-planning or model substitution. |
 | **Tool execution fails** | Non-zero exit code from tool | Work Item transitions to `failed`. Reviewer analyzes the failure and creates a fix Work Item, or escalates to TeamLead for re-planning. |
 | **IPC connection lost** | Socket read/write returns error | `codiv` attempts reconnection with exponential backoff (3 attempts: 1s, 2s, 4s). User input is buffered during reconnection. If reconnection fails, falls back to standalone mode. |
@@ -874,7 +874,7 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 | `main.rs` | Entry point, signal handling, logging init | — |
 | `app.rs` | App initialization, daemon connection | — |
 | `shell/bash_coprocess.rs` | PTY management via portable-pty | ~600 |
-| `shell/command_index.rs` | PATH scanning, input classification | ~250 |
+| `shell/command_index.rs` | PATH scanning, dual-mode input | ~250 |
 | `shell/completion_engine.rs` | Tab completion with bash-completion | ~350 |
 | `shell/interactive.rs` | Interactive session passthrough | ~200 |
 | `ui/terminal.rs` | Main event loop, rendering, VT100 parsing | ~1000 |
@@ -911,7 +911,7 @@ Metrics are written as append-only structured JSON lines (`metrics.jsonl`) per s
 - `codivd` daemon (C++20) that listens on Unix socket (`/tmp/codivd-{uid}.sock`), receives commands, streams output back
 - FlatBuffers IPC protocol (flatbuffers 24.12.23 for Rust, v24.3.25 for C++) with message types: ExecuteCommand, CommandOutput, CommandComplete, EnvSnapshot, Heartbeat, Shutdown, Error
 - Command index built in `codiv` from PATH scanning + 65 bash builtins (O(1) hash map lookup)
-- Input classification: Execute, Interactive, AiQuery, NotFound, Clear, Reset, Exit, Empty
+- Dual-mode input: AI mode (default, `>` gutter) and Command mode (`$` gutter) with Tab toggle on empty input
 - 3-tier tab completion: programmable completions (bash-completion integration) → command completions → file completions
 - Env snapshot protocol: session_id, env_vars, path, cwd (captured on connect, stored per-session in daemon)
 - Heartbeat mechanism (5s interval from client, 30s stale timeout in daemon)
