@@ -454,10 +454,45 @@ impl Daemon {
 
             ClientMessage::ListSessions => {
                 if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    let sessions = self.store.list_sessions(20).unwrap_or_default();
+                    let current_sid = self.sessions.get(&client_id)
+                        .and_then(|s| s.session_id.as_deref());
+                    let sessions: Vec<_> = self.store.list_sessions(50)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|s| current_sid != Some(s.id.as_str()))
+                        .collect();
                     let msg = DaemonMessage::SessionList { sessions };
                     if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
                         let _ = client_tx.send(frame).await;
+                    }
+                }
+            }
+
+            ClientMessage::NewSession => {
+                if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                    // Create a fresh agent
+                    if let Some(session) = self.sessions.get_mut(&client_id) {
+                        let cwd = session.cwd.clone();
+                        let env_vars = session.env_vars.clone();
+                        let cfg = self.config.read().unwrap();
+                        let agent = create_agent(cwd.clone(), env_vars, &cfg);
+                        drop(cfg);
+                        session.agent = Some(agent);
+                        session.session_id = None;
+                        session.event_seq = 0;
+                    }
+
+                    // Create a new SQLite session
+                    let sid = self.ensure_session(client_id);
+
+                    if let Some(sid) = sid {
+                        let msg = DaemonMessage::SessionCreated {
+                            session_id: sid,
+                            name: None,
+                        };
+                        if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                            let _ = client_tx.send(frame).await;
+                        }
                     }
                 }
             }
@@ -515,6 +550,28 @@ impl Daemon {
             } => {
                 // Ensure a session exists so we can persist the shell command
                 self.ensure_session(client_id);
+
+                // Name the session if this is the first event (command-initiated session)
+                if let Some(session) = self.sessions.get(&client_id) {
+                    if session.event_seq == 0 {
+                        if let Some(sid) = session.session_id.clone() {
+                            let base_cmd = command.split_whitespace().next().unwrap_or(&command);
+                            let name = format!("command {}", base_cmd);
+                            if let Err(e) = self.store.update_session_name(&sid, &name) {
+                                tracing::error!("failed to set command session name: {}", e);
+                            }
+                            if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                                let msg = DaemonMessage::SessionCreated {
+                                    session_id: sid,
+                                    name: Some(name),
+                                };
+                                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                                    let _ = client_tx.send(frame).await;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Persist ShellCommand event (truncate large output)
                 let truncated_output = if output.len() > 10000 {

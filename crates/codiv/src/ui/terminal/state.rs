@@ -73,10 +73,15 @@ pub(crate) struct PendingConfirmation {
     pub(crate) option_count: usize,
 }
 
+/// Maximum number of sessions visible at once in the picker.
+pub(crate) const VISIBLE_SESSIONS: usize = 5;
+
 /// Tracks a pending session picker (inline list of saved sessions).
 pub(crate) struct PendingSessionPicker {
     pub(crate) sessions: Vec<codiv_common::conversation::SessionInfo>,
     pub(crate) selected_index: usize,
+    /// First visible session index in the scrollable window.
+    pub(crate) viewport_offset: usize,
     pub(crate) prompt_lines: u16,
 }
 

@@ -27,9 +27,9 @@ use super::io::TerminalColors;
 use super::render::render_frame;
 use codiv_common::permissions::PermissionMode;
 
-use super::state::{PendingCommand, PendingConfirmation, PendingSessionPicker, MAX_SCROLLBACK};
+use super::state::{PendingCommand, PendingConfirmation, PendingSessionPicker, MAX_SCROLLBACK, VISIBLE_SESSIONS};
 use super::utils::scroll_to_focused;
-use super::utils::{get_scrollback_line, parser_push_notice, send_agent_request, NoticeKind};
+use super::utils::{get_scrollback_line, parser_push_notice, push_intro, send_agent_request, NoticeKind};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height, PROMPT_GUTTER_WIDTH};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
@@ -273,8 +273,11 @@ pub(crate) fn event_loop(
                                     for _ in 0..picker.prompt_lines {
                                         p.process(b"\x1b[A\r\x1b[K");
                                     }
-                                    // Re-render session entries
-                                    for (i, s) in picker.sessions.iter().enumerate() {
+                                    // Re-render only the visible window of sessions
+                                    let visible_count = picker.sessions.len().min(VISIBLE_SESSIONS);
+                                    let end = picker.viewport_offset + visible_count;
+                                    for i in picker.viewport_offset..end {
+                                        let s = &picker.sessions[i];
                                         let name = s.name.as_deref().unwrap_or("(unnamed)");
                                         let time = codiv_common::conversation::relative_time(&s.updated_at);
                                         let (prefix, color) = if i == picker.selected_index {
@@ -285,30 +288,43 @@ pub(crate) fn event_loop(
                                         let line = format!("{}  {}[{}] {} \x1b[90m({})\x1b[0m\r\n", color, prefix, i + 1, name, time);
                                         p.process(line.as_bytes());
                                     }
-                                    let select_line = format!("\r\nSelect session [1-{}] or Esc to cancel:\r\n", picker.sessions.len());
+                                    let scroll_hint = if picker.sessions.len() > VISIBLE_SESSIONS {
+                                        " (\u{2191}\u{2193} to scroll)"
+                                    } else {
+                                        ""
+                                    };
+                                    let select_line = format!(
+                                        "\r\nSelect session or Esc to cancel:{}\r\n",
+                                        scroll_hint
+                                    );
                                     p.process(select_line.as_bytes());
                                 };
 
                                 match key.code {
                                     KeyCode::Up => {
                                         if let Some(ref mut picker) = pending_session_picker {
-                                            picker.selected_index = if picker.selected_index == 0 {
-                                                picker.sessions.len() - 1
-                                            } else {
-                                                picker.selected_index - 1
-                                            };
-                                            redraw_picker(picker, parser);
+                                            if picker.selected_index > 0 {
+                                                picker.selected_index -= 1;
+                                                // Scroll viewport up if selection went above visible window
+                                                if picker.selected_index < picker.viewport_offset {
+                                                    picker.viewport_offset = picker.selected_index;
+                                                }
+                                                redraw_picker(picker, parser);
+                                            }
                                         }
                                         key_handled = true;
                                     }
                                     KeyCode::Down => {
                                         if let Some(ref mut picker) = pending_session_picker {
-                                            picker.selected_index = if picker.selected_index >= picker.sessions.len() - 1 {
-                                                0
-                                            } else {
-                                                picker.selected_index + 1
-                                            };
-                                            redraw_picker(picker, parser);
+                                            if picker.selected_index < picker.sessions.len() - 1 {
+                                                picker.selected_index += 1;
+                                                // Scroll viewport down if selection went below visible window
+                                                let visible_count = picker.sessions.len().min(VISIBLE_SESSIONS);
+                                                if picker.selected_index >= picker.viewport_offset + visible_count {
+                                                    picker.viewport_offset = picker.selected_index - visible_count + 1;
+                                                }
+                                                redraw_picker(picker, parser);
+                                            }
                                         }
                                         key_handled = true;
                                     }
@@ -323,25 +339,6 @@ pub(crate) fn event_loop(
                                             // Clear the picker lines
                                             for _ in 0..picker.prompt_lines {
                                                 parser.process(b"\x1b[A\r\x1b[K");
-                                            }
-                                        }
-                                        key_handled = true;
-                                    }
-                                    KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                                        let idx = (c as usize) - ('1' as usize);
-                                        if let Some(ref picker) = pending_session_picker {
-                                            if idx < picker.sessions.len() {
-                                                let sid = picker.sessions[idx].id.clone();
-                                                let prompt_lines = picker.prompt_lines;
-                                                pending_session_picker = None;
-                                                if let Some(ref mut c) = client {
-                                                    if let Some(frame) = ipc_messages::build_load_session(&sid) {
-                                                        c.send(&frame);
-                                                    }
-                                                }
-                                                for _ in 0..prompt_lines {
-                                                    parser.process(b"\x1b[A\r\x1b[K");
-                                                }
                                             }
                                         }
                                         key_handled = true;
@@ -734,6 +731,7 @@ pub(crate) fn event_loop(
                                                         }
 
                                                         InputAction::Clear => {
+                                                            // Reset the visual state
                                                             let term_size = term.size()?;
                                                             let rows = parser_rows_from_term_height(term_size.height);
                                                             let cols = parser_cols_from_term_width(term_size.width);
@@ -746,6 +744,16 @@ pub(crate) fn event_loop(
                                                             *prompt_is_live = false;
                                                             tracker.clear();
                                                             tool_result_modal.close();
+
+                                                            // Re-emit the welcome header
+                                                            push_intro(parser);
+
+                                                            // Tell the daemon to start a fresh session
+                                                            if let Some(ref mut c) = client {
+                                                                if let Some(frame) = ipc_messages::build_new_session() {
+                                                                    c.send(&frame);
+                                                                }
+                                                            }
                                                         }
 
                                                         InputAction::Reset => {
