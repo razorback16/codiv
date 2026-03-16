@@ -33,25 +33,39 @@ codiv (TUI client)          codivd (daemon)
 | `codiv-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
 | `codiv-common` | Shared types — IPC messages, config, utilities |
 
-## Getting Started
+## Install
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap razorback16/codiv https://github.com/razorback16/codiv.git
+brew install codiv
+```
+
+This installs both `codiv` and `codivd`.
+
+### Cargo Install (from Git)
+
+```bash
+cargo install --git https://github.com/razorback16/codiv.git codiv
+cargo install --git https://github.com/razorback16/codiv.git codivd
+```
+
+Requires the Rust toolchain — install via [rustup](https://rustup.rs/).
+
+### Build from Source
+
+```bash
+git clone https://github.com/razorback16/codiv.git
+cd codiv
+cargo build --workspace --release
+ln -sf "$(pwd)/target/release/codiv" /usr/local/bin/codiv
+ln -sf "$(pwd)/target/release/codivd" /usr/local/bin/codivd
+```
 
 ### Prerequisites
 
-- Rust toolchain (stable)
 - An API key for at least one LLM provider (Anthropic, OpenAI, or Google)
-
-### Build
-
-```bash
-cargo build --workspace
-```
-
-### Install
-
-```bash
-cargo build --workspace --release
-ln -sf "$(pwd)/target/release/codiv" /usr/local/bin/codiv
-```
 
 ### Run
 

@@ -88,7 +88,7 @@ Logs are written to `/tmp/codiv-debug.log`. This is useful for debugging IPC iss
 ## Project Structure
 
 ```
-slate-agent/
+codiv/
 ├── codiv/          # TUI client crate
 │   └── src/
 ├── codivd/         # Daemon crate
