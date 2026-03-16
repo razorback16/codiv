@@ -14,6 +14,43 @@ Before installing Codiv, make sure you have:
   - [OpenAI](https://platform.openai.com/) (GPT)
   - [Google](https://aistudio.google.com/) (Gemini)
 
+## Quick Install
+
+The fastest way to install Codiv:
+
+```bash
+curl -fsSL https://codiv.ai/install.sh | bash
+```
+
+This will:
+1. Download the latest release for your platform
+2. Install `codiv` and `codivd` to `~/.local/bin/`
+3. Add `~/.local/bin` to your PATH (if needed)
+4. Start the `codivd` daemon as a system service
+
+To install a specific version:
+
+```bash
+curl -fsSL https://codiv.ai/install.sh | bash -s -- v0.1.0
+```
+
+### Uninstall
+
+**macOS:**
+```bash
+launchctl bootout gui/$(id -u)/ai.codiv.daemon
+rm ~/Library/LaunchAgents/ai.codiv.daemon.plist
+rm ~/.local/bin/codiv ~/.local/bin/codivd
+```
+
+**Linux:**
+```bash
+systemctl --user disable --now codivd.service
+rm ~/.config/systemd/user/codivd.service
+systemctl --user daemon-reload
+rm ~/.local/bin/codiv ~/.local/bin/codivd
+```
+
 ## Homebrew (macOS / Linux)
 
 The easiest way to install Codiv:
@@ -24,6 +61,12 @@ brew install codiv
 ```
 
 This installs both `codiv` (TUI client) and `codivd` (daemon).
+
+To run the daemon as a managed service:
+
+```bash
+brew services start codiv
+```
 
 ## Cargo Install (from Git)
 
@@ -44,8 +87,8 @@ Clone the repository and build all workspace crates:
 git clone https://github.com/razorback16/codiv.git
 cd codiv
 cargo build --workspace --release
-ln -sf "$(pwd)/target/release/codiv" /usr/local/bin/codiv
-ln -sf "$(pwd)/target/release/codivd" /usr/local/bin/codivd
+ln -sf "$(pwd)/target/release/codiv" ~/.local/bin/codiv
+ln -sf "$(pwd)/target/release/codivd" ~/.local/bin/codivd
 ```
 
 This compiles the `codiv` client, `codivd` daemon, and all shared library crates, then symlinks both binaries to your `PATH`.
@@ -58,7 +101,7 @@ Confirm the installation worked:
 codiv --help
 ```
 
-You should see the Codiv help output listing available subcommands and flags. If you see a "command not found" error, make sure `/usr/local/bin` is on your `PATH`.
+You should see the Codiv help output listing available subcommands and flags. If you see a "command not found" error, make sure `~/.local/bin` is on your `PATH`.
 
 ## Next Steps
 
