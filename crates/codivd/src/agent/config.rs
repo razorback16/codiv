@@ -450,7 +450,7 @@ fn build_openai_compatible_model(
 
     let model = OpenAICompatible::<aisdk::core::DynamicModel>::builder()
         .provider_name(provider_name)
-        .base_url(strip_v1_suffix(base_url))
+        .base_url(base_url)
         .api_key(api_key)
         .model_name(model_name)
         .build()?;
@@ -469,6 +469,7 @@ const INITIAL_BACKOFF_MS: u64 = 1000;
 pub async fn stream_from_config(
     assignment: &ModelAssignment,
     provider_config: &ProviderConfig,
+    system_prompt: &str,
     messages: aisdk::core::messages::Messages,
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
@@ -480,21 +481,21 @@ pub async fn stream_from_config(
         let result = match assignment.provider.as_str() {
             "anthropic" => {
                 let model = build_anthropic_model(&assignment.model, provider_config)?;
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
+                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
             }
             "openai" => {
                 let model = build_openai_model(&assignment.model, provider_config)?;
                 let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools, thinking).await
+                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools, thinking).await
             }
             "google" => {
                 let model = build_google_model(&assignment.model, provider_config)?;
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
+                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
             }
             other => {
                 let model = build_openai_compatible_model(&assignment.model, other, provider_config)?;
                 let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
-                run_stream(model, messages.clone(), request_id, tx, assignment, tools, thinking).await
+                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools, thinking).await
             }
         };
 
@@ -533,6 +534,7 @@ pub async fn stream_from_config(
 
 async fn run_stream<M>(
     model: M,
+    system_prompt: &str,
     messages: aisdk::core::messages::Messages,
     request_id: &str,
     tx: &mpsc::Sender<Vec<u8>>,
@@ -545,6 +547,7 @@ where
 {
     let mut builder = LanguageModelRequest::builder()
         .model(model)
+        .system(system_prompt)
         .messages(messages);
 
     if thinking {

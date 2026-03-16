@@ -133,13 +133,14 @@ impl Agent {
     /// AssistantText become Assistant messages.
     /// ToolCall/ToolResult are mapped to appropriate aisdk tool message pairs.
     fn build_messages(&self) -> Messages {
-        use aisdk::core::messages::{SystemMessage, UserMessage};
+        use aisdk::core::messages::UserMessage;
 
         // Build the message list directly (instead of via the builder) so we
         // can include native tool-call / tool-result message variants that the
         // builder does not expose convenience methods for.
+        // Note: system prompt is passed separately via .system() on the request
+        // builder, not as a Message::System in the vec (aisdk pattern).
         let mut messages: Messages = Vec::new();
-        messages.push(Message::System(SystemMessage::new(&self.system_prompt)));
 
         for event in &self.history {
             match event {
@@ -248,7 +249,7 @@ impl Agent {
             permission_ctx,
         );
 
-        config::stream_from_config(&self.model_config, &self.provider_config, messages, request_id, client_tx, tools, thinking)
+        config::stream_from_config(&self.model_config, &self.provider_config, &self.system_prompt, messages, request_id, client_tx, tools, thinking)
             .await
             .map_err(|e| e.to_string())
     }
