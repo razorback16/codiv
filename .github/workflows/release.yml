@@ -34,15 +34,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry and build
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.target }}-cargo-
+          shared-key: ${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Build
         run: cargo build --workspace --release --target ${{ matrix.target }}
