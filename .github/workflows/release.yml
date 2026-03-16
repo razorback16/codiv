@@ -71,11 +71,16 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Generate checksums
+        run: sha256sum codiv-*.tar.gz > checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: codiv-*.tar.gz
+          files: |
+            codiv-*.tar.gz
+            checksums.txt
 
   update-formula:
     name: Update Homebrew Formula
@@ -127,6 +132,33 @@ jobs:
             def install
               bin.install "codiv"
               bin.install "codivd"
+            end
+
+            service do
+              run [opt_bin/"codivd", "--foreground"]
+              keep_alive true
+              working_dir var
+              log_path var/"log/codivd.log"
+              error_log_path var/"log/codivd.log"
+              environment_variables HOME: Dir.home
+            end
+
+            def post_install
+              (var/"log").mkpath
+            end
+
+            def caveats
+              <<~EOS
+                To start codivd as a background daemon managed by launchd:
+                  brew services start codiv
+
+                The codiv TUI will also auto-launch codivd if it's not running,
+                but using brew services gives you auto-restart on crash and
+                automatic startup on login.
+
+                Logs: #{var}/log/codivd.log
+                Config: ~/.codiv/config.toml
+              EOS
             end
 
             test do
