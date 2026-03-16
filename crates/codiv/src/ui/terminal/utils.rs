@@ -40,6 +40,21 @@ impl NoticeKind {
     }
 }
 
+/// Reset the parser to a blank screen, clear scroll and block state, and re-emit the intro.
+pub(crate) fn reset_screen(
+    parser: &mut vt100::Parser,
+    scroll_offset: &mut usize,
+    tracker: &mut crate::ui::blocks::BlockRegistry,
+) {
+    let screen = parser.screen();
+    let rows = screen.size().0;
+    let cols = screen.size().1;
+    *parser = vt100::Parser::new(rows, cols, super::state::MAX_SCROLLBACK);
+    *scroll_offset = 0;
+    tracker.clear();
+    push_intro(parser);
+}
+
 /// Render the welcome header: "codiv v{VERSION} — type 'exit' to quit".
 pub(crate) fn push_intro(parser: &mut vt100::Parser) {
     parser_push_notice(
