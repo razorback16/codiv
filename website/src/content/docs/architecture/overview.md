@@ -16,19 +16,33 @@ This split keeps the terminal responsive. The client handles rendering and input
 
 ## Architecture Diagram
 
-```
-codiv (TUI client)          codivd (daemon)
-┌────────────────┐          ┌──────────────────────┐
-│ ratatui + pty  │◄─IPC────►│ tokio + aisdk        │
-│ command index  │ bincode  │ agent + tool loop    │
-│ tab completion │  over    │ session management   │
-│ markdown render│  unix    │ worker bash sessions │
-└────────────────┘ socket   └──────────────────────┘
-                                      │
-                            ┌─────────┴─────────┐
-                            │   codiv-tools      │
-                            │ (shared lib crate) │
-                            └───────────────────┘
+```mermaid
+graph TD
+    subgraph Client["codiv (TUI client)"]
+        direction LR
+        C1[Terminal UI\nratatui + crossterm]
+        C2[Bash Co-Process\nportable-pty]
+        C3[Markdown Render\nstreamdown-rs]
+    end
+
+    subgraph Daemon["codivd (async daemon)"]
+        direction LR
+        D1[Agent System\naisdk]
+        D2[Session Store\nSQLite]
+        D3[Permission\nSystem]
+    end
+
+    Client <-->|"IPC · bincode\nUnix socket"| Daemon
+    D1 <-->|streaming| LLM[LLM Providers\nAnthropic · OpenAI · Google]
+
+    subgraph Shared["shared crates"]
+        direction LR
+        S1[codiv-common\nIPC messages · config · types]
+        S2[codiv-tools\nbash · read · write · edit · glob · grep]
+    end
+
+    Client --- Shared
+    Daemon --- Shared
 ```
 
 ## Crate Structure

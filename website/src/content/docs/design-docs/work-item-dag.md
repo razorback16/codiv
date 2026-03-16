@@ -27,25 +27,14 @@ Each Work Item tracks:
 
 Work Items follow a deterministic state machine:
 
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Running : dependencies met
+    Running --> Completed
+    Running --> Failed
+    note right of Pending : Additional states:\nBlocked, Cancelled
 ```
-              ┌─────────┐
-              │ Pending  │
-              └────┬─────┘
-                   │ (dependencies met)
-                   ▼
-              ┌─────────┐
-     ┌────────│ Running  │────────┐
-     │        └─────────┘        │
-     ▼                           ▼
-┌───────────┐           ┌────────────┐
-│ Completed │           │  Failed    │
-└───────────┘           └────────────┘
-```
-
-Additional states:
-
-- **Blocked** — waiting on a dependency that has not completed yet
-- **Cancelled** — explicitly stopped by the user or orchestrator
 
 ## DAG Construction
 
@@ -58,10 +47,13 @@ When the agent receives a complex task, it:
 
 For example, "refactor the auth module and update all tests" might produce:
 
-```
-[Read auth module] ──► [Plan refactoring] ──► [Edit auth code] ──► [Run tests]
-                                                      │
-                                               [Update test files] ──┘
+```mermaid
+graph LR
+    A[Read auth module] --> B[Plan refactoring]
+    B --> C[Edit auth code]
+    C --> D[Run tests]
+    B --> E[Update test files]
+    E --> D
 ```
 
 ## Concurrent Execution

@@ -20,26 +20,13 @@ The agent system evolves across project phases:
 
 The agent operates in a reason-act cycle:
 
-```
-                    ┌───────────────┐
-                    │  User Query   │
-                    └──────┬────────┘
-                           ▼
-                    ┌───────────────┐
-              ┌────►│  LLM Reason   │
-              │     └──────┬────────┘
-              │            │
-              │       Tool call?
-              │       /        \
-              │     Yes         No
-              │      │           │
-              │      ▼           ▼
-              │ ┌──────────┐  ┌──────────────┐
-              │ │ Execute  │  │ Final Answer │
-              │ │   Tool   │  │  (streamed)  │
-              │ └────┬─────┘  └──────────────┘
-              │      │
-              └──────┘
+```mermaid
+flowchart TD
+    A[User Query] --> B[LLM Reason]
+    B --> C{Tool call?}
+    C -- Yes --> D[Execute Tool]
+    D --> B
+    C -- No --> E[Final Answer\n streamed]
 ```
 
 Each tool call result feeds back into the LLM context for the next reasoning step. The agent can chain many tools — for example, grep to find files, read to examine them, edit to make changes, then bash to run tests.

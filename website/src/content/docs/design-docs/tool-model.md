@@ -44,11 +44,12 @@ Prompt tools are useful for domain-specific workflows that do not require code e
 
 Codiv can bridge to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers:
 
-```
-Agent ──► Codiv Tool Interface ──► MCP Bridge ──► MCP Server
-                                        │
-                                   CLI ↔ MCP
-                                   translation
+```mermaid
+graph LR
+    A[Agent] --> B[Codiv Tool Interface]
+    B --> C[MCP Bridge]
+    C --> D[MCP Server]
+    C --- E[CLI ↔ MCP\ntranslation]
 ```
 
 The bridge translates between Codiv's CLI tool interface and MCP's JSON-RPC protocol. This lets agents use any MCP-compatible tool server without modification.
