@@ -69,65 +69,10 @@ async fn call_evaluator_llm(
     provider_config: &ProviderConfig,
     prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    use aisdk::core::LanguageModelRequest;
-    use aisdk::core::messages::Message;
-    use futures::StreamExt;
-
-    let messages = Message::builder()
-        .system("You are a security evaluator. Respond only with ALLOW or DENY.")
-        .user(prompt)
-        .build();
-
-    // Build model based on provider
-    match assignment.provider.as_str() {
-        "anthropic" => {
-            let model = super::config::build_anthropic_model_pub(&assignment.model, provider_config)?;
-            let mut response = LanguageModelRequest::builder()
-                .model(model)
-                .messages(messages)
-                .build()
-                .stream_text()
-                .await?;
-            let mut text = String::new();
-            while let Some(chunk) = response.stream.next().await {
-                if let aisdk::core::LanguageModelStreamChunkType::Text(t) = chunk {
-                    text.push_str(&t);
-                }
-            }
-            Ok(text)
-        }
-        "openai" => {
-            let model = super::config::build_openai_model_pub(&assignment.model, provider_config)?;
-            let mut response = LanguageModelRequest::builder()
-                .model(model)
-                .messages(messages)
-                .build()
-                .stream_text()
-                .await?;
-            let mut text = String::new();
-            while let Some(chunk) = response.stream.next().await {
-                if let aisdk::core::LanguageModelStreamChunkType::Text(t) = chunk {
-                    text.push_str(&t);
-                }
-            }
-            Ok(text)
-        }
-        "google" => {
-            let model = super::config::build_google_model_pub(&assignment.model, provider_config)?;
-            let mut response = LanguageModelRequest::builder()
-                .model(model)
-                .messages(messages)
-                .build()
-                .stream_text()
-                .await?;
-            let mut text = String::new();
-            while let Some(chunk) = response.stream.next().await {
-                if let aisdk::core::LanguageModelStreamChunkType::Text(t) = chunk {
-                    text.push_str(&t);
-                }
-            }
-            Ok(text)
-        }
-        other => Err(format!("unsupported provider: {}", other).into()),
-    }
+    super::config::simple_text_completion(
+        assignment,
+        provider_config,
+        "You are a security evaluator. Respond only with ALLOW or DENY.",
+        prompt,
+    ).await
 }

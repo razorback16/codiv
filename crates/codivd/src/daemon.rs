@@ -724,57 +724,19 @@ async fn generate_session_name(prompt: &str, models: &crate::agent::config::Mode
 
     info!("generate_session_name: using {}/{}", assignment.provider, assignment.model);
 
-    let messages = aisdk::core::messages::Message::builder()
-        .system("Generate a concise 3-5 word title for this conversation. Reply with ONLY the title, no quotes or punctuation.")
-        .user(format!("First message: {}", &prompt[..prompt.len().min(200)]))
-        .build();
+    let user_prompt = format!("First message: {}", &prompt[..prompt.len().min(200)]);
 
-    let result = match assignment.provider.as_str() {
-        "anthropic" => {
-            let model = crate::agent::config::build_anthropic_model_pub(&assignment.model, &provider_config).ok()?;
-            generate_with_model(model, messages).await
-        }
-        "openai" => {
-            let model = crate::agent::config::build_openai_model_pub(&assignment.model, &provider_config).ok()?;
-            generate_with_model(model, messages).await
-        }
-        "google" => {
-            let model = crate::agent::config::build_google_model_pub(&assignment.model, &provider_config).ok()?;
-            generate_with_model(model, messages).await
-        }
-        _ => None,
-    };
+    let result = crate::agent::config::simple_text_completion(
+        &assignment,
+        &provider_config,
+        "Generate a concise 3-5 word title for this conversation. Reply with ONLY the title, no quotes or punctuation.",
+        &user_prompt,
+    )
+        .await
+        .ok();
 
     result.map(|s| {
         let s = s.trim().to_string();
         if s.len() > 80 { s[..80].to_string() } else { s }
     })
-}
-
-async fn generate_with_model<M>(model: M, messages: aisdk::core::messages::Messages) -> Option<String>
-where
-    M: aisdk::core::LanguageModel
-        + aisdk::core::capabilities::TextInputSupport
-        + aisdk::core::capabilities::ToolCallSupport
-        + aisdk::core::capabilities::ReasoningSupport
-        + Send
-        + Sync
-        + 'static,
-{
-    use aisdk::core::LanguageModelRequest;
-    use futures::StreamExt;
-
-    let mut request = LanguageModelRequest::builder()
-        .model(model)
-        .messages(messages)
-        .build();
-
-    let mut response = request.stream_text().await.ok()?;
-    let mut text = String::new();
-    while let Some(chunk) = response.stream.next().await {
-        if let aisdk::core::LanguageModelStreamChunkType::Text(t) = chunk {
-            text.push_str(&t);
-        }
-    }
-    if text.is_empty() { None } else { Some(text) }
 }
