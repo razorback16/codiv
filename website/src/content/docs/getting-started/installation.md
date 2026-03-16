@@ -9,34 +9,46 @@ order: 1
 
 Before installing Codiv, make sure you have:
 
-- **Rust toolchain** (stable) — install via [rustup](https://rustup.rs/)
 - **An LLM API key** from at least one supported provider:
   - [Anthropic](https://console.anthropic.com/) (Claude)
   - [OpenAI](https://platform.openai.com/) (GPT)
   - [Google](https://aistudio.google.com/) (Gemini)
+
+## Homebrew (macOS / Linux)
+
+The easiest way to install Codiv:
+
+```bash
+brew tap razorback16/codiv https://github.com/razorback16/codiv.git
+brew install codiv
+```
+
+This installs both `codiv` (TUI client) and `codivd` (daemon).
+
+## Cargo Install (from Git)
+
+If you have the [Rust toolchain](https://rustup.rs/) installed:
+
+```bash
+cargo install --git https://github.com/razorback16/codiv.git codiv
+cargo install --git https://github.com/razorback16/codiv.git codivd
+```
+
+Both commands are needed — `codiv` is the TUI client and `codivd` is the daemon it connects to.
 
 ## Build from Source
 
 Clone the repository and build all workspace crates:
 
 ```bash
-git clone https://github.com/razorback16/slate-agent.git
-cd slate-agent
-cargo build --workspace
-```
-
-This compiles the `codiv` client, `codivd` daemon, and all shared library crates.
-
-## Install
-
-For a release build with optimizations, run:
-
-```bash
+git clone https://github.com/razorback16/codiv.git
+cd codiv
 cargo build --workspace --release
 ln -sf "$(pwd)/target/release/codiv" /usr/local/bin/codiv
+ln -sf "$(pwd)/target/release/codivd" /usr/local/bin/codivd
 ```
 
-This creates a symlink so `codiv` is available on your `PATH`.
+This compiles the `codiv` client, `codivd` daemon, and all shared library crates, then symlinks both binaries to your `PATH`.
 
 ## Verify
 

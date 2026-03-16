@@ -10,7 +10,7 @@ order: 2
 Codiv is a Cargo workspace with four crates:
 
 ```
-slate-agent/
+codiv/
 ├── Cargo.toml          # Workspace root
 ├── codiv/              # TUI client
 ├── codivd/             # Async daemon
