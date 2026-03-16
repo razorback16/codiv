@@ -3,6 +3,7 @@
 
 <section class="hero">
   <div class="container hero-inner">
+    <img class="hero-wordmark" src="/icons/codiv-icon-animated.svg" alt="Codiv" />
     <h1 class="hero-heading">Your terminal, supercharged with AI</h1>
     <p class="hero-subheading">
       Codiv replaces your shell with an intelligent terminal that runs commands instantly and handles complex AI tasks — all in one interface.
@@ -24,6 +25,23 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+  }
+
+  .hero-wordmark {
+    max-width: 240px;
+    height: auto;
+    margin-bottom: var(--space-8);
+    border-radius: 8px;
+  }
+
+  :global([data-theme="dark"]) .hero-wordmark {
+    filter: invert(1);
+  }
+
+  @media (max-width: 480px) {
+    .hero-wordmark {
+      max-width: 160px;
+    }
   }
 
   .hero-heading {
