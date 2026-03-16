@@ -6,6 +6,9 @@ export default defineConfig({
   site: 'https://codiv.ai',
   base: '/',
   integrations: [mdx(), sitemap()],
+  redirects: {
+    '/install.sh': 'https://raw.githubusercontent.com/razorback16/codiv/main/install.sh',
+  },
   markdown: {
     syntaxHighlight: {
       excludeLangs: ['mermaid'],
