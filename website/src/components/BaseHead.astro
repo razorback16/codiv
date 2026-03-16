@@ -47,7 +47,16 @@ const socialImageURL = image ? new URL(image, Astro.site) : undefined;
 
 <!-- Theme detection (runs before paint to prevent flash) -->
 <script is:inline>
-  const theme = localStorage.getItem('theme') ||
-    (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.setAttribute('data-theme', theme);
+  (function() {
+    var stored = localStorage.getItem('theme');
+    if (stored === 'light' || stored === 'dark') {
+      document.documentElement.setAttribute('data-theme', stored);
+      document.documentElement.style.colorScheme = stored;
+    } else {
+      var actual = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', actual);
+      document.documentElement.setAttribute('data-theme-mode', 'system');
+      document.documentElement.style.colorScheme = actual;
+    }
+  })();
 </script>

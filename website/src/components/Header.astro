@@ -5,7 +5,7 @@ import ThemeToggle from './ThemeToggle.astro';
 <header class="site-header">
   <div class="header-inner container">
     <a href="/" class="logo-link" aria-label="Codiv home">
-      <img class="logo-icon" src="/icons/codiv-icon.svg" width="32" height="32" alt="" aria-hidden="true" />
+      <img class="logo-icon" src="/favicon.svg" width="32" height="32" alt="" aria-hidden="true" />
       <span class="logo-text">codiv</span>
     </a>
 
@@ -71,6 +71,11 @@ import ThemeToggle from './ThemeToggle.astro';
 
   .logo-icon {
     flex-shrink: 0;
+    border-radius: 6px;
+  }
+
+  :global([data-theme="dark"]) .logo-icon {
+    filter: invert(1);
   }
 
   .logo-text {

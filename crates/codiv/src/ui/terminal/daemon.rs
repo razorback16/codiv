@@ -6,6 +6,7 @@ use codiv_common::permissions::PermissionMode;
 use crate::ipc::messages as ipc_messages;
 use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
+use crate::ui::theme::Theme;
 
 use super::state::{PendingConfirmation, PendingSessionPicker};
 use super::utils::{get_scrollback_line, parser_push_notice, push_intro, NoticeKind};
@@ -18,12 +19,13 @@ fn finalize_thinking(
     thinking_buffer: &mut String,
     thinking_start: &mut Option<Instant>,
     thinking_scrollback: &mut Option<u64>,
+    theme: &Theme,
 ) -> bool {
     if let Some(start) = thinking_start.take() {
         let duration_secs = start.elapsed().as_secs_f32();
         // Move cursor up one line and clear it (overwrite placeholder)
         parser.process(b"\x1b[A\r\x1b[K");
-        let summary = format!("\x1b[90mThought for {:.0}s\x1b[0m\r\n", duration_secs);
+        let summary = format!("{}Thought for {:.0}s\x1b[0m\r\n", theme.ansi_thinking, duration_secs);
         parser.process(summary.as_bytes());
         let content = std::mem::take(thinking_buffer);
         if let Some(sl) = thinking_scrollback.take() {
@@ -173,6 +175,7 @@ fn handle_single_message(
     last_permission_outcome: &mut Option<(String, bool, String)>,
     session_id: &mut Option<String>,
     session_name: &mut Option<String>,
+    theme: &Theme,
 ) {
     match msg {
         ipc_messages::DaemonMessage::AgentStreamChunk {
@@ -187,6 +190,7 @@ fn handle_single_message(
                         thinking_buffer,
                         thinking_start,
                         thinking_scrollback,
+                        theme,
                     );
                     // Strip leading whitespace from the first text chunk of a response.
                     let t = if ai_start_scrollback.is_none() {
@@ -210,7 +214,8 @@ fn handle_single_message(
                         *thinking_start = Some(Instant::now());
                         *thinking_scrollback = Some(get_scrollback_line(parser));
                         // Write placeholder line
-                        parser.process(b"\x1b[90mThinking...\x1b[0m\r\n");
+                        let thinking_line = format!("{}Thinking...\x1b[0m\r\n", theme.ansi_thinking);
+                        parser.process(thinking_line.as_bytes());
                     }
                     thinking_buffer.push_str(&t);
                 }
@@ -227,6 +232,7 @@ fn handle_single_message(
                             thinking_buffer,
                             thinking_start,
                             thinking_scrollback,
+                            theme,
                         );
                         // Flush any buffered markdown
                         let pending = md_stream.finish();
@@ -257,7 +263,7 @@ fn handle_single_message(
                             canonical
                         );
                         tracker.record_tool_call_delta(canonical, scrollback_line);
-                        let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", canonical);
+                        let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, canonical);
                         parser.process(header_line.as_bytes());
                     }
                     // Subsequent deltas: no-op
@@ -271,6 +277,7 @@ fn handle_single_message(
                             thinking_buffer,
                             thinking_start,
                             thinking_scrollback,
+                            theme,
                         );
                         let pending = md_stream.finish();
                         if !pending.is_empty() {
@@ -320,7 +327,7 @@ fn handle_single_message(
                                     tracker.last_tool_block_mut().map(|tb| tb.summary.clone());
                                 if let Some(summary) = summary {
                                     parser.process(b"\x1b[A\r\x1b[K");
-                                    let line = format!("\x1b[32m{}\x1b[0m\r\n", summary);
+                                    let line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done_suffix, summary);
                                     parser.process(line.as_bytes());
                                 }
                             }
@@ -339,18 +346,18 @@ fn handle_single_message(
                                     if granted {
                                         // Green header + "└ {reason}" + green summary
                                         let header_line =
-                                            format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                            format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
                                         parser.process(header_line.as_bytes());
                                         let perm_line =
-                                            format!("\x1b[32m  \u{2514} {}\x1b[0m\r\n", reason);
+                                            format!("{}  \u{2514} {}\x1b[0m\r\n", theme.ansi_tool_done_suffix, reason);
                                         parser.process(perm_line.as_bytes());
                                         // Normal summary line
                                         let is_bash_error = name.eq_ignore_ascii_case("bash")
                                             && !summary.contains("exit 0");
                                         let color = if is_bash_error {
-                                            "\x1b[31m"
+                                            theme.ansi_exit_failure
                                         } else {
-                                            "\x1b[32m"
+                                            theme.ansi_tool_done_suffix
                                         };
                                         let summary_line =
                                             format!("{}{}\x1b[0m\r\n", color, summary);
@@ -358,23 +365,23 @@ fn handle_single_message(
                                     } else {
                                         // Red header + "└ {reason}" (no tool summary since tool wasn't executed)
                                         let header_line =
-                                            format!("\x1b[1m\x1b[31m{}\x1b[0m\r\n", header);
+                                            format!("{}{}\x1b[0m\r\n", theme.ansi_tool_denied, header);
                                         parser.process(header_line.as_bytes());
                                         let perm_line =
-                                            format!("\x1b[31m  \u{2514} {}\x1b[0m\r\n", reason);
+                                            format!("{}  \u{2514} {}\x1b[0m\r\n", theme.ansi_tool_denied_suffix, reason);
                                         parser.process(perm_line.as_bytes());
                                     }
                                 } else {
                                     // No permission check — render as before (green header + summary)
                                     let header_line =
-                                        format!("\x1b[1m\x1b[32m{}\x1b[0m\r\n", header);
+                                        format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
                                     parser.process(header_line.as_bytes());
                                     let is_bash_error = name.eq_ignore_ascii_case("bash")
                                         && !summary.contains("exit 0");
                                     let color = if is_bash_error {
-                                        "\x1b[31m"
+                                        theme.ansi_exit_failure
                                     } else {
-                                        "\x1b[32m"
+                                        theme.ansi_tool_done_suffix
                                     };
                                     let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
                                     parser.process(summary_line.as_bytes());
@@ -396,6 +403,7 @@ fn handle_single_message(
                 thinking_buffer,
                 thinking_start,
                 thinking_scrollback,
+                theme,
             );
             if *agent_streaming {
                 let final_bytes = md_stream.finish();
@@ -441,10 +449,10 @@ fn handle_single_message(
             // Render multi-line yellow header
             for (i, line) in header_lines.iter().enumerate() {
                 if i == 0 {
-                    let header_line = format!("\x1b[1m\x1b[33m{}\x1b[0m\r\n", line);
+                    let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
                     parser.process(header_line.as_bytes());
                 } else {
-                    let content_line = format!("\x1b[33m{}\x1b[0m\r\n", line);
+                    let content_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
                     parser.process(content_line.as_bytes());
                 }
                 prompt_lines += 1;
@@ -493,9 +501,9 @@ fn handle_single_message(
             // Render options with first one selected
             for (i, option) in options.iter().enumerate() {
                 let (prefix, color) = if i == 0 {
-                    ("\u{203a}", "\x1b[1;37m") // › bold white for selected
+                    ("\u{203a}", theme.ansi_prompt_selected) // › bold for selected
                 } else {
-                    (" ", "\x1b[37m") // normal white
+                    (" ", theme.ansi_prompt_unselected)
                 };
                 parser.process(format!("    {}{} {}\x1b[0m\r\n", color, prefix, option).as_bytes());
                 prompt_lines += 1;
@@ -587,6 +595,7 @@ pub(crate) fn handle_daemon_message(
     pending_session_picker: &mut Option<PendingSessionPicker>,
     scroll_offset: &mut usize,
     md_stream_width: u16,
+    theme: &Theme,
 ) {
     match msg {
         ipc_messages::DaemonMessage::SessionList { sessions } => {
@@ -602,16 +611,17 @@ pub(crate) fn handle_daemon_message(
                     let name = s.name.as_deref().unwrap_or("(unnamed)");
                     let time = codiv_common::conversation::relative_time(&s.updated_at);
                     let (prefix, color) = if i == 0 {
-                        ("\u{203a}", "\x1b[1;37m")
+                        ("\u{203a}", theme.ansi_prompt_selected)
                     } else {
-                        (" ", "\x1b[37m")
+                        (" ", theme.ansi_prompt_unselected)
                     };
                     let line = format!(
-                        "{}  {}[{}] {} \x1b[90m({})\x1b[0m\r\n",
+                        "{}  {}[{}] {} {}({})\x1b[0m\r\n",
                         color,
                         prefix,
                         i + 1,
                         name,
+                        theme.ansi_thinking,
                         time
                     );
                     parser.process(line.as_bytes());
@@ -651,7 +661,7 @@ pub(crate) fn handle_daemon_message(
             push_intro(parser);
 
             // 2. Create fresh local replay state
-            let mut replay_md = MarkdownStream::new(md_stream_width);
+            let mut replay_md = MarkdownStream::new(md_stream_width, theme);
             let mut replay_agent_streaming = false;
             let mut replay_timestamp: u64 = 0;
             let mut replay_model = String::new();
@@ -675,7 +685,7 @@ pub(crate) fn handle_daemon_message(
                     match item {
                         ReplayItem::UserPrompt { text } => {
                             let scrollback_line = get_scrollback_line(parser);
-                            let prompt_display = format!("\x1b[1m{}\x1b[0m\r\n", text);
+                            let prompt_display = format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, text);
                             parser.process(prompt_display.as_bytes());
                             tracker.record_prompt(
                                 &text,
@@ -690,7 +700,7 @@ pub(crate) fn handle_daemon_message(
                             exit_code,
                         } => {
                             let scrollback_line = get_scrollback_line(parser);
-                            let cmd_display = format!("\x1b[1m{}\x1b[0m\r\n", command);
+                            let cmd_display = format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, command);
                             parser.process(cmd_display.as_bytes());
                             // Show truncated output, converting bare \n to \r\n for vt100
                             let out_preview = if output.len() > 200 {
@@ -707,9 +717,9 @@ pub(crate) fn handle_daemon_message(
                                 }
                             }
                             let color = if exit_code == 0 {
-                                "\x1b[32m"
+                                theme.ansi_exit_success
                             } else {
-                                "\x1b[31m"
+                                theme.ansi_exit_failure
                             };
                             parser.process(
                                 format!("{}exit {}\x1b[0m\r\n", color, exit_code).as_bytes(),
@@ -753,6 +763,7 @@ pub(crate) fn handle_daemon_message(
                                 &mut replay_last_perm,
                                 &mut replay_session_id,
                                 &mut replay_session_name,
+                                theme,
                             );
                         }
                     }
@@ -781,6 +792,7 @@ pub(crate) fn handle_daemon_message(
                 last_permission_outcome,
                 session_id,
                 session_name,
+                theme,
             );
         }
     }

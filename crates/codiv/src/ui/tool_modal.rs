@@ -3,6 +3,8 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block as RatatuiBlock, Borders, Clear, Paragraph, Wrap};
 
+use crate::ui::theme::Theme;
+
 /// A scrollable modal that overlays the terminal to show full tool output.
 pub struct ToolResultModal {
     visible: bool,
@@ -51,7 +53,7 @@ impl ToolResultModal {
         self.scroll_offset = (self.scroll_offset + n).min(max);
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let modal_area = centered_rect(80, 80, area);
 
         // Blank the background behind the modal.
@@ -59,7 +61,7 @@ impl ToolResultModal {
 
         let block = RatatuiBlock::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(theme.tool_modal_border))
             .title(format!(" {} ", self.title))
             .title_bottom(" ↑↓ scroll  Esc close ");
 
@@ -104,7 +106,7 @@ impl ToolResultModal {
                         if col < modal_area.right() {
                             buf[(col, y)]
                                 .set_char(ch)
-                                .set_fg(Color::DarkGray);
+                                .set_fg(theme.tool_modal_scroll_hint);
                         }
                     }
                 }

@@ -7,6 +7,7 @@ use super::utils::true_scrollback_len;
 use super::{PROMPT_GUTTER_WIDTH, STATUS_BAR_HEIGHT};
 use crate::shell::bash_coprocess::GitInfo;
 use crate::ui::completion_popup::CompletionPopup;
+use crate::ui::theme::Theme;
 use crate::ui::input::InputLine;
 use crate::ui::selection::TextSelection;
 use crate::ui::tool_modal::ToolResultModal;
@@ -55,6 +56,7 @@ pub(crate) fn render_frame(
     thinking_enabled: bool,
     permission_mode: PermissionMode,
     session_name: Option<&str>,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
@@ -133,17 +135,17 @@ pub(crate) fn render_frame(
                     let (scrollback_line, gutter_char, gutter_fg) = match block {
                         Block::Prompt(pb) => {
                             let (ch, fg) = match pb.mode {
-                                InputMode::Command => ('$', Color::White),
-                                InputMode::Ai => ('>', Color::Cyan),
+                                InputMode::Command => ('$', theme.gutter_cmd),
+                                InputMode::Ai => ('>', theme.gutter_ai),
                             };
                             (pb.start_index, ch, fg)
                         }
                         Block::AiResponse(ab) => {
-                            (ab.start_index, '\u{25CF}', Color::White)
+                            (ab.start_index, '\u{25CF}', theme.ai_bullet)
                         }
-                        Block::Thinking(tk) => (tk.start_index, '\u{25CB}', Color::DarkGray),
-                        Block::Tool(tb) => (tb.start_index, '\u{25CF}', Color::Green),
-                        Block::CmdResponse(cb) => (cb.start_index, '$', Color::White),
+                        Block::Thinking(tk) => (tk.start_index, '\u{25CB}', theme.thinking_text),
+                        Block::Tool(tb) => (tb.start_index, '\u{25CF}', theme.tool_bullet),
+                        Block::CmdResponse(cb) => (cb.start_index, '$', theme.gutter_cmd),
                     };
                     if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
                         let screen_row = (scrollback_line - abs_top) as u16;
@@ -158,8 +160,8 @@ pub(crate) fn render_frame(
                 // Live prompt: draw `>` at the current cursor row.
                 if *prompt_is_live && scroll_offset == 0 {
                     let (live_char, live_fg) = match input_mode {
-                        InputMode::Command => ('$', Color::White),
-                        InputMode::Ai => ('>', Color::Cyan),
+                        InputMode::Command => ('$', theme.gutter_cmd),
+                        InputMode::Ai => ('>', theme.gutter_ai),
                     };
                     let (cursor_row, _) = parser.screen().cursor_position();
                     let row = term_area.top() + cursor_row;
@@ -183,7 +185,7 @@ pub(crate) fn render_frame(
                             if row < term_area.bottom() {
                                 buf[(term_area.left(), row)]
                                     .set_char(anim.spinner_char())
-                                    .set_fg(Color::Yellow);
+                                    .set_fg(theme.spinner);
                             }
                         }
                     }
@@ -193,7 +195,7 @@ pub(crate) fn render_frame(
                     if row < term_area.bottom() {
                         buf[(term_area.left(), row)]
                             .set_char(anim.spinner_char())
-                            .set_fg(Color::Yellow);
+                            .set_fg(theme.spinner);
                     }
                 } else if is_thinking && scroll_offset == 0 {
                     let (cursor_row, _) = parser.screen().cursor_position();
@@ -201,7 +203,7 @@ pub(crate) fn render_frame(
                     if row < term_area.bottom() {
                         buf[(term_area.left(), row)]
                             .set_char(anim.spinner_char())
-                            .set_fg(Color::Yellow);
+                            .set_fg(theme.spinner);
                     }
                     // Overwrite the placeholder line (one above cursor) with animated dots.
                     let placeholder_row = row.saturating_sub(1);
@@ -212,7 +214,7 @@ pub(crate) fn render_frame(
                             if col < content_area.right() {
                                 buf[(col, placeholder_row)]
                                     .set_char(ch)
-                                    .set_fg(Color::DarkGray);
+                                    .set_fg(theme.thinking_text);
                             }
                         }
                         // Clear any leftover characters from longer previous text
@@ -254,8 +256,8 @@ pub(crate) fn render_frame(
                         let cell = &mut buf[(col, row)];
                         let fg = cell.fg;
                         let bg = cell.bg;
-                        cell.fg = if bg == Color::Reset { Color::Black } else { bg };
-                        cell.bg = if fg == Color::Reset { Color::White } else { fg };
+                        cell.fg = if bg == Color::Reset { theme.selection_fg } else { bg };
+                        cell.bg = if fg == Color::Reset { theme.selection_bg } else { fg };
                     }
                 }
             }
@@ -282,7 +284,7 @@ pub(crate) fn render_frame(
                 let (cursor_row, _cursor_col) = parser.screen().cursor_position();
                 let anchor_x = completion_anchor_x(term_area.left(), input.cursor_position());
                 let anchor_y = term_area.top() + cursor_row;
-                completion_popup.render(frame, anchor_x, anchor_y);
+                completion_popup.render(frame, anchor_x, anchor_y, theme);
             }
 
             // --- Render block selection overlay ---
@@ -315,7 +317,7 @@ pub(crate) fn render_frame(
                                 for col in term_area.left()..term_area.right() {
                                     let cell = &mut buf[(col, row)];
                                     cell.set_char('\u{2500}');
-                                    cell.set_fg(Color::DarkGray);
+                                    cell.set_fg(theme.separator);
                                 }
                             }
                         }
@@ -346,7 +348,7 @@ pub(crate) fn render_frame(
                             for (i, ch) in hint.chars().enumerate() {
                                 let col = text_end + i as u16;
                                 if col < term_area.right() {
-                                    buf[(col, hint_row)].set_char(ch).set_fg(Color::DarkGray);
+                                    buf[(col, hint_row)].set_char(ch).set_fg(theme.hint_text);
                                 }
                             }
                         }
@@ -367,7 +369,7 @@ pub(crate) fn render_frame(
                         });
                         if is_blank {
                             for col in term_area.left()..term_area.right() {
-                                buf[(col, row)].set_char('\u{2500}').set_fg(Color::DarkGray);
+                                buf[(col, row)].set_char('\u{2500}').set_fg(theme.separator);
                             }
                         }
                     }
@@ -376,7 +378,7 @@ pub(crate) fn render_frame(
 
             // --- Render tool result modal ---
             if tool_result_modal.is_visible() {
-                tool_result_modal.render(frame, area);
+                tool_result_modal.render(frame, area, theme);
             }
         }
     })?;
