@@ -67,4 +67,4 @@ echo '{"file_path":"./Cargo.toml"}' | codiv read --json-in --json-out
 
 ## Next Steps
 
-See the [Configuration](/slate-agent/docs/getting-started/configuration/) guide to set up your API keys and customize Codiv's behavior.
+See the [Configuration](/docs/getting-started/configuration/) guide to set up your API keys and customize Codiv's behavior.

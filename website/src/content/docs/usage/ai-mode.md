@@ -56,4 +56,4 @@ Risk level: MEDIUM
 [y] Allow  [n] Deny  [a] Always allow this command
 ```
 
-You can allow the command once, deny it, or add it to your permanent allowlist. See the [Safety & Audit](/slate-agent/docs/design-docs/safety-audit/) design doc for details on risk classification.
+You can allow the command once, deny it, or add it to your permanent allowlist. See the [Safety & Audit](/docs/design-docs/safety-audit/) design doc for details on risk classification.

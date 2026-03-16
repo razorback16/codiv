@@ -32,7 +32,7 @@ const currentPath = Astro.url.pathname;
       <p class="sidebar-section-title">{section.name}</p>
       <ul class="sidebar-links">
         {section.entries.map((entry) => {
-          const href = `/slate-agent/docs/${entry.id}/`;
+          const href = `/docs/${entry.id}/`;
           const isActive = currentPath.replace(/\/$/, '') === href.replace(/\/$/, '');
           return (
             <li>
