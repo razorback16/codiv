@@ -94,9 +94,19 @@ impl Daemon {
 
     pub async fn run(mut self) {
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
 
         loop {
             tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("received SIGTERM, shutting down");
+                    break;
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("received SIGINT, shutting down");
+                    break;
+                }
                 result = self.ipc.listener.accept() => {
                     if let Ok((stream, _)) = result {
                         let client_id = self.ipc.register_client(stream);
