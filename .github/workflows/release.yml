@@ -20,7 +20,7 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -29,16 +29,18 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           DIR="codiv-${TAG}-${{ matrix.target }}"
           mkdir "$DIR"
-          cp target/release/codiv target/release/codivd "$DIR/"
+          cp target/${{ matrix.target }}/release/codiv target/${{ matrix.target }}/release/codivd "$DIR/"
           cp LICENSE README.md "$DIR/"
           tar czf "${DIR}.tar.gz" "$DIR"
 
@@ -72,23 +74,57 @@ jobs:
         with:
           ref: main
 
-      - name: Update formula SHA256 hashes
+      - name: Update formula version, URLs, and SHA256 hashes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           gh release download "$TAG" --dir tarballs
 
-          SHA_ARM=$(shasum -a 256 tarballs/codiv-${TAG}-aarch64-apple-darwin.tar.gz | awk '{print $1}')
-          SHA_INTEL=$(shasum -a 256 tarballs/codiv-${TAG}-x86_64-apple-darwin.tar.gz | awk '{print $1}')
-          SHA_LINUX=$(shasum -a 256 tarballs/codiv-${TAG}-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')
+          SHA_ARM=$(sha256sum tarballs/codiv-${TAG}-aarch64-apple-darwin.tar.gz | awk '{print $1}')
+          SHA_INTEL=$(sha256sum tarballs/codiv-${TAG}-x86_64-apple-darwin.tar.gz | awk '{print $1}')
+          SHA_LINUX=$(sha256sum tarballs/codiv-${TAG}-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')
 
-          sed -i "s|SHA256_ARM_PLACEHOLDER|${SHA_ARM}|g" Formula/codiv.rb
-          sed -i "s|SHA256_INTEL_PLACEHOLDER|${SHA_INTEL}|g" Formula/codiv.rb
-          sed -i "s|SHA256_LINUX_PLACEHOLDER|${SHA_LINUX}|g" Formula/codiv.rb
+          # Generate the formula from scratch with correct values
+          cat > Formula/codiv.rb << RUBY
+          class Codiv < Formula
+            desc "Terminal-native AI coding assistant built in Rust"
+            homepage "https://codiv.ai"
+            version "${TAG}"
+            license "GPL-3.0-only"
 
-          # Also update the version/URLs
-          sed -i "s|VERSION_PLACEHOLDER|${TAG}|g" Formula/codiv.rb
+            on_macos do
+              on_arm do
+                url "https://github.com/razorback16/codiv/releases/download/${TAG}/codiv-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_ARM}"
+              end
+
+              on_intel do
+                url "https://github.com/razorback16/codiv/releases/download/${TAG}/codiv-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_INTEL}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/razorback16/codiv/releases/download/${TAG}/codiv-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "codiv"
+              bin.install "codivd"
+            end
+
+            test do
+              assert_match "codiv", shell_output("#{bin}/codiv --help")
+            end
+          end
+          RUBY
+
+          # Fix indentation (remove leading spaces from heredoc)
+          sed -i 's/^          //' Formula/codiv.rb
 
       - name: Commit updated formula
         run: |
