@@ -1,6 +1,6 @@
 use aisdk::core::tools::Tool;
 use aisdk::core::{LanguageModel, LanguageModelRequest, LanguageModelStreamChunkType};
-use aisdk::providers::{Anthropic, Google, OpenAI};
+use aisdk::providers::{Anthropic, Google, OpenAI, OpenAICompatible};
 use futures::StreamExt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -438,6 +438,25 @@ fn build_google_model(
     }
 }
 
+fn build_openai_compatible_model(
+    model_name: &str,
+    provider_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::OpenAICompatible<aisdk::core::DynamicModel>, DynError> {
+    let base_url = provider_config.base_url.as_deref()
+        .ok_or_else(|| format!("provider '{}' requires a base_url in config", provider_name))?;
+    let api_key = provider_config.api_key.clone()
+        .ok_or_else(|| format!("provider '{}' requires an api_key in config", provider_name))?;
+
+    let model = OpenAICompatible::<aisdk::core::DynamicModel>::builder()
+        .provider_name(provider_name)
+        .base_url(strip_v1_suffix(base_url))
+        .api_key(api_key)
+        .model_name(model_name)
+        .build()?;
+    Ok(model)
+}
+
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 
@@ -472,7 +491,11 @@ pub async fn stream_from_config(
                 let model = build_google_model(&assignment.model, provider_config)?;
                 run_stream(model, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
             }
-            other => return Err(format!("unsupported provider: {}", other).into()),
+            other => {
+                let model = build_openai_compatible_model(&assignment.model, other, provider_config)?;
+                let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
+                run_stream(model, messages.clone(), request_id, tx, assignment, tools, thinking).await
+            }
         };
 
         match result {

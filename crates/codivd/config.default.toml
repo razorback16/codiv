@@ -5,7 +5,7 @@
 
 # ── Models ──────────────────────────────────────────────────────────
 # The provider used when a role doesn't specify one.
-# Supported: "anthropic", "openai", "google"
+# Supported: "anthropic", "openai", "google", or any OpenAI-compatible provider name
 default_provider = "anthropic"
 
 # The model used when a role doesn't specify one.
@@ -30,6 +30,23 @@ mode = "auto"  # "auto" | "manual" | "bypass"
 #
 # [providers.google]
 # api_key = "..."                 # or set GOOGLE_API_KEY env var
+#
+# ── Custom OpenAI-compatible providers ─────────────────────────────
+# Any provider name other than "anthropic", "openai", or "google" is
+# treated as an OpenAI-compatible endpoint. Both api_key and base_url
+# are required for custom providers.
+#
+# [providers.deepseek]
+# api_key = "sk-..."
+# base_url = "https://api.deepseek.com"
+#
+# [providers.groq]
+# api_key = "gsk_..."
+# base_url = "https://api.groq.com/openai"
+#
+# [providers.ollama]
+# api_key = "ollama"              # ollama doesn't need a real key but field is required
+# base_url = "http://localhost:11434"
 
 # ── Per-role overrides ───────────────────────────────────────────────
 # Assign a specific provider/model to each agent role.
