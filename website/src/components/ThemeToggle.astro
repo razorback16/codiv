@@ -1,38 +1,86 @@
 ---
-// ThemeToggle.astro — 3-state toggle: Light / Dark / System
+// ThemeToggle.astro — Dropdown theme picker: Light / Dark / System
 ---
 
-<button
-  class="theme-toggle"
-  type="button"
-  aria-label="Toggle color theme"
-  title="Toggle color theme"
->
-  <!-- Sun icon (light mode) -->
-  <svg class="icon icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-    <circle cx="12" cy="12" r="5"/>
-    <line x1="12" y1="1" x2="12" y2="4"/>
-    <line x1="12" y1="20" x2="12" y2="23"/>
-    <line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/>
-    <line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/>
-    <line x1="1" y1="12" x2="4" y2="12"/>
-    <line x1="20" y1="12" x2="23" y2="12"/>
-    <line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/>
-    <line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/>
-  </svg>
-  <!-- Moon icon (dark mode) -->
-  <svg class="icon icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-  </svg>
-  <!-- Monitor icon (system mode) -->
-  <svg class="icon icon-monitor" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-    <rect x="2" y="3" width="20" height="14" rx="2"/>
-    <line x1="8" y1="21" x2="16" y2="21"/>
-    <line x1="12" y1="17" x2="12" y2="21"/>
-  </svg>
-</button>
+<div class="theme-picker">
+  <button
+    class="theme-toggle"
+    type="button"
+    aria-label="Toggle color theme"
+    aria-haspopup="true"
+    aria-expanded="false"
+  >
+    <!-- Sun icon (Lucide) -->
+    <svg class="icon icon-sun" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2"/>
+      <path d="M12 20v2"/>
+      <path d="m4.93 4.93 1.41 1.41"/>
+      <path d="m17.66 17.66 1.41 1.41"/>
+      <path d="M2 12h2"/>
+      <path d="M20 12h2"/>
+      <path d="m6.34 17.66-1.41 1.41"/>
+      <path d="m19.07 4.93-1.41 1.41"/>
+    </svg>
+    <!-- Moon icon (Lucide) -->
+    <svg class="icon icon-moon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+    </svg>
+    <!-- Monitor icon (Lucide) -->
+    <svg class="icon icon-monitor" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="20" height="14" x="2" y="3" rx="2"/>
+      <line x1="8" x2="16" y1="21" y2="21"/>
+      <line x1="12" x2="12" y1="17" y2="21"/>
+    </svg>
+  </button>
+
+  <div class="theme-dropdown" role="menu">
+    <button class="theme-option" role="menuitem" data-theme-value="light">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2"/>
+        <path d="M12 20v2"/>
+        <path d="m4.93 4.93 1.41 1.41"/>
+        <path d="m17.66 17.66 1.41 1.41"/>
+        <path d="M2 12h2"/>
+        <path d="M20 12h2"/>
+        <path d="m6.34 17.66-1.41 1.41"/>
+        <path d="m19.07 4.93-1.41 1.41"/>
+      </svg>
+      <span>Light</span>
+      <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"/>
+      </svg>
+    </button>
+    <button class="theme-option" role="menuitem" data-theme-value="dark">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+      </svg>
+      <span>Dark</span>
+      <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"/>
+      </svg>
+    </button>
+    <button class="theme-option" role="menuitem" data-theme-value="system">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect width="20" height="14" x="2" y="3" rx="2"/>
+        <line x1="8" x2="16" y1="21" y2="21"/>
+        <line x1="12" x2="12" y1="17" y2="21"/>
+      </svg>
+      <span class="system-label">System</span>
+      <span class="system-hint"></span>
+      <svg class="check-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"/>
+      </svg>
+    </button>
+  </div>
+</div>
 
 <style>
+  .theme-picker {
+    position: relative;
+  }
+
   .theme-toggle {
     display: inline-flex;
     align-items: center;
@@ -45,14 +93,10 @@
     border-radius: 8px;
     cursor: pointer;
     color: var(--color-text);
-    transition: transform 0.1s ease, box-shadow 0.1s ease;
+    transition: background 0.15s ease;
   }
 
   .theme-toggle:hover {
-    background: var(--color-bg-alt);
-  }
-
-  .theme-toggle:active {
     background: var(--color-bg-alt);
   }
 
@@ -60,83 +104,172 @@
     display: none;
   }
 
-  /* Show the correct icon based on data-theme */
-  :global([data-theme="light"]) .icon-sun {
+  /* Show icon based on current effective theme */
+  :global([data-theme="light"]:not([data-theme-mode="system"])) .icon-sun {
     display: block;
   }
 
-  :global([data-theme="dark"]) .icon-moon {
+  :global([data-theme="dark"]:not([data-theme-mode="system"])) .icon-moon {
     display: block;
   }
 
-  :global(:not([data-theme="light"]):not([data-theme="dark"])) .icon-monitor,
-  :global([data-theme="system"]) .icon-monitor {
+  :global([data-theme-mode="system"]) .icon-monitor {
     display: block;
+  }
+
+  /* Dropdown */
+  .theme-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 180px;
+    background: var(--color-bg);
+    border: var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 4px;
+    z-index: 1100;
+  }
+
+  .theme-picker.open .theme-dropdown {
+    display: block;
+  }
+
+  .theme-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--color-text);
+    font-family: var(--font-heading);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    text-align: left;
+    transition: background 0.1s ease;
+  }
+
+  .theme-option:hover {
+    background: var(--color-bg-alt);
+  }
+
+  .theme-option .check-icon {
+    display: none;
+    margin-left: auto;
+    color: var(--color-accent);
+  }
+
+  .theme-option.active .check-icon {
+    display: block;
+  }
+
+  .system-hint {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-weight: 400;
+  }
+
+  .system-label {
+    flex-shrink: 0;
   }
 </style>
 
 <script>
   (function () {
+    const picker = document.querySelector('.theme-picker');
     const btn = document.querySelector('.theme-toggle');
-    if (!btn) return;
+    const dropdown = document.querySelector('.theme-dropdown');
+    if (!picker || !btn || !dropdown) return;
 
     const STORAGE_KEY = 'theme';
-    const cycle = ['light', 'dark', 'system'];
+    const options = dropdown.querySelectorAll('.theme-option');
+    const systemHint = dropdown.querySelector('.system-hint');
 
-    function getCurrentTheme() {
-      return document.documentElement.getAttribute('data-theme') || 'system';
-    }
-
-    function applyTheme(theme: string) {
-      if (theme === 'system') {
-        localStorage.removeItem(STORAGE_KEY);
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', 'system');
-        // Apply actual colors based on system preference
-        if (prefersDark) {
-          document.documentElement.style.colorScheme = 'dark';
-        } else {
-          document.documentElement.style.colorScheme = 'light';
-        }
-        // Re-apply as the actual theme for CSS custom properties
-        // We keep data-theme="system" so the monitor icon shows,
-        // but we need the color variables from either light or dark.
-        // The global.css only has :root (light) and [data-theme="dark"].
-        // For system mode, we apply/remove dark based on preference.
-        if (prefersDark) {
-          document.documentElement.setAttribute('data-theme', 'dark');
-          // Override: we store system to know it's system mode
-          document.documentElement.dataset.themeMode = 'system';
-        } else {
-          document.documentElement.setAttribute('data-theme', 'light');
-          document.documentElement.dataset.themeMode = 'system';
-        }
-      } else {
-        localStorage.setItem(STORAGE_KEY, theme);
-        document.documentElement.setAttribute('data-theme', theme);
-        document.documentElement.style.colorScheme = theme;
-        delete document.documentElement.dataset.themeMode;
-      }
-    }
-
-    function getEffectiveMode() {
+    function getEffectiveMode(): string {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored === 'light' || stored === 'dark') return stored;
       return 'system';
     }
 
-    btn.addEventListener('click', () => {
-      const current = getEffectiveMode();
-      const idx = cycle.indexOf(current);
-      const next = cycle[(idx + 1) % cycle.length];
-      applyTheme(next);
+    function getSystemPreference(): string {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function applyTheme(theme: string) {
+      if (theme === 'system') {
+        localStorage.removeItem(STORAGE_KEY);
+        const actual = getSystemPreference();
+        document.documentElement.setAttribute('data-theme', actual);
+        document.documentElement.setAttribute('data-theme-mode', 'system');
+        document.documentElement.style.colorScheme = actual;
+      } else {
+        localStorage.setItem(STORAGE_KEY, theme);
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.removeAttribute('data-theme-mode');
+        document.documentElement.style.colorScheme = theme;
+      }
+      updateUI();
+    }
+
+    function updateUI() {
+      const mode = getEffectiveMode();
+      options.forEach((opt) => {
+        const value = (opt as HTMLElement).dataset.themeValue;
+        opt.classList.toggle('active', value === mode);
+      });
+      if (systemHint) {
+        const pref = getSystemPreference();
+        systemHint.textContent = pref === 'dark' ? '(dark)' : '(light)';
+      }
+    }
+
+    // Toggle dropdown
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = picker.classList.toggle('open');
+      btn.setAttribute('aria-expanded', String(isOpen));
+      if (isOpen) updateUI();
     });
 
-    // Listen for system preference changes when in system mode
+    // Option click
+    options.forEach((opt) => {
+      opt.addEventListener('click', () => {
+        const value = (opt as HTMLElement).dataset.themeValue;
+        if (value) applyTheme(value);
+        picker.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+      });
+    });
+
+    // Close on outside click
+    document.addEventListener('click', (e) => {
+      if (!picker.contains(e.target as Node)) {
+        picker.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        picker.classList.remove('open');
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+
+    // Listen for system preference changes
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (getEffectiveMode() === 'system') {
         applyTheme('system');
       }
     });
+
+    // Initial UI state
+    updateUI();
   })();
 </script>

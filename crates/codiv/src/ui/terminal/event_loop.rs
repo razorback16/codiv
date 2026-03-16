@@ -25,6 +25,7 @@ use super::input as terminal_input;
 use super::io as terminal_io;
 use super::io::TerminalColors;
 use super::render::render_frame;
+use crate::ui::theme::Theme;
 use codiv_common::permissions::PermissionMode;
 
 use super::state::{PendingCommand, PendingConfirmation, PendingSessionPicker, MAX_SCROLLBACK, VISIBLE_SESSIONS};
@@ -45,6 +46,7 @@ pub(crate) fn event_loop(
     client: &mut Option<CodivdClient>,
     prompt_is_live: &mut bool,
     terminal_colors: &TerminalColors,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_heartbeat_sent = Instant::now();
     let mut last_daemon_timestamp: u64 = 0;
@@ -67,6 +69,7 @@ pub(crate) fn event_loop(
         term.size()
             .map(|s| parser_cols_from_term_width(s.width))
             .unwrap_or(80),
+        theme,
     );
     let mut tracker = BlockRegistry::new();
     let mut tool_result_modal = ToolResultModal::new();
@@ -153,6 +156,7 @@ pub(crate) fn event_loop(
                 thinking_enabled,
                 permission_mode,
                 session_name.as_deref(),
+                theme,
             )?;
             needs_render = false;
         }
@@ -1028,6 +1032,7 @@ pub(crate) fn event_loop(
                         &mut pending_session_picker,
                         scroll_offset,
                         term.size().map(|s| parser_cols_from_term_width(s.width)).unwrap_or(80),
+                        theme,
                     );
                     // Drain any additional daemon messages that arrived.
                     while let Ok(msg2) = daemon_rx.try_recv() {
@@ -1053,6 +1058,7 @@ pub(crate) fn event_loop(
                             &mut pending_session_picker,
                             scroll_offset,
                             term.size().map(|s| parser_cols_from_term_width(s.width)).unwrap_or(80),
+                            theme,
                         );
                     }
                     needs_render = true;

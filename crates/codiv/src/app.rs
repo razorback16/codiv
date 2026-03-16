@@ -31,7 +31,8 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
 
     // 5. Run the terminal UI (blocks until exit)
     log::debug!("entering terminal UI");
-    ui::terminal::run(&mut bash, shutdown, cwd, client, terminal_colors)
+    let theme = ui::theme::Theme::detect(&terminal_colors);
+    ui::terminal::run(&mut bash, shutdown, cwd, client, terminal_colors, &theme)
 }
 
 fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<CodivdClient> {

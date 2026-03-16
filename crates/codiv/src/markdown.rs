@@ -5,6 +5,9 @@ use std::cell::RefCell;
 use streamdown_parser::Parser;
 use streamdown_render::{Renderer, RenderFeatures, RenderStyle};
 
+use crate::ui::color_downgrade::downgrade_ansi;
+use crate::ui::theme::{ColorDepth, Theme, ThemeMode};
+
 /// A shared byte buffer that implements `Write` so we can hand it to
 /// `Renderer` while still being able to drain the contents between pushes.
 #[derive(Clone)]
@@ -40,18 +43,23 @@ pub struct MarkdownStream {
     buf: SharedBuf,
     line_buffer: String,
     terminal_width: u16,
+    depth: ColorDepth,
+    is_light: bool,
 }
 
 impl MarkdownStream {
-    pub fn new(terminal_width: u16) -> Self {
+    pub fn new(terminal_width: u16, theme: &Theme) -> Self {
         let buf = SharedBuf::new();
-        let renderer = Self::build_renderer(buf.clone(), terminal_width);
+        let is_light = theme.mode == ThemeMode::Light;
+        let renderer = Self::build_renderer(buf.clone(), terminal_width, is_light);
         Self {
             parser: Parser::new(),
             renderer,
             buf,
             line_buffer: String::new(),
             terminal_width,
+            depth: theme.depth,
+            is_light,
         }
     }
 
@@ -79,7 +87,7 @@ impl MarkdownStream {
         } else {
             let raw = self.buf.drain();
             let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n");
-            Some(output.into_bytes())
+            Some(downgrade_ansi(&output.into_bytes(), self.depth))
         }
     }
 
@@ -98,7 +106,7 @@ impl MarkdownStream {
             return Vec::new();
         }
         let output = String::from_utf8_lossy(&raw).replace('\n', "\r\n");
-        output.into_bytes()
+        downgrade_ansi(&output.into_bytes(), self.depth)
     }
 
     /// Reset for a new streaming session.
@@ -106,30 +114,14 @@ impl MarkdownStream {
         self.parser.reset();
         self.line_buffer.clear();
         self.buf.drain();
-        self.renderer = Self::build_renderer(self.buf.clone(), self.terminal_width);
+        self.renderer = Self::build_renderer(self.buf.clone(), self.terminal_width, self.is_light);
     }
 
     pub fn set_width(&mut self, width: u16) {
         self.terminal_width = width;
     }
 
-    /// Detect whether the terminal has a light background.
-    /// Checks COLORFGBG env var (set by xterm, iTerm2, etc.).
-    /// Format: "foreground;background" — higher background values mean lighter.
-    fn detect_terminal_colorscheme() -> bool {
-        if let Ok(val) = std::env::var("COLORFGBG") {
-            if let Some(bg) = val.rsplit(';').next() {
-                if let Ok(n) = bg.parse::<u32>() {
-                    return n >= 8;
-                }
-            }
-        }
-        false
-    }
-
-    fn build_renderer(buf: SharedBuf, width: u16) -> Renderer<SharedBuf> {
-        let light = Self::detect_terminal_colorscheme();
-
+    fn build_renderer(buf: SharedBuf, width: u16, light: bool) -> Renderer<SharedBuf> {
         let style = if light {
             RenderStyle {
                 h1: "#1a1a1a".to_string(),

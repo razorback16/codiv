@@ -3,6 +3,8 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 
+use crate::ui::theme::Theme;
+
 /// Maximum number of visible rows in the popup.
 const MAX_VISIBLE_ROWS: usize = 10;
 
@@ -94,7 +96,7 @@ impl CompletionPopup {
     ///
     /// `anchor_x` is the column of the word start, `anchor_y` is the row
     /// just below where the popup should appear (typically the input line row).
-    pub fn render(&self, frame: &mut Frame, anchor_x: u16, anchor_y: u16) {
+    pub fn render(&self, frame: &mut Frame, anchor_x: u16, anchor_y: u16, theme: &Theme) {
         if !self.visible || self.candidates.is_empty() {
             return;
         }
@@ -146,9 +148,9 @@ impl CompletionPopup {
             .take(visible_count)
             .map(|(i, candidate)| {
                 let style = if i == self.selected {
-                    Style::default().bg(Color::Blue).fg(Color::White)
+                    Style::default().bg(theme.completion_selected_bg).fg(theme.completion_selected_fg)
                 } else {
-                    Style::default().fg(Color::White).bg(Color::DarkGray)
+                    Style::default().fg(theme.completion_unselected_fg).bg(theme.completion_unselected_bg)
                 };
                 ListItem::new(Line::from(Span::styled(format!(" {} ", candidate), style)))
             })
@@ -157,8 +159,8 @@ impl CompletionPopup {
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Gray))
-                .style(Style::default().bg(Color::DarkGray)),
+                .border_style(Style::default().fg(theme.completion_border))
+                .style(Style::default().bg(theme.completion_unselected_bg)),
         );
 
         frame.render_widget(list, area);

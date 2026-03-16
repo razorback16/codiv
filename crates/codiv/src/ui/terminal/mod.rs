@@ -29,6 +29,7 @@ use ratatui::Terminal;
 use crate::ipc::client::CodivdClient;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::ui::input::InputLine;
+use crate::ui::theme::Theme;
 use utils::push_intro;
 
 pub use self::io::TerminalColors;
@@ -56,6 +57,7 @@ pub fn run(
     initial_cwd: String,
     client: Option<CodivdClient>,
     terminal_colors: TerminalColors,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Terminal setup ---
     terminal::enable_raw_mode()?;
@@ -91,6 +93,7 @@ pub fn run(
         &mut client,
         &mut prompt_is_live,
         &terminal_colors,
+        theme,
     );
 
     // --- Cleanup (always runs) ---
