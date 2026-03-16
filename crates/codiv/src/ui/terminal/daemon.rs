@@ -9,7 +9,7 @@ use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 use crate::ui::theme::Theme;
 
 use super::state::{PendingConfirmation, PendingSessionPicker};
-use super::utils::{get_scrollback_line, parser_push_notice, push_intro, NoticeKind};
+use super::utils::{get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
 
 /// Finalize an in-progress thinking block: overwrite the placeholder line
 /// with a "Thought for Ns" summary and register it in the block tracker.
@@ -649,16 +649,8 @@ pub(crate) fn handle_daemon_message(
             }
         }
         ipc_messages::DaemonMessage::SessionReplay { events } => {
-            // 1. Clear screen
-            let screen = parser.screen();
-            let rows = screen.size().0;
-            let cols = screen.size().1;
-            *parser = vt100::Parser::new(rows, cols, super::state::MAX_SCROLLBACK);
-            *scroll_offset = 0;
-            tracker.clear();
-
-            // 1b. Re-emit the welcome header
-            push_intro(parser);
+            // 1. Clear screen and re-emit welcome header
+            reset_screen(parser, scroll_offset, tracker);
 
             // 2. Create fresh local replay state
             let mut replay_md = MarkdownStream::new(md_stream_width, theme);

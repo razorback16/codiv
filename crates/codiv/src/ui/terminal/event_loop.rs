@@ -31,7 +31,7 @@ use codiv_common::permissions::PermissionMode;
 
 use super::state::{PendingCommand, PendingConfirmation, PendingSessionPicker, MAX_SCROLLBACK, VISIBLE_SESSIONS};
 use super::utils::scroll_to_focused;
-use super::utils::{get_scrollback_line, parser_push_notice, push_intro, send_agent_request, NoticeKind};
+use super::utils::{get_scrollback_line, parser_push_notice, reset_screen, send_agent_request, NoticeKind};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height, PROMPT_GUTTER_WIDTH};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
@@ -50,6 +50,7 @@ pub(crate) fn event_loop(
     theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_heartbeat_sent = Instant::now();
+    let mut last_reconnect_attempt = Instant::now();
     let mut last_daemon_timestamp: u64 = 0;
     let mut pending_command: Option<PendingCommand> = None;
     let mut completion_engine = CompletionEngine::new();
@@ -109,6 +110,8 @@ pub(crate) fn event_loop(
         // Check for daemon disconnect.
         if !daemon_connected && client.is_some() {
             *client = None;
+            parser_push_notice(parser, NoticeKind::Warning, "daemon disconnected — will retry automatically");
+            needs_render = true;
         }
 
         // --- Poll completion engine background init when the coprocess is free ---
@@ -740,22 +743,9 @@ pub(crate) fn event_loop(
                                                         }
 
                                                         InputAction::Clear => {
-                                                            // Reset the visual state
-                                                            let term_size = term.size()?;
-                                                            let rows = parser_rows_from_term_height(term_size.height);
-                                                            let cols = parser_cols_from_term_width(term_size.width);
-                                                            *parser = vt100::Parser::new(
-                                                                rows,
-                                                                cols,
-                                                                MAX_SCROLLBACK,
-                                                            );
-                                                            *scroll_offset = 0;
+                                                            reset_screen(parser, scroll_offset, &mut tracker);
                                                             *prompt_is_live = false;
-                                                            tracker.clear();
                                                             tool_result_modal.close();
-
-                                                            // Re-emit the welcome header
-                                                            push_intro(parser);
 
                                                             // Tell the daemon to start a fresh session
                                                             if let Some(ref mut c) = client {
@@ -1189,6 +1179,36 @@ pub(crate) fn event_loop(
                     c.send(&hb);
                 }
                 last_heartbeat_sent = Instant::now();
+            }
+        }
+
+        // --- Periodic daemon reconnection every 5s when disconnected ---
+        if client.is_none()
+            && last_reconnect_attempt.elapsed() > std::time::Duration::from_secs(5)
+        {
+            last_reconnect_attempt = Instant::now();
+            let socket = daemon_launcher::socket_path();
+            if let Some(mut new_client) = CodivdClient::connect(&socket) {
+                // Restore environment context
+                if let Some(snapshot) =
+                    ipc_messages::build_env_snapshot(&cached_env_vars, "", cwd)
+                {
+                    new_client.send(&snapshot);
+                }
+                // Resume existing session if one was active
+                if let Some(ref sid) = session_id {
+                    // SessionReplay will clear screen and replay history
+                    if let Some(frame) = ipc_messages::build_load_session(sid) {
+                        new_client.send(&frame);
+                    }
+                } else {
+                    // No session — clear the disconnect notices and re-show intro
+                    reset_screen(parser, scroll_offset, &mut tracker);
+                }
+                *client = Some(new_client);
+                last_heartbeat_sent = Instant::now();
+                log::info!("reconnected to daemon");
+                needs_render = true;
             }
         }
     }
