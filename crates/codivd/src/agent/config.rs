@@ -1,6 +1,6 @@
 use aisdk::core::tools::Tool;
 use aisdk::core::{LanguageModel, LanguageModelRequest, LanguageModelStreamChunkType};
-use aisdk::providers::{Anthropic, Google, OpenAI, OpenAICompatible};
+use aisdk::providers::{Anthropic, Google, OpenAI, OpenAICompatible, Vllm};
 use futures::StreamExt;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
@@ -283,6 +283,74 @@ impl ModelAssignment {
     }
 }
 
+macro_rules! with_provider_model {
+    ($assignment:expr, $provider_config:expr, |$model:ident, $is_openai_compat:ident| $body:expr) => {
+        match $assignment.provider.as_str() {
+            "anthropic" => {
+                let $model = build_anthropic_model(&$assignment.model, $provider_config)?;
+                let $is_openai_compat = false;
+                $body
+            }
+            "openai" => {
+                let $model = build_openai_model(&$assignment.model, $provider_config)?;
+                let $is_openai_compat = true;
+                $body
+            }
+            "google" => {
+                let $model = build_google_model(&$assignment.model, $provider_config)?;
+                let $is_openai_compat = false;
+                $body
+            }
+            "vllm" => {
+                let $model = build_vllm_model(&$assignment.model, $provider_config)?;
+                let $is_openai_compat = false;
+                $body
+            }
+            other => {
+                let $model = build_openai_compatible_model(&$assignment.model, other, $provider_config)?;
+                let $is_openai_compat = true;
+                $body
+            }
+        }
+    };
+}
+
+/// Perform a simple text completion: build model from assignment, stream text,
+/// and collect into a String. No tools, no retries, no IPC.
+///
+/// Uses streaming rather than generate_text to avoid blocking the inference
+/// server's request slot (important for local models with single-request
+/// concurrency like vllm).
+pub async fn simple_text_completion(
+    assignment: &ModelAssignment,
+    provider_config: &ProviderConfig,
+    system: &str,
+    prompt: &str,
+) -> Result<String, DynError> {
+    use aisdk::core::messages::Message;
+    // Pass system via .system() and user content via .messages() to avoid
+    // aisdk's resolve_message duplicating the system message when both
+    // .system() and .prompt() are used together.
+    let messages = vec![Message::User(prompt.to_string().into()).into()];
+    with_provider_model!(assignment, provider_config, |model, _is_openai_compat| {
+        let mut response = LanguageModelRequest::builder()
+            .model(model)
+            .system(system)
+            .messages(messages)
+            .reasoning_effort(aisdk::core::language_model::ReasoningEffort::None)
+            .build()
+            .stream_text()
+            .await?;
+        let mut text = String::new();
+        while let Some(chunk) = response.stream.next().await {
+            if let LanguageModelStreamChunkType::Text(t) = chunk {
+                text.push_str(&t);
+            }
+        }
+        Ok(text)
+    })
+}
+
 /// Ensure a base URL ends with `/v1` (or `/v1/`).
 /// If the user already supplied it, keep it; otherwise append it.
 fn ensure_v1_suffix(url: &str) -> String {
@@ -350,30 +418,6 @@ fn sanitize_schema_value(val: &mut serde_json::Value) {
     }
 }
 
-/// Public wrapper for building an Anthropic model (used by llm_evaluator).
-pub fn build_anthropic_model_pub(
-    model_name: &str,
-    provider_config: &ProviderConfig,
-) -> Result<aisdk::providers::Anthropic<aisdk::core::DynamicModel>, DynError> {
-    build_anthropic_model(model_name, provider_config)
-}
-
-/// Public wrapper for building an OpenAI model (used by llm_evaluator).
-pub fn build_openai_model_pub(
-    model_name: &str,
-    provider_config: &ProviderConfig,
-) -> Result<aisdk::providers::OpenAI<aisdk::core::DynamicModel>, DynError> {
-    build_openai_model(model_name, provider_config)
-}
-
-/// Public wrapper for building a Google model (used by llm_evaluator).
-pub fn build_google_model_pub(
-    model_name: &str,
-    provider_config: &ProviderConfig,
-) -> Result<aisdk::providers::Google<aisdk::core::DynamicModel>, DynError> {
-    build_google_model(model_name, provider_config)
-}
-
 fn build_anthropic_model(
     model_name: &str,
     provider_config: &ProviderConfig,
@@ -438,6 +482,21 @@ fn build_google_model(
     }
 }
 
+fn build_vllm_model(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::Vllm<aisdk::core::DynamicModel>, DynError> {
+    let base_url = provider_config.base_url.as_deref()
+        .ok_or("vllm provider requires a base_url in config")?;
+    let mut builder = Vllm::builder()
+        .model_name(model_name)
+        .base_url(base_url);
+    if let Some(ref key) = provider_config.api_key {
+        builder = builder.api_key(key);
+    }
+    Ok(builder.build()?)
+}
+
 fn build_openai_compatible_model(
     model_name: &str,
     provider_name: &str,
@@ -478,26 +537,14 @@ pub async fn stream_from_config(
 ) -> Result<(String, usize, usize, Vec<ConversationEvent>), DynError> {
     let mut attempt = 0u32;
     loop {
-        let result = match assignment.provider.as_str() {
-            "anthropic" => {
-                let model = build_anthropic_model(&assignment.model, provider_config)?;
-                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
-            }
-            "openai" => {
-                let model = build_openai_model(&assignment.model, provider_config)?;
-                let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
-                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools, thinking).await
-            }
-            "google" => {
-                let model = build_google_model(&assignment.model, provider_config)?;
-                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools.clone(), thinking).await
-            }
-            other => {
-                let model = build_openai_compatible_model(&assignment.model, other, provider_config)?;
-                let tools = tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect();
-                run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools, thinking).await
-            }
-        };
+        let result = with_provider_model!(assignment, provider_config, |model, is_openai_compat| {
+            let tools = if is_openai_compat {
+                tools.iter().cloned().map(sanitize_tool_schema_for_openai).collect()
+            } else {
+                tools.clone()
+            };
+            run_stream(model, system_prompt, messages.clone(), request_id, tx, assignment, tools, thinking).await
+        });
 
         match result {
             Ok(v) => return Ok(v),
