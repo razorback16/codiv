@@ -28,6 +28,39 @@ class Codiv < Formula
     bin.install "codivd"
   end
 
+  # launchd service: runs codivd in foreground mode so launchd manages the
+  # lifecycle (auto-start on login, restart on crash).
+  # Usage:
+  #   brew services start codiv   — start daemon now and on login
+  #   brew services stop codiv    — stop daemon
+  #   brew services restart codiv — restart daemon
+  service do
+    run [opt_bin/"codivd", "--foreground"]
+    keep_alive true
+    working_dir var
+    log_path var/"log/codivd.log"
+    error_log_path var/"log/codivd.log"
+    environment_variables HOME: Dir.home
+  end
+
+  def post_install
+    (var/"log").mkpath
+  end
+
+  def caveats
+    <<~EOS
+      To start codivd as a background daemon managed by launchd:
+        brew services start codiv
+
+      The codiv TUI will also auto-launch codivd if it's not running,
+      but using brew services gives you auto-restart on crash and
+      automatic startup on login.
+
+      Logs: #{var}/log/codivd.log
+      Config: ~/.codiv/config.toml
+    EOS
+  end
+
   test do
     assert_match "codiv", shell_output("#{bin}/codiv --help")
   end
