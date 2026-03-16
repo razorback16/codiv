@@ -1,6 +1,5 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::ipc::client::CodivdClient;
 use crate::ipc::daemon_launcher;
@@ -36,13 +35,9 @@ pub fn run(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 fn connect_to_daemon(bash: &mut BashCoprocess, cwd: &str) -> Option<CodivdClient> {
-    // Try to ensure daemon is running (3s timeout).
-    if !daemon_launcher::ensure_daemon_running(Duration::from_secs(3)) {
-        log::warn!("daemon not available");
-        return None;
-    }
-
     let socket = daemon_launcher::socket_path();
+
+    // Just try to connect — don't auto-launch the daemon.
     let mut client = CodivdClient::connect(&socket)?;
 
     // Send initial environment snapshot.

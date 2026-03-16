@@ -1,88 +1,15 @@
-use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
+pub use codiv_common::config::socket_path;
 
-pub use codiv_common::config::{pid_file_path, socket_path};
+/// Suggest how to start the daemon based on how codiv was installed.
+pub fn daemon_start_hint() -> &'static str {
+    let home = std::env::var("HOME").unwrap_or_default();
 
-/// Check if the daemon is currently running.
-pub fn is_daemon_running() -> bool {
-    let pid_path = pid_file_path();
-    if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-        if let Ok(pid) = contents.trim().parse::<i32>() {
-            // kill with signal 0 checks if process exists.
-            return unsafe { libc::kill(pid, 0) } == 0;
-        }
-    }
-    false
-}
-
-/// Find the codivd binary.
-pub fn find_codivd_binary() -> Option<String> {
-    // 1. Check next to the current executable.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("codivd");
-            if candidate.exists() {
-                return Some(candidate.to_string_lossy().to_string());
-            }
-        }
+    // Check for Homebrew plist
+    let brew_plist = format!("{}/Library/LaunchAgents/homebrew.mxcl.codiv.plist", home);
+    if std::path::Path::new(&brew_plist).exists() {
+        return "Run: brew services start codiv";
     }
 
-    // 2. Check relative build path (development layout).
-    let dev_path = "../codivd/build/codivd";
-    if std::path::Path::new(dev_path).exists() {
-        return Some(dev_path.to_string());
-    }
-
-    // 3. Check PATH.
-    if Command::new("codivd").arg("--version").output().is_ok() {
-        return Some("codivd".to_string());
-    }
-
-    None
-}
-
-/// Ensure the daemon is running. If not, launch it and wait for the socket.
-/// Returns true if the daemon is available.
-pub fn ensure_daemon_running(timeout: Duration) -> bool {
-    // Already running?
-    let sock = socket_path();
-    if std::path::Path::new(&sock).exists() && is_daemon_running() {
-        log::debug!("daemon already running (socket={})", sock);
-        return true;
-    }
-
-    // Find and launch the daemon.
-    let binary = match find_codivd_binary() {
-        Some(b) => b,
-        None => {
-            log::warn!("codivd binary not found");
-            eprintln!("codiv: codivd binary not found");
-            return false;
-        }
-    };
-
-    log::info!("launching daemon: {}", binary);
-    // Launch as background daemon (no --foreground flag).
-    match Command::new(&binary).spawn() {
-        Ok(_) => {}
-        Err(e) => {
-            log::error!("failed to launch codivd: {}", e);
-            eprintln!("codiv: failed to launch codivd: {}", e);
-            return false;
-        }
-    }
-
-    // Poll for socket availability.
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if std::path::Path::new(&sock).exists() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    log::warn!("timed out waiting for codivd socket");
-    eprintln!("codiv: timed out waiting for codivd socket");
-    false
+    // Default: codivd start works for both install.sh and manual installs
+    "Run: codivd start"
 }

@@ -8,6 +8,7 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::ipc::client::CodivdClient;
+use crate::ipc::daemon_launcher;
 use crate::ipc::messages as ipc_messages;
 use crate::shell::bash_coprocess::BashCoprocess;
 use crate::shell::command_index::{classify_input, complete_slash_command, InputAction};
@@ -75,7 +76,11 @@ pub(crate) fn event_loop(
     let mut tool_result_modal = ToolResultModal::new();
     let mut was_alt_screen = false;
     let mut anim = AnimationState::new();
-    let mut input_mode = InputMode::Ai;
+    let mut input_mode = if client.is_some() {
+        InputMode::Ai
+    } else {
+        InputMode::Command
+    };
     let mut thinking_enabled = false;
     let mut permission_mode = PermissionMode::default();
     let mut pending_confirmation: Option<PendingConfirmation> = None;
@@ -839,10 +844,11 @@ pub(crate) fn event_loop(
                                                                             agent_streaming = true;
                                                                         }
                                                                     } else {
+                                                                        let hint = daemon_launcher::daemon_start_hint();
                                                                         parser_push_notice(
                                                                             parser,
                                                                             NoticeKind::Error,
-                                                                            "AI mode not available (daemon not connected)",
+                                                                            &format!("AI mode not available — daemon is not running. {}", hint),
                                                                         );
                                                                     }
                                                                 }
@@ -860,7 +866,17 @@ pub(crate) fn event_loop(
                                                 if input.content().is_empty() {
                                                     // Toggle mode
                                                     input_mode = match input_mode {
-                                                        InputMode::Command => InputMode::Ai,
+                                                        InputMode::Command => {
+                                                            if client.is_none() {
+                                                                let hint = daemon_launcher::daemon_start_hint();
+                                                                parser_push_notice(
+                                                                    parser,
+                                                                    NoticeKind::Error,
+                                                                    &format!("AI mode not available — daemon is not running. {}", hint),
+                                                                );
+                                                            }
+                                                            InputMode::Ai
+                                                        }
                                                         InputMode::Ai => InputMode::Command,
                                                     };
                                                 } else if input_mode == InputMode::Command {
