@@ -53,7 +53,7 @@ rm ~/.local/bin/codiv ~/.local/bin/codivd
 
 ## Homebrew (macOS / Linux)
 
-The easiest way to install Codiv:
+Install via Homebrew:
 
 ```bash
 brew tap razorback16/codiv https://github.com/razorback16/codiv.git
