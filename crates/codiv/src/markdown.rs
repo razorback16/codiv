@@ -154,6 +154,7 @@ impl MarkdownStream {
                 code_fg: "#f47067".to_string(),
                 table_header_bg: String::new(),
                 table_body_bg: String::new(),
+                table_border: String::new(),
                 ..Default::default()
             }
         };

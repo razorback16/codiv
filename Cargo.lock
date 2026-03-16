@@ -1787,9 +1787,9 @@ dependencies = [
 
 [[package]]
 name = "instability"
-version = "0.3.11"
+version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357b7205c6cd18dd2c86ed312d1e70add149aea98e7ef72b9fdf0270e555c11d"
+checksum = "5eb2d60ef19920a3a9193c3e371f726ec1dafc045dac788d0fb3704272458971"
 dependencies = [
  "darling 0.23.0",
  "indoc",
@@ -3387,7 +3387,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "streamdown-ansi"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
+source = "git+https://github.com/razorback16/streamdown-rs#a0bc96767139aa3a855d8873541b7a7a99d108ec"
 dependencies = [
  "crossterm 0.28.1",
  "regex",
@@ -3397,7 +3397,7 @@ dependencies = [
 [[package]]
 name = "streamdown-config"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
+source = "git+https://github.com/razorback16/streamdown-rs#a0bc96767139aa3a855d8873541b7a7a99d108ec"
 dependencies = [
  "crossterm 0.28.1",
  "directories",
@@ -3410,7 +3410,7 @@ dependencies = [
 [[package]]
 name = "streamdown-core"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
+source = "git+https://github.com/razorback16/streamdown-rs#a0bc96767139aa3a855d8873541b7a7a99d108ec"
 dependencies = [
  "regex",
  "serde",
@@ -3420,7 +3420,7 @@ dependencies = [
 [[package]]
 name = "streamdown-parser"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
+source = "git+https://github.com/razorback16/streamdown-rs#a0bc96767139aa3a855d8873541b7a7a99d108ec"
 dependencies = [
  "regex",
  "streamdown-ansi",
@@ -3431,7 +3431,7 @@ dependencies = [
 [[package]]
 name = "streamdown-render"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
+source = "git+https://github.com/razorback16/streamdown-rs#a0bc96767139aa3a855d8873541b7a7a99d108ec"
 dependencies = [
  "base64",
  "crossterm 0.28.1",
@@ -3447,7 +3447,7 @@ dependencies = [
 [[package]]
 name = "streamdown-syntax"
 version = "0.1.4"
-source = "git+https://github.com/razorback16/streamdown-rs#6017be3f6dce1eb21a25d0ec56ad2f8f8b0231d1"
+source = "git+https://github.com/razorback16/streamdown-rs#a0bc96767139aa3a855d8873541b7a7a99d108ec"
 dependencies = [
  "streamdown-core",
  "syntect",
