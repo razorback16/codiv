@@ -50,4 +50,4 @@ You should see the Codiv help output listing available subcommands and flags. If
 
 ## Next Steps
 
-Head to the [Quick Start](/slate-agent/docs/getting-started/quick-start/) guide to launch Codiv and try your first commands.
+Head to the [Quick Start](/docs/getting-started/quick-start/) guide to launch Codiv and try your first commands.

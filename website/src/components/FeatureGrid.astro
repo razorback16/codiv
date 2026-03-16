@@ -3,32 +3,32 @@ import FeatureCard from './FeatureCard.astro';
 
 const features = [
   {
-    icon: '⚡',
-    title: 'Command Fast-Pass',
-    description: 'Recognized commands execute in <10ms with zero AI overhead. Your shell, but faster.',
+    iconSrc: '/icons/dual-mode-input.svg',
+    title: 'Dual-Mode Input',
+    description: 'Command mode sends input straight to the shell in <10ms. AI mode routes to agents. You pick the mode — no guessing.',
   },
   {
-    icon: '🤖',
+    iconSrc: '/icons/ai-agent-tools.svg',
     title: 'AI Agent with Tools',
     description: 'Natural language routes to an AI agent that can read, write, edit files, run commands, and reason about your codebase.',
   },
   {
-    icon: '🔄',
+    iconSrc: '/icons/multi-model-support.svg',
     title: 'Multi-Model Support',
     description: 'Use Anthropic, OpenAI, or Google models. Pick the right model for each task — frontier for planning, fast for execution.',
   },
   {
-    icon: '📊',
+    iconSrc: '/icons/work-item-dag.svg',
     title: 'Work Item DAG',
     description: 'Complex tasks decompose into a dependency graph. Independent items run in parallel. No wasted time.',
   },
   {
-    icon: '👥',
+    iconSrc: '/icons/multi-agent-roles.svg',
     title: 'Multi-Agent Roles',
     description: 'Specialized roles — Orchestrator, TeamLead, Engineer, Reviewer, Narrator — each with the right model for the job.',
   },
   {
-    icon: '🧠',
+    iconSrc: '/icons/persistent-memory.svg',
     title: 'Persistent Memory',
     description: 'SQLite episodic store + semantic markdown. Context survives sessions, auto-switches per project.',
   },
@@ -40,7 +40,7 @@ const features = [
     <h2 class="features-heading">Built Different</h2>
     <div class="features-grid">
       {features.map((f) => (
-        <FeatureCard icon={f.icon} title={f.title} description={f.description} />
+        <FeatureCard iconSrc={f.iconSrc} title={f.title} description={f.description} />
       ))}
     </div>
   </div>
