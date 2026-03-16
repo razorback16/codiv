@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-pub const VERSION: &str = "0.1.0";
 pub const FRAME_HEADER_SIZE: usize = 4;
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 
