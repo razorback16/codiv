@@ -1,25 +1,25 @@
 class Codiv < Formula
   desc "Terminal-native AI coding assistant built in Rust"
   homepage "https://codiv.ai"
-  version "v0.1.0"
+  version "v0.1.1"
   license "GPL-3.0-only"
 
   on_macos do
     on_arm do
-      url "https://github.com/razorback16/codiv/releases/download/v0.1.0/codiv-v0.1.0-aarch64-apple-darwin.tar.gz"
-      sha256 "16945792132b7a20d85f7385ab5634d60f5b995498f68d6e862ebeca3d6bdce8"
+      url "https://github.com/razorback16/codiv/releases/download/v0.1.1/codiv-v0.1.1-aarch64-apple-darwin.tar.gz"
+      sha256 "66d60f5c2a01777c5681314d4ae118c5a6fe0796481b8d9c57df6caf94d1d5d4"
     end
 
     on_intel do
-      url "https://github.com/razorback16/codiv/releases/download/v0.1.0/codiv-v0.1.0-x86_64-apple-darwin.tar.gz"
-      sha256 "b8dba63b7122d9dba3a4eca0fb38873ebcdbf44d7d415897b8f56201c5fd2f5b"
+      url "https://github.com/razorback16/codiv/releases/download/v0.1.1/codiv-v0.1.1-x86_64-apple-darwin.tar.gz"
+      sha256 "cc3f8c978d4753b27934fcbd19b8918f575dcd1acfc5e7038627eb19207a1f0d"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/razorback16/codiv/releases/download/v0.1.0/codiv-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "f2de581417c100e73bc2ee5bf86ef1e3f0a06da4947e6f04701abcefe73145f9"
+      url "https://github.com/razorback16/codiv/releases/download/v0.1.1/codiv-v0.1.1-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "634361d49cadcd6c2e4ec117866c1ddc44e46d077df436922680044b3f635a0c"
     end
   end
 
@@ -28,12 +28,6 @@ class Codiv < Formula
     bin.install "codivd"
   end
 
-  # launchd service: runs codivd in foreground mode so launchd manages the
-  # lifecycle (auto-start on login, restart on crash).
-  # Usage:
-  #   brew services start codiv   — start daemon now and on login
-  #   brew services stop codiv    — stop daemon
-  #   brew services restart codiv — restart daemon
   service do
     run [opt_bin/"codivd", "--foreground"]
     keep_alive true
