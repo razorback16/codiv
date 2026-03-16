@@ -15,10 +15,6 @@ info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mWarning:\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
-need_cmd() {
-    command -v "$1" >/dev/null 2>&1 || error "'$1' is required but not found"
-}
-
 download() {
     local url="$1" output="${2:-}"
     if command -v curl >/dev/null 2>&1; then
