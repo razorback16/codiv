@@ -35,14 +35,29 @@ codiv (TUI client)          codivd (daemon)
 
 ## Install
 
+### Quick Install (macOS / Linux)
+
+```bash
+curl -fsSL https://codiv.ai/install.sh | bash
+```
+
+This downloads the latest release, installs `codiv` and `codivd` to `~/.local/bin/`, and starts the daemon as a system service (launchd on macOS, systemd on Linux).
+
+To install a specific version:
+
+```bash
+curl -fsSL https://codiv.ai/install.sh | bash -s -- v0.1.0
+```
+
 ### Homebrew (macOS / Linux)
 
 ```bash
 brew tap razorback16/codiv https://github.com/razorback16/codiv.git
 brew install codiv
+brew services start codiv
 ```
 
-This installs both `codiv` and `codivd`.
+This installs both `codiv` and `codivd` and optionally runs the daemon via brew services.
 
 ### Cargo Install (from Git)
 
@@ -59,8 +74,8 @@ Requires the Rust toolchain — install via [rustup](https://rustup.rs/).
 git clone https://github.com/razorback16/codiv.git
 cd codiv
 cargo build --workspace --release
-ln -sf "$(pwd)/target/release/codiv" /usr/local/bin/codiv
-ln -sf "$(pwd)/target/release/codivd" /usr/local/bin/codivd
+ln -sf "$(pwd)/target/release/codiv" ~/.local/bin/codiv
+ln -sf "$(pwd)/target/release/codivd" ~/.local/bin/codivd
 ```
 
 ### Prerequisites
