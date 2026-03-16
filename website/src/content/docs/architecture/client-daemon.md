@@ -62,21 +62,20 @@ The client and daemon communicate over a Unix domain socket using:
 
 ### Connection Lifecycle
 
-```
-Client                    Daemon
-  │                         │
-  │──── Connect ───────────►│
-  │◄─── Accept ─────────────│
-  │                         │
-  │──── EnvSnapshot ───────►│
-  │                         │
-  │──── Heartbeat ─────────►│  (periodic)
-  │◄─── Heartbeat ──────────│
-  │                         │
-  │──── AgentRequest ──────►│
-  │◄─── StreamChunk ────────│  (repeated)
-  │◄─── AgentComplete ──────│
-  │                         │
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant D as Daemon
+    C->>D: Connect
+    D->>C: Accept
+    C->>D: EnvSnapshot
+    loop Periodic
+        C->>D: Heartbeat
+        D->>C: Heartbeat
+    end
+    C->>D: AgentRequest
+    D-->>C: StreamChunk (repeated)
+    D->>C: AgentComplete
 ```
 
 The heartbeat ensures both sides detect connection loss promptly. If the daemon restarts, the client reconnects and re-sends the environment snapshot.

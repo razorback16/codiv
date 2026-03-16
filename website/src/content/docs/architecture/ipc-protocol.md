@@ -38,38 +38,35 @@ This keeps parsing simple and avoids delimiter-based framing issues with binary 
 
 A typical AI query follows this sequence:
 
-```
-Client                          Daemon
-  │                               │
-  │── AgentRequest ──────────────►│
-  │                               │── LLM call
-  │                               │
-  │◄── AgentStreamChunk ──────────│  (reasoning text)
-  │◄── AgentStreamChunk ──────────│
-  │                               │── Tool call (e.g., grep)
-  │◄── AgentStreamChunk ──────────│  (tool result summary)
-  │                               │── LLM call (with tool result)
-  │◄── AgentStreamChunk ──────────│  (final response)
-  │◄── AgentComplete ─────────────│
-  │                               │
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant D as Daemon
+    C->>D: AgentRequest
+    Note right of D: LLM call
+    D-->>C: AgentStreamChunk (reasoning text)
+    D-->>C: AgentStreamChunk
+    Note right of D: Tool call (e.g., grep)
+    D-->>C: AgentStreamChunk (tool result summary)
+    Note right of D: LLM call (with tool result)
+    D-->>C: AgentStreamChunk (final response)
+    D->>C: AgentComplete
 ```
 
 ## Safety Confirmation Flow
 
 When the agent wants to run a command classified as risky:
 
-```
-Client                          Daemon
-  │                               │
-  │                               │── Agent wants to run "rm -rf target/"
-  │◄── ConfirmationRequest ───────│  (command, risk level, explanation)
-  │                               │
-  │  [User sees prompt in TUI]    │
-  │                               │
-  │── ConfirmationResponse ──────►│  (allow / deny / always-allow)
-  │                               │── Executes or skips based on response
-  │◄── AgentStreamChunk ──────────│  (continues)
-  │                               │
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant D as Daemon
+    Note right of D: Agent wants to run\n"rm -rf target/"
+    D->>C: ConfirmationRequest (command, risk level, explanation)
+    Note left of C: User sees prompt in TUI
+    C->>D: ConfirmationResponse (allow / deny / always-allow)
+    Note right of D: Executes or skips based on response
+    D-->>C: AgentStreamChunk (continues)
 ```
 
 ## Versioning

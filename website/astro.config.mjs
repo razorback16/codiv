@@ -7,6 +7,9 @@ export default defineConfig({
   base: '/',
   integrations: [mdx(), sitemap()],
   markdown: {
+    syntaxHighlight: {
+      excludeLangs: ['mermaid'],
+    },
     shikiConfig: {
       themes: {
         light: 'github-light',
