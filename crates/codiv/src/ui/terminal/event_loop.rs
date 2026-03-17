@@ -14,7 +14,6 @@ use crate::shell::bash_coprocess::BashCoprocess;
 use super::daemon;
 use super::input as terminal_input;
 use super::io as terminal_io;
-use super::io::TerminalColors;
 use super::render::render_frame;
 use super::state::TerminalState;
 use crate::ui::theme::Theme;
@@ -31,7 +30,6 @@ pub(crate) fn event_loop(
     shutdown: &Arc<std::sync::atomic::AtomicBool>,
     client: &mut Option<CodivdClient>,
     state: &mut TerminalState,
-    terminal_colors: &TerminalColors,
     theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Start background initialization (non-blocking) so the first Tab
@@ -107,7 +105,7 @@ pub(crate) fn event_loop(
             recv(pty_rx) -> msg => {
                 if let Ok(bytes) = msg {
                     if let Some(ref mut pending) = state.pending_command {
-                        terminal_io::process_pty_bytes(&bytes, pending, parser, bash, terminal_colors);
+                        terminal_io::process_pty_bytes(&bytes, pending, parser, bash);
                     }
                     state.needs_render = true;
                 }
@@ -262,7 +260,7 @@ pub(crate) fn event_loop(
             };
             for bytes in &drain {
                 if let Some(ref mut pending) = state.pending_command {
-                    terminal_io::process_pty_bytes(bytes, pending, parser, bash, terminal_colors);
+                    terminal_io::process_pty_bytes(bytes, pending, parser, bash);
                 }
             }
         }

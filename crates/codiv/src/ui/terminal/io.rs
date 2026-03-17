@@ -120,40 +120,27 @@ pub(crate) fn process_pty_bytes(
     pending: &mut PendingCommand,
     parser: &mut vt100::Parser,
     bash: &mut BashCoprocess,
-    terminal_colors: &TerminalColors,
 ) {
     parser.process(bytes);
     let text = String::from_utf8_lossy(bytes);
     pending.accumulated.push_str(&text);
     pending.last_activity = Instant::now();
 
-    // Respond to terminal capability queries from child processes
-    respond_to_terminal_queries(bytes, bash, parser, terminal_colors);
+    respond_to_terminal_queries(bytes, bash, parser);
 }
 
 /// Scan raw bytes for terminal capability queries and send appropriate responses.
+///
+/// Only responds to DSR (cursor position). OSC color queries are intentionally
+/// ignored — responding via PTY master is racy and causes garbled output.
 fn respond_to_terminal_queries(
     bytes: &[u8],
     bash: &mut BashCoprocess,
     parser: &vt100::Parser,
-    terminal_colors: &TerminalColors,
 ) {
-    // DSR: cursor position query ESC[6n
     if find_subsequence(bytes, b"\x1b[6n").is_some() {
         let (row, col) = parser.screen().cursor_position();
         let response = format!("\x1b[{};{}R", row + 1, col + 1);
-        bash.send_bytes(response.as_bytes());
-    }
-
-    // OSC 10: foreground color query
-    if contains_osc_query(bytes, b"\x1b]10;?") {
-        let response = format!("\x1b]10;{}\x1b\\", terminal_colors.fg);
-        bash.send_bytes(response.as_bytes());
-    }
-
-    // OSC 11: background color query
-    if contains_osc_query(bytes, b"\x1b]11;?") {
-        let response = format!("\x1b]11;{}\x1b\\", terminal_colors.bg);
         bash.send_bytes(response.as_bytes());
     }
 }
@@ -164,6 +151,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Check if bytes contain an OSC query (prefix followed eventually by ST or BEL).
+#[cfg(test)]
 fn contains_osc_query(bytes: &[u8], prefix: &[u8]) -> bool {
     if let Some(pos) = find_subsequence(bytes, prefix) {
         let after = &bytes[pos + prefix.len()..];

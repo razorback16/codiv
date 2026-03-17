@@ -56,7 +56,6 @@ pub fn run(
     shutdown: Arc<AtomicBool>,
     initial_cwd: String,
     client: Option<CodivdClient>,
-    terminal_colors: TerminalColors,
     theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- Terminal setup ---
@@ -89,7 +88,6 @@ pub fn run(
         &shutdown,
         &mut client,
         &mut state,
-        &terminal_colors,
         theme,
     );
 

@@ -488,12 +488,29 @@ impl BashCoprocess {
                             None => break,
                         }
                     }
+                } else if chars.peek() == Some(&']') {
+                    // OSC sequence: ESC ] ... BEL  or  ESC ] ... ESC backslash (ST)
+                    chars.next(); // consume ']'
+                    loop {
+                        match chars.next() {
+                            Some('\x07') => break,           // BEL terminator
+                            Some('\x1b') => {
+                                // ST terminator (ESC \)
+                                if chars.peek() == Some(&'\\') {
+                                    chars.next();
+                                }
+                                break;
+                            }
+                            Some(_) => continue,
+                            None => break,
+                        }
+                    }
                 } else {
                     // Other ESC sequences: consume next char
                     chars.next();
                 }
-            } else if ch == '\r' {
-                // Strip carriage returns
+            } else if ch == '\r' || ch == '\x07' {
+                // Strip carriage returns and standalone BEL
                 continue;
             } else {
                 result.push(ch);
@@ -705,6 +722,30 @@ mod tests {
         let input = "\x1b[32mhello\x1b[0m world";
         let stripped = BashCoprocess::strip_ansi(input);
         assert_eq!(stripped, "hello world");
+    }
+
+    #[test]
+    fn test_strip_ansi_osc_bel() {
+        // OSC 11 terminated by BEL
+        let input = "\x1b]11;rgb:2890/31d7/378c\x07pwd output";
+        let stripped = BashCoprocess::strip_ansi(input);
+        assert_eq!(stripped, "pwd output");
+    }
+
+    #[test]
+    fn test_strip_ansi_osc_st() {
+        // OSC 7 terminated by ST (ESC \)
+        let input = "\x1b]7;file:///home/user\x1b\\pwd output";
+        let stripped = BashCoprocess::strip_ansi(input);
+        assert_eq!(stripped, "pwd output");
+    }
+
+    #[test]
+    fn test_strip_ansi_mixed() {
+        // Mix of CSI, OSC, and plain text
+        let input = "\x1b[32m\x1b]0;title\x07hello\x1b[0m";
+        let stripped = BashCoprocess::strip_ansi(input);
+        assert_eq!(stripped, "hello");
     }
 
     #[test]

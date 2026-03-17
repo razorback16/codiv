@@ -65,7 +65,7 @@ pub(crate) fn render_frame(
         // On subsequent renders, reuse the anchor so the start stays fixed.
         let first_row = if let Some(anchor) = state.prompt_anchor_row {
             // Anchor exists — ensure we have room for all lines below it.
-            let last_row = anchor + line_count - 1;
+            let last_row = anchor + line_count; // +1 for bottom ruler
             if last_row >= screen_rows {
                 // Need to scroll to make room at the bottom
                 let overflow = last_row - screen_rows + 1;
@@ -82,8 +82,19 @@ pub(crate) fn render_frame(
         } else {
             // First render — cursor is at the line where the prompt starts.
             let (cursor_row, _) = parser.screen().cursor_position();
-            state.prompt_anchor_row = Some(cursor_row);
-            cursor_row
+            // Ensure room for prompt lines + bottom ruler
+            let last_row = cursor_row + line_count; // prompt lines + 1 ruler
+            let first_row = if last_row >= screen_rows {
+                let overflow = last_row - screen_rows + 1;
+                for _ in 0..overflow {
+                    parser.process(b"\n");
+                }
+                cursor_row.saturating_sub(overflow)
+            } else {
+                cursor_row
+            };
+            state.prompt_anchor_row = Some(first_row);
+            first_row
         };
 
         // Clear and render each line
