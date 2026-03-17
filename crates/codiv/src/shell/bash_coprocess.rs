@@ -171,10 +171,6 @@ impl BashCoprocess {
         }
     }
 
-    /// Convenience: execute with default 30s timeout.
-    pub fn execute_default(&mut self, command: &str) -> CommandResult {
-        self.execute(command, 30000)
-    }
 
     /// Capture the current working directory of the shell.
     pub fn capture_cwd(&mut self) -> String {
@@ -325,23 +321,6 @@ impl BashCoprocess {
         Some(CommandResult { output, exit_code })
     }
 
-    // --- Public helpers (kept for backward compatibility) ---
-
-    /// Strip ANSI escape sequences and carriage returns from text.
-    pub fn strip_ansi(text: &str) -> String {
-        shell::strip_ansi(text)
-    }
-
-    /// Find the position of the "expanded" sentinel in the output.
-    pub fn find_expanded_sentinel(text: &str, sentinel: &str) -> Option<usize> {
-        shell::find_expanded_sentinel(text, sentinel)
-    }
-
-    /// Generate a unique sentinel string like `__CODIV_SENTINEL_abcd1234efgh5678_`
-    fn generate_sentinel() -> String {
-        shell::generate_sentinel()
-    }
-
     // --- Private helpers ---
 
     /// Write all bytes to the PTY writer.
@@ -434,7 +413,7 @@ mod tests {
     fn test_execute_echo_hello() {
         let _lock = PTY_LOCK.lock().unwrap();
         let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
-        let result = coproc.execute_default("echo hello");
+        let result = coproc.execute("echo hello", 30000);
         assert_eq!(result.exit_code, 0, "exit code should be 0");
         assert!(
             result.output.contains("hello"),
@@ -447,7 +426,7 @@ mod tests {
     fn test_execute_false_exit_code() {
         let _lock = PTY_LOCK.lock().unwrap();
         let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
-        let result = coproc.execute_default("false");
+        let result = coproc.execute("false", 30000);
         assert_eq!(result.exit_code, 1, "exit code of 'false' should be 1");
     }
 
@@ -455,7 +434,7 @@ mod tests {
     fn test_execute_multiline() {
         let _lock = PTY_LOCK.lock().unwrap();
         let mut coproc = BashCoprocess::spawn(80,24).expect("Failed to spawn bash coprocess");
-        let result = coproc.execute_default("echo line1; echo line2");
+        let result = coproc.execute("echo line1; echo line2", 30000);
         assert_eq!(result.exit_code, 0);
         assert!(
             result.output.contains("line1"),
@@ -504,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_generate_sentinel_format() {
-        let sentinel = BashCoprocess::generate_sentinel();
+        let sentinel = shell::generate_sentinel();
         assert!(sentinel.starts_with("__CODIV_SENTINEL_"));
         assert!(sentinel.ends_with('_'));
         // Format: __CODIV_SENTINEL_ + 16 hex chars + _
@@ -516,12 +495,12 @@ mod tests {
         let sentinel = "__CODIV_SENTINEL_aabbccdd11223344_";
         // Expanded: sentinel followed by digit
         let text = format!("some output\n{}0__\n", sentinel);
-        let pos = BashCoprocess::find_expanded_sentinel(&text, sentinel);
+        let pos = shell::find_expanded_sentinel(&text, sentinel);
         assert!(pos.is_some());
 
         // Not expanded: sentinel followed by ${
         let text2 = format!("echo \"{}${{__CODIV_EXIT}}__\"", sentinel);
-        let pos2 = BashCoprocess::find_expanded_sentinel(&text2, sentinel);
+        let pos2 = shell::find_expanded_sentinel(&text2, sentinel);
         assert!(pos2.is_none());
     }
 
@@ -530,7 +509,7 @@ mod tests {
         let _lock = PTY_LOCK.lock().unwrap();
         // Verify that output larger than the PTY row count is fully captured.
         let mut coproc = BashCoprocess::spawn(80,10).expect("Failed to spawn bash coprocess");
-        let result = coproc.execute_default("seq 1 100");
+        let result = coproc.execute("seq 1 100", 30000);
         assert_eq!(result.exit_code, 0);
         let lines: Vec<&str> = result.output.lines().collect();
         assert_eq!(
@@ -548,7 +527,7 @@ mod tests {
     #[test]
     fn test_strip_ansi() {
         let input = "\x1b[32mhello\x1b[0m world";
-        let stripped = BashCoprocess::strip_ansi(input);
+        let stripped = shell::strip_ansi(input);
         assert_eq!(stripped, "hello world");
     }
 
@@ -556,7 +535,7 @@ mod tests {
     fn test_strip_ansi_osc_bel() {
         // OSC 11 terminated by BEL
         let input = "\x1b]11;rgb:2890/31d7/378c\x07pwd output";
-        let stripped = BashCoprocess::strip_ansi(input);
+        let stripped = shell::strip_ansi(input);
         assert_eq!(stripped, "pwd output");
     }
 
@@ -564,7 +543,7 @@ mod tests {
     fn test_strip_ansi_osc_st() {
         // OSC 7 terminated by ST (ESC \)
         let input = "\x1b]7;file:///home/user\x1b\\pwd output";
-        let stripped = BashCoprocess::strip_ansi(input);
+        let stripped = shell::strip_ansi(input);
         assert_eq!(stripped, "pwd output");
     }
 
@@ -572,7 +551,7 @@ mod tests {
     fn test_strip_ansi_mixed() {
         // Mix of CSI, OSC, and plain text
         let input = "\x1b[32m\x1b]0;title\x07hello\x1b[0m";
-        let stripped = BashCoprocess::strip_ansi(input);
+        let stripped = shell::strip_ansi(input);
         assert_eq!(stripped, "hello");
     }
 

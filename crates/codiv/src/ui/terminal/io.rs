@@ -121,12 +121,18 @@ pub(crate) fn process_pty_bytes(
     parser: &mut vt100::Parser,
     bash: &mut BashCoprocess,
 ) {
-    parser.process(bytes);
+    // Only render PTY output for user-initiated commands.
+    // AI-relayed commands are invisible — the AI summarizes results in its response.
+    if pending.ai_execution_id.is_none() {
+        parser.process(bytes);
+    }
     let text = String::from_utf8_lossy(bytes);
     pending.accumulated.push_str(&text);
     pending.last_activity = Instant::now();
 
-    respond_to_terminal_queries(bytes, bash, parser);
+    if pending.ai_execution_id.is_none() {
+        respond_to_terminal_queries(bytes, bash, parser);
+    }
 }
 
 /// Scan raw bytes for terminal capability queries and send appropriate responses.
