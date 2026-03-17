@@ -15,6 +15,21 @@ use crate::{
     VERSION,
 };
 
+/// Read-only data needed to render the status bar.
+pub(crate) struct StatusBarInfo<'a> {
+    pub cwd: &'a str,
+    pub daemon_connected: bool,
+    pub daemon_timestamp: u64,
+    pub is_executing: bool,
+    pub git_info: Option<&'a GitInfo>,
+    pub model_alias: &'a str,
+    pub context_usage: (usize, usize),
+    pub anim: &'a super::animation::AnimationState,
+    pub thinking_enabled: bool,
+    pub permission_mode: PermissionMode,
+    pub session_name: Option<&'a str>,
+}
+
 #[cfg(test)]
 fn input_rendered_cols(input_text: &str) -> usize {
     input_text.chars().count()
@@ -278,21 +293,20 @@ pub(crate) fn render_frame(
             }
 
             // --- Render status bar ---
-            render_status_bar(
-                frame,
-                state.cwd.as_str(),
+            let status_info = StatusBarInfo {
+                cwd: state.cwd.as_str(),
                 daemon_connected,
-                state.last_daemon_timestamp,
+                daemon_timestamp: state.last_daemon_timestamp,
                 is_executing,
-                status_area,
-                state.git_info.as_ref(),
-                &state.model_alias,
-                state.context_usage,
-                &state.anim,
-                state.thinking_enabled,
-                state.permission_mode,
-                state.session_name.as_deref(),
-            );
+                git_info: state.git_info.as_ref(),
+                model_alias: &state.model_alias,
+                context_usage: state.context_usage,
+                anim: &state.anim,
+                thinking_enabled: state.thinking_enabled,
+                permission_mode: state.permission_mode,
+                session_name: state.session_name.as_deref(),
+            };
+            render_status_bar(frame, status_area, &status_info);
 
             // --- Render completion popup ---
             if state.completion_popup.is_visible() {
@@ -404,63 +418,52 @@ pub(crate) fn render_frame(
 }
 
 /// Render the status bar at the bottom of the screen.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_status_bar(
     frame: &mut Frame,
-    cwd: &str,
-    daemon_connected: bool,
-    daemon_timestamp: u64,
-    is_executing: bool,
     area: Rect,
-    git_info: Option<&GitInfo>,
-    model_alias: &str,
-    context_usage: (usize, usize),
-    anim: &super::animation::AnimationState,
-    thinking_enabled: bool,
-    permission_mode: PermissionMode,
-    session_name: Option<&str>,
+    info: &StatusBarInfo,
 ) {
     let width = area.width as usize;
 
-    let daemon_status = if daemon_connected && daemon_timestamp > 0 {
+    let daemon_status = if info.daemon_connected && info.daemon_timestamp > 0 {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let age_s = now_ms.saturating_sub(daemon_timestamp) / 1000;
+        let age_s = now_ms.saturating_sub(info.daemon_timestamp) / 1000;
         if age_s < 30 {
             "daemon: connected"
         } else {
             "daemon: stale"
         }
-    } else if daemon_connected {
+    } else if info.daemon_connected {
         "daemon: connected"
     } else {
         "daemon: offline"
     };
 
-    let running_indicator = if is_executing {
-        format!(" {} running", anim.spinner_char())
+    let running_indicator = if info.is_executing {
+        format!(" {} running", info.anim.spinner_char())
     } else {
         String::new()
     };
-    let model_part = if !model_alias.is_empty() {
+    let model_part = if !info.model_alias.is_empty() {
         format!(
             "{} {}/{} | ",
-            model_alias,
-            format_tokens(context_usage.0),
-            format_tokens(context_usage.1)
+            info.model_alias,
+            format_tokens(info.context_usage.0),
+            format_tokens(info.context_usage.1)
         )
     } else {
         String::new()
     };
-    let thinking_part = if thinking_enabled { "thinking | " } else { "" };
-    let mode_part = match permission_mode {
+    let thinking_part = if info.thinking_enabled { "thinking | " } else { "" };
+    let mode_part = match info.permission_mode {
         PermissionMode::Auto => "AUTO | ",
         PermissionMode::Manual => "MANUAL | ",
         PermissionMode::Bypass => "BYPASS | ",
     };
-    let session_part = match session_name {
+    let session_part = match info.session_name {
         Some(name) => format!("{} | ", name),
         None => String::new(),
     };
@@ -468,23 +471,23 @@ pub(crate) fn render_status_bar(
         " {}{}{}{}{} | v{} ",
         session_part, model_part, thinking_part, mode_part, daemon_status, VERSION
     );
-    let left = match git_info {
-        Some(info) => {
-            let branch_part = format!("({})", info.branch);
-            let stats_part = if info.files_changed > 0 {
+    let left = match info.git_info {
+        Some(git) => {
+            let branch_part = format!("({})", git.branch);
+            let stats_part = if git.files_changed > 0 {
                 format!(
                     " ~{} +{} -{}",
-                    info.files_changed, info.insertions, info.deletions
+                    git.files_changed, git.insertions, git.deletions
                 )
             } else {
                 String::new()
             };
             format!(
                 " {} {}{}{} ",
-                cwd, branch_part, stats_part, running_indicator
+                info.cwd, branch_part, stats_part, running_indicator
             )
         }
-        None => format!(" {}{} ", cwd, running_indicator),
+        None => format!(" {}{} ", info.cwd, running_indicator),
     };
 
     // Pad the middle so right-side text is right-aligned.
