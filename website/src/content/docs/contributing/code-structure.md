@@ -41,6 +41,8 @@ The AI backend. Key modules:
 - **session** — session management, context timeline
 - **streaming** — LLM response streaming to client
 - **worker** — bash worker processes for agent tool execution
+- **daemon_shell** — `DaemonShell` implementation for independent agent shells (pipe-based `bash -i`)
+- **agent/shell_backend** — `ShellBackend` routing: directs orchestrator commands through `ClientRelay` (shared co-process) and independent agent commands through `DaemonShell`
 - **config** — configuration loading and hot-reload
 
 ### codiv-tools (Shared Library)
@@ -60,9 +62,10 @@ Each tool module exports a struct implementing a common tool trait with `execute
 
 Types shared between client and daemon:
 
-- **ipc** — message types (AgentRequest, StreamChunk, etc.)
+- **ipc** — message types (AgentRequest, StreamChunk, ExecuteCommand, etc.)
 - **config** — configuration structs
 - **types** — common enums and utility types
+- **shell** — shell abstraction layer (ShellIO trait, ShellSession generic over IO, PtyIO for co-process, PipeIO for daemon shells)
 
 ## How to Add a New Tool
 

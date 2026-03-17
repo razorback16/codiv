@@ -57,41 +57,33 @@ The daemon runs on a tokio async runtime. Tool execution closures are synchronou
 
 Currently, aisdk's `ToolList::execute` calls the sync closure inside `tokio::spawn` (see `references/aisdk/src/core/tools.rs:219-234`). This means the blocking sync closure runs on a **tokio worker thread**, which would starve the runtime during long-running commands.
 
-### Solution: Change aisdk to use `spawn_blocking`
+### Solution: `block_in_place` inside tool closures
 
-**Required aisdk change:** Modify `ToolList::execute` to use `tokio::task::spawn_blocking` instead of `tokio::spawn`. Since tool closures are explicitly synchronous (`Fn(Value) -> Result<String, String>`), they belong on the blocking thread pool, not on async worker threads. This is a one-line change:
+aisdk is left unmodified — `ToolList::execute` continues to use `tokio::spawn`. Instead, tool closures that need to block use `tokio::task::block_in_place` to safely perform blocking work on the current tokio worker thread. `block_in_place` signals the runtime to temporarily move other async tasks off the thread, preventing starvation. No dedicated blocking thread pool is needed.
 
-```rust
-// Before (aisdk/src/core/tools.rs):
-tokio::spawn(async move { tool.execute.call(input) })
-
-// After:
-tokio::task::spawn_blocking(move || tool.execute.call(input))
-```
-
-This unblocks both shell backends:
-
-- **DaemonShell:** `ShellSession<PipeIO>.execute()` does blocking pipe I/O. Runs safely on the blocking thread pool.
-- **ClientRelay:** The closure captures a `tokio::runtime::Handle` (obtained via `Handle::current()` at `build_tools` time). Inside the blocking thread, it uses `handle.block_on(async { ... })` to send the IPC message and await the oneshot response. This is safe because `spawn_blocking` runs on a dedicated thread pool, not a tokio worker.
+Inside `block_in_place`, the closure uses `handle.block_on(async { ... })` to enter an async context for IPC sends and oneshot waits:
 
 ```rust
 // Pseudocode for the ClientRelay bash tool closure
 move |value| {
-    let handle = handle.clone();  // tokio::runtime::Handle
-    handle.block_on(async {
-        let (tx, rx) = oneshot::channel();
-        pending.lock().unwrap().insert(exec_id.clone(), tx);
-        client_tx.send(frame_message(&ExecuteCommand { ... })?).await?;
-        tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await??
+    tokio::task::block_in_place(|| {
+        handle.block_on(async {
+            let (tx, rx) = oneshot::channel();
+            pending.lock().unwrap().insert(exec_id.clone(), tx);
+            client_tx.send(frame_message(&ExecuteCommand { ... })?).await?;
+            tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await??
+        })
     })
 }
 ```
 
-Note: `client_tx` is `tokio::sync::mpsc::Sender<Vec<u8>>` (the existing IPC sender type). Calling `.send().await` on it requires async context, which `handle.block_on` provides.
+This approach requires a multi-threaded tokio runtime (the default), which the daemon already uses.
+
+**DaemonShell** follows the same pattern — the blocking pipe I/O in `ShellSession<PipeIO>.execute()` runs inside `block_in_place`, so the runtime can schedule other work while the shell command executes.
 
 ### DaemonShell Mutex
 
-`DaemonShell` wraps its `ShellSession<PipeIO>` in a `std::sync::Mutex` (not `tokio::sync::Mutex`). Since all access happens on `spawn_blocking` threads, `std::sync::Mutex` is correct. Tool calls from a single LLM turn are serialized by the aisdk tool loop, so contention is minimal.
+`DaemonShell` wraps its `ShellSession<PipeIO>` in a `std::sync::Mutex` (not `tokio::sync::Mutex`). Since blocking access happens inside `block_in_place` (not in an async context), `std::sync::Mutex` is correct. Tool calls from a single LLM turn are serialized by the aisdk tool loop, so contention is minimal.
 
 ## Shared Shell Module (codiv-common)
 
@@ -153,10 +145,10 @@ A new struct for independent agent shells.
 - Dropped when the agent is destroyed (SIGTERM to child)
 
 ### Command execution
-Uses the shared `ShellSession<PipeIO>` with the same sentinel protocol as the client coprocess. All calls happen inside `spawn_blocking` (see Sync/Async Boundary section).
+Uses the shared `ShellSession<PipeIO>` with the same sentinel protocol as the client coprocess. All calls happen inside `block_in_place` (see Sync/Async Boundary section).
 
 ### Concurrency
-Commands are serialized via a `std::sync::Mutex` around the `ShellSession<PipeIO>`. Only accessed from `spawn_blocking` threads, never from async tasks directly.
+Commands are serialized via a `std::sync::Mutex` around the `ShellSession<PipeIO>`. Only accessed inside `block_in_place` blocks, never from async tasks directly.
 
 ### Stderr handling
 A background thread drains stderr continuously and appends it to the current command's output buffer, tagged with `<stderr>`.
@@ -185,12 +177,12 @@ enum ShellBackend {
 
 ```
 1. LLM emits tool_call: bash { command: "cd /tmp && ls" }
-2. Bash tool closure runs (inside spawn_blocking thread)
-3. Generates unique execution_id
-4. Creates oneshot channel (tx, rx)
+2. Bash tool closure runs (on tokio worker thread)
+3. Enters block_in_place to safely block the worker
+4. Generates unique execution_id, creates oneshot channel (tx, rx)
 5. Stores tx in pending_executions map
 6. Sends DaemonMessage::ExecuteCommand to client via client_tx
-7. Uses handle.block_on(rx) to await response (safe: runs in spawn_blocking context)
+7. Uses handle.block_on(rx) to await response (safe: block_in_place yields the worker thread)
 8. Client runs command through ShellSession<PtyIO> coprocess
 9. Client sends back CommandExecutionResult { output, exit_code, cwd }
 10. Daemon dispatch loop receives result, looks up execution_id, sends through oneshot tx
@@ -204,7 +196,7 @@ enum ShellBackend {
 1. LLM emits tool_call: bash { command: "cargo build" }
 2. Bash tool closure runs
 3. Locks the DaemonShell mutex
-4. Calls shell.execute(command) (blocking, in spawn_blocking context)
+4. Calls shell.execute(command) (blocking, inside block_in_place)
 5. Appends any accumulated stderr
 6. Captures new cwd, updates shared Arc<RwLock<String>>
 7. Returns output + exit code to LLM
@@ -267,7 +259,6 @@ The bash tool in `build_tools()` is entirely replaced by the `ShellBackend` rout
 - `codivd/src/daemon_shell.rs` — `DaemonShell` struct, spawn/drop lifecycle, `Mutex`-guarded `ShellSession<PipeIO>`
 
 ### Modified code
-- `references/aisdk/src/core/tools.rs` — Change `ToolList::execute` from `tokio::spawn` to `tokio::task::spawn_blocking` for tool closures
 - `codiv/src/shell/bash_coprocess.rs` — Refactored to use `ShellSession<PtyIO>`, becomes thin PTY spawn wrapper. PTY resize stays here.
 - `codiv-common/src/messages.rs` — Add `ExecuteCommand` to `DaemonMessage`, add `CommandExecutionResult` to `ClientMessage`
 - `codivd/src/agent/tools.rs` — `build_tools()` takes `ShellBackend` + `Arc<RwLock<String>>` for cwd. Bash tool routes through relay or daemon shell. Glob/grep read cwd from the shared lock.

@@ -74,6 +74,8 @@ Key behaviors:
 - **Multi-step tool use**: The LLM can chain multiple tool calls in a single turn. Each tool result is injected back, and the LLM decides whether to call another tool or produce a final response.
 - **Tool call accumulation**: aisdk.rs streams tool call arguments incrementally (JSON tokens). The daemon accumulates until the tool call is complete before executing.
 - **Parallel tool calls**: If the LLM generates multiple tool calls in a single response (supported by OpenAI and Anthropic APIs), the daemon executes them concurrently and returns all results together.
+- **Shared shell state**: The Orchestrator agent shares the user's shell environment. Its Bash tool relays commands through the client's PTY coprocess via `ExecuteCommand` / `CommandExecutionResult` IPC messages, so state changes (`cd`, `export`, etc.) propagate bidirectionally between the user's terminal and the AI. Independent agents (Engineers, Reviewers) get isolated daemon-side shells — persistent `bash -i` processes with pipe I/O, starting from a parent-specified working directory. A shared working directory reference is updated after each command so subsequent tools (glob, grep) operate in the correct location.
+- **Async/blocking boundary**: aisdk dispatches tool closures on the tokio async runtime via `tokio::spawn`. Since shell execution involves blocking I/O (waiting for command output, awaiting IPC relay responses), tool closures use `tokio::task::block_in_place` to safely block without starving the runtime. This tells tokio to temporarily yield the current worker thread to other tasks while the closure blocks, avoiding the need to modify the aisdk library.
 
 ### 3.3 System Prompt Structure
 
@@ -277,7 +279,7 @@ The Engineer is the workhorse — created per Work Item, given a goal and accept
 
 **Tools available**: Bash, Read, Write, Edit, Glob, Grep, WebFetch, memory_search, memory_read, memory_write_episode.
 
-**Execution**: The Engineer runs the standard tool calling loop (Section 3.2) within its Work Item's scope. It has access to its own worker bash session (spawned by codivd, initialized from env snapshot). On completion, it produces artifacts (diffs, files, transcripts) stored in Shared Project State.
+**Execution**: The Engineer runs the standard tool calling loop (Section 3.2) within its Work Item's scope. The Orchestrator's Bash tool shares the client's PTY coprocess via the command relay (ShellBackend::ClientRelay), so state changes are visible to the user. Independent agents (e.g., Engineers spawned for Work Items) each get a `DaemonShell` — a pipe-based `bash -i` process managed by the daemon, with initial cwd set by the parent agent. On completion, the Engineer produces artifacts (diffs, files, transcripts) stored in Shared Project State.
 
 ### 4.5 Reviewer
 
@@ -355,7 +357,7 @@ Agents are ephemeral except for the Orchestrator. This keeps memory usage bounde
 Multiple Engineers can run simultaneously on independent Work Items (independent branches of the DAG). Each concurrent agent gets:
 
 - Its own LLM session (separate aisdk.rs completion stream)
-- Its own worker bash process (spawned by codivd from env snapshot)
+- Its own `DaemonShell` — a pipe-based `bash -i` process spawned by codivd, with initial cwd inherited from the parent agent. These shells are independent of the client's PTY and survive client disconnects.
 - Its own artifact directory (`~/.codiv/state/<session_id>/artifacts/<work_item_id>/`)
 - No shared mutable state with other concurrent agents
 

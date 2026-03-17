@@ -69,6 +69,10 @@ The terminal needs to be responsive at all times — you should be able to type,
 - **Async** — Tokio provides excellent async I/O for streaming LLM responses and concurrent tool execution
 - **Single binary** — no runtime dependencies to install
 
+### Shared Shell State
+
+The orchestrator agent shares the user's bash co-process rather than running its own shell. When the AI runs commands like `cd` or `export`, those state changes propagate bidirectionally — the user sees them immediately, and the AI inherits any changes the user makes. Independent agents (engineer, reviewer, etc. in multi-agent mode) get their own isolated shell sessions on the daemon side.
+
 ### Why Unix Socket IPC?
 
 Unix domain sockets provide low-latency, reliable local communication with built-in flow control. Combined with serde + bincode serialization and length-prefixed framing, this gives us a simple, fast binary protocol.

@@ -33,6 +33,8 @@ This keeps parsing simple and avoids delimiter-based framing issues with binary 
 | `ConfirmationRequest` | Daemon to Client | Ask user to approve a risky command |
 | `ConfirmationResponse` | Client to Daemon | User's approval or denial |
 | `CommandResult` | Daemon to Client | Result of a tool execution |
+| `ExecuteCommand` | Daemon to Client | Route AI bash command through client's co-process |
+| `CommandExecutionResult` | Client to Daemon | Relay result with output, exit code, and updated cwd |
 
 ## Agent Task Flow
 
@@ -68,6 +70,27 @@ sequenceDiagram
     Note right of D: Executes or skips based on response
     D-->>C: AgentStreamChunk (continues)
 ```
+
+## Command Relay Flow
+
+When the orchestrator agent runs a bash command, it is relayed through the client's co-process so that shell state is shared with the user:
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Daemon)
+    participant D as Daemon IPC
+    participant C as Client IPC
+    participant S as Bash Co-Process
+
+    A->>D: bash tool call
+    D->>C: ExecuteCommand (command, cwd)
+    C->>S: Write command to co-process
+    S-->>C: Output + exit code
+    C->>D: CommandExecutionResult (output, exit_code, new_cwd)
+    D->>A: Tool result
+```
+
+Independent agents (engineer, reviewer) bypass this relay and execute commands in their own daemon-side `DaemonShell` processes.
 
 ## Versioning
 

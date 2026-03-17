@@ -45,6 +45,12 @@ Codiv maintains a unified timeline that includes:
 
 This context flows into the LLM prompt, so the agent is aware of what you have been doing. If you just ran `cargo test` and some tests failed, the agent knows about it when you ask "fix the failing test."
 
+## Shared Shell State
+
+When the AI agent runs bash commands, it operates in the same shell environment as you. Environment changes like `cd`, `export`, `source`, etc. made by the AI are immediately reflected in your terminal, and changes you make are visible to the AI on its next command.
+
+This works because the agent's bash commands are relayed through your terminal's co-process rather than running in a separate shell. The result is seamless integration — if the AI runs `cd src/` and then you type `ls`, you see the contents of `src/`.
+
 ## Safety Confirmations
 
 When the agent wants to run a potentially dangerous command (like `rm`, `git push --force`, or writing to system files), Codiv pauses and asks for confirmation:

@@ -56,11 +56,14 @@ impl ShellBackend {
                     frame_message(&msg).map_err(|e| format!("frame error: {}", e))?;
 
                 let client_tx = client_tx.clone();
-                handle.block_on(async {
-                    client_tx
-                        .send(frame)
-                        .await
-                        .map_err(|e| format!("send error: {}", e))
+                let handle = handle.clone();
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        client_tx
+                            .send(frame)
+                            .await
+                            .map_err(|e| format!("send error: {}", e))
+                    })
                 })?;
 
                 // Wait for the result with a timeout slightly longer than the command timeout
@@ -68,24 +71,26 @@ impl ShellBackend {
                     std::time::Duration::from_millis(timeout_ms.saturating_add(5000));
                 let pending_for_cleanup = Arc::clone(pending);
                 let eid_for_cleanup = execution_id.clone();
-                let result = handle.block_on(async {
-                    match tokio::time::timeout(wait_timeout, rx).await {
-                        Ok(Ok(result)) => Ok(result),
-                        Ok(Err(_)) => {
-                            // Channel closed — remove stale entry
-                            if let Ok(mut map) = pending_for_cleanup.lock() {
-                                map.remove(&eid_for_cleanup);
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        match tokio::time::timeout(wait_timeout, rx).await {
+                            Ok(Ok(result)) => Ok(result),
+                            Ok(Err(_)) => {
+                                // Channel closed — remove stale entry
+                                if let Ok(mut map) = pending_for_cleanup.lock() {
+                                    map.remove(&eid_for_cleanup);
+                                }
+                                Err("relay channel closed".to_string())
                             }
-                            Err("relay channel closed".to_string())
-                        }
-                        Err(_) => {
-                            // Timeout — remove stale entry
-                            if let Ok(mut map) = pending_for_cleanup.lock() {
-                                map.remove(&eid_for_cleanup);
+                            Err(_) => {
+                                // Timeout — remove stale entry
+                                if let Ok(mut map) = pending_for_cleanup.lock() {
+                                    map.remove(&eid_for_cleanup);
+                                }
+                                Err("relay timeout waiting for client response".to_string())
                             }
-                            Err("relay timeout waiting for client response".to_string())
                         }
-                    }
+                    })
                 })?;
 
                 // Update shared cwd from the client's response
