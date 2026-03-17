@@ -115,6 +115,7 @@ pub(crate) struct TerminalState {
 
     // AI / daemon
     pub agent_streaming: bool,
+    pub active_request_id: Option<String>,
     pub ai_start_scrollback: Option<u64>,
     pub thinking_buffer: String,
     pub thinking_start: Option<Instant>,
@@ -179,6 +180,7 @@ impl TerminalState {
 
             // AI / daemon
             agent_streaming: false,
+            active_request_id: None,
             ai_start_scrollback: None,
             thinking_buffer: String::new(),
             thinking_start: None,

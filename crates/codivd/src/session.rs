@@ -12,6 +12,7 @@ pub struct ClientSession {
     pub last_heartbeat: Instant,
     pub agent: Option<Agent>,
     pub agent_return_rx: Option<oneshot::Receiver<(Agent, Vec<ConversationEvent>)>>,
+    pub agent_task: Option<tokio::task::JoinHandle<()>>,
     pub permission_ctx: Option<Arc<PermissionContext>>,
     /// SQLite session ID (UUID v4), assigned on first AgentRequest.
     pub session_id: Option<String>,
@@ -31,6 +32,7 @@ impl ClientSession {
             last_heartbeat: Instant::now(),
             agent: None,
             agent_return_rx: None,
+            agent_task: None,
             permission_ctx: None,
             session_id: None,
             event_seq: 0,

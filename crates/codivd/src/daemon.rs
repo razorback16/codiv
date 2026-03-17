@@ -293,7 +293,7 @@ impl Daemon {
                         tokio::sync::oneshot::channel::<(crate::agent::agent::Agent, Vec<ConversationEvent>)>();
 
                     let done_tx = self.agent_done_tx.clone();
-                    tokio::spawn(async move {
+                    let agent_task_handle = tokio::spawn(async move {
                         // Send model alias before streaming starts (tokens unknown yet).
                         let meta_msg = DaemonMessage::AgentMeta {
                             model_alias: agent.model_config.model_alias(),
@@ -357,6 +357,7 @@ impl Daemon {
                     // Store the receiver on the session so collect_returned_agents picks it up.
                     if let Some(session) = self.sessions.get_mut(&client_id) {
                         session.agent_return_rx = Some(agent_return_rx);
+                        session.agent_task = Some(agent_task_handle);
                     }
                 }
             }
@@ -616,6 +617,38 @@ impl Daemon {
                     info!("recorded command result from client {}: {}", client_id, command);
                 }
             }
+
+            ClientMessage::CancelRequest { request_id } => {
+                info!("cancel request: {}", request_id);
+                if let Some(session) = self.sessions.get_mut(&client_id) {
+                    if let Some(handle) = session.agent_task.take() {
+                        handle.abort();
+                    }
+                    session.agent_return_rx = None;
+
+                    // Rebuild agent from persisted events so context is preserved.
+                    if let Some(ref sid) = session.session_id {
+                        let events = self.store.load_events(sid, None).unwrap_or_default();
+                        let cwd = session.cwd.clone();
+                        let env_vars = session.env_vars.clone();
+                        let cfg = self.config.read().unwrap();
+                        let mut agent = create_agent(cwd, env_vars, &cfg);
+                        drop(cfg);
+                        agent.add_tool_events(&events);
+                        session.agent = Some(agent);
+                    }
+                }
+                // Send AgentComplete so client knows streaming ended.
+                if let Some(client_tx) = self.ipc.client_sender(client_id) {
+                    let msg = DaemonMessage::AgentComplete {
+                        request_id,
+                        summary: String::new(),
+                    };
+                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                        let _ = client_tx.send(frame).await;
+                    }
+                }
+            }
         }
     }
 
@@ -633,6 +666,7 @@ impl Daemon {
                     Ok((agent, events)) => {
                         session.agent = Some(agent);
                         session.agent_return_rx = None;
+                        session.agent_task = None;
                         if !events.is_empty() {
                             to_persist.push((cid, events));
                         }

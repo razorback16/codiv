@@ -105,3 +105,11 @@ pub fn build_load_session(session_id: &str) -> Option<Vec<u8>> {
     };
     frame_message(&msg).ok()
 }
+
+/// Build a framed CancelRequest message.
+pub fn build_cancel_request(request_id: &str) -> Option<Vec<u8>> {
+    let msg = ClientMessage::CancelRequest {
+        request_id: request_id.to_string(),
+    };
+    frame_message(&msg).ok()
+}

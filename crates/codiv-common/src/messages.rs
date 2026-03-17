@@ -65,6 +65,9 @@ pub enum ClientMessage {
     },
     /// Start a fresh session: reset agent state, create a new SQLite session.
     NewSession,
+    CancelRequest {
+        request_id: String,
+    },
 }
 
 /// Messages sent from the codivd daemon to the codiv client.
