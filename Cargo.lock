@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "codiv"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arboard",
  "bincode",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "codiv-common"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bincode",
  "libc",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "codiv-tools"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "codiv-common",
  "crossbeam-channel",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "codivd"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "aisdk",
  "bincode",
