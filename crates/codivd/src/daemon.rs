@@ -691,9 +691,6 @@ impl Daemon {
                     }
                 }
             }
-
-            // CommandExecutionResult will be handled by ShellBackend (future chunk)
-            ClientMessage::CommandExecutionResult { .. } => {}
         }
     }
 
