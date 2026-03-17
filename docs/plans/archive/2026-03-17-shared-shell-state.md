@@ -26,7 +26,6 @@
 ### Modified files
 | File | Changes |
 |------|---------|
-| `references/aisdk/src/core/tools.rs:219-234` | Change `tokio::spawn` to `tokio::task::spawn_blocking` in `ToolList::execute` |
 | `crates/codiv-common/src/lib.rs:1-6` | Add `pub mod shell;` |
 | `crates/codiv-common/src/messages.rs:75-133` | Add `ExecuteCommand` variant to `DaemonMessage`, `CommandExecutionResult` to `ClientMessage` |
 | `crates/codiv/src/ipc/messages.rs:9-115` | Add `build_command_execution_result` helper |
@@ -700,74 +699,9 @@ git commit -m "Add ExecuteCommand and CommandExecutionResult IPC message variant
 
 ---
 
-### Task 5: Change aisdk ToolList::execute to use spawn_blocking
+### Task 5: No aisdk modification needed — use `block_in_place` in tool closures
 
-**Files:**
-- Modify: `references/aisdk/src/core/tools.rs:219-234`
-- Test: existing aisdk tests
-
-- [ ] **Step 1: Modify ToolList::execute**
-
-In `references/aisdk/src/core/tools.rs`, change the `execute` method (lines 219-234).
-
-The return type changes from `JoinHandle<Result<String>>` (which is `tokio::task::JoinHandle`) to `tokio::task::JoinHandle<Result<String>>`. The key change: replace `tokio::spawn(async move { ... })` with `tokio::task::spawn_blocking(move || { ... })`.
-
-Before:
-```rust
-pub async fn execute(&self, tool_info: ToolCallInfo) -> JoinHandle<Result<String>> {
-    let tools = self.tools.clone();
-    tokio::spawn(async move {
-        let tools = tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let tool = tools.iter().find(|tool| tool.name == tool_info.tool.name);
-
-        match tool {
-            Some(tool) => tool.execute.call(tool_info.input),
-            None => Err(crate::error::Error::ToolCallError(
-                "Tool not found".to_string(),
-            )),
-        }
-    })
-}
-```
-
-After:
-```rust
-pub async fn execute(&self, tool_info: ToolCallInfo) -> JoinHandle<Result<String>> {
-    let tools = self.tools.clone();
-    tokio::task::spawn_blocking(move || {
-        let tools = tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let tool = tools.iter().find(|tool| tool.name == tool_info.tool.name);
-
-        match tool {
-            Some(tool) => tool.execute.call(tool_info.input),
-            None => Err(crate::error::Error::ToolCallError(
-                "Tool not found".to_string(),
-            )),
-        }
-    })
-}
-```
-
-- [ ] **Step 2: Verify it compiles**
-
-Run: `cargo check -p aisdk`
-Expected: Compiles successfully. `spawn_blocking` returns the same `JoinHandle` type.
-
-- [ ] **Step 3: Run existing aisdk tests**
-
-Run: `cargo test -p aisdk`
-Expected: All existing tests pass.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add references/aisdk/src/core/tools.rs
-git commit -m "Change aisdk ToolList::execute to spawn_blocking for blocking tool closures"
-```
+**Note:** The original plan called for modifying aisdk's `ToolList::execute` from `tokio::spawn` to `tokio::task::spawn_blocking`. This is no longer necessary. Instead, tool closures that perform blocking I/O wrap their blocking work in `tokio::task::block_in_place(|| { ... })`, which safely yields the current tokio worker thread without requiring any upstream library changes. The `block_in_place` + `handle.block_on()` pattern is applied in `ShellBackend::execute` (Task 6).
 
 ---
 
@@ -819,7 +753,7 @@ pub enum ShellBackend {
 
 impl ShellBackend {
     /// Execute a bash command through the appropriate backend.
-    /// This is a blocking call — must be called from spawn_blocking context.
+    /// Uses block_in_place internally for blocking I/O.
     pub fn execute(
         &self,
         command: &str,
@@ -845,8 +779,8 @@ impl ShellBackend {
                 let frame = frame_message(&msg)
                     .map_err(|e| format!("frame error: {e}"))?;
 
-                // block_on is safe here because we're in a spawn_blocking thread
-                let result = handle.block_on(async {
+                // block_in_place + block_on is safe here — yields the tokio worker thread
+                let result = tokio::task::block_in_place(|| handle.block_on(async {
                     client_tx.send(frame).await
                         .map_err(|_| "client disconnected".to_string())?;
 
@@ -857,7 +791,7 @@ impl ShellBackend {
                     .await
                     .map_err(|_| format!("command timed out after {timeout_ms}ms"))?
                     .map_err(|_| "shell unavailable — client disconnected".to_string())
-                })?;
+                }))?;
 
                 // Update shared cwd
                 if let Ok(mut cwd) = cwd_ref.write() {
@@ -1354,7 +1288,7 @@ Expected: All tests pass. Pay special attention to:
 - [ ] **Step 2: Run aisdk tests**
 
 Run: `cargo test -p aisdk`
-Expected: All tests pass with spawn_blocking change.
+Expected: All tests pass (aisdk is unmodified; blocking handled by block_in_place in codivd).
 
 - [ ] **Step 3: Build release to catch any optimization-only issues**
 

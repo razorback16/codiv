@@ -196,7 +196,7 @@ Unix domain socket with 4-byte length prefix + bincode payload. Both client and 
 - `codivd` daemon — rewritten to Rust (see daemon design doc).
 - serde+bincode IPC protocol — shared via `codiv-common` crate.
 - Unix domain socket transport.
-- Persistent bash co-process model.
+- Persistent bash co-process model. The coprocess now also handles AI-relayed commands via the command relay protocol. When the daemon sends an `ExecuteCommand` IPC message, the client queues it as a `PendingAiExecution` and runs it through the same coprocess. AI command output is invisible in the terminal — the VT parser's `process` step is skipped for relayed executions, so the user's scrollback is not polluted. The result (output, exit code, updated cwd) is sent back to the daemon via `CommandExecutionResult`.
 - Dual-mode input logic.
 - Env snapshot protocol.
 - All agent/memory/scheduler logic in daemon.

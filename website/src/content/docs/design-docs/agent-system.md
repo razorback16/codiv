@@ -57,6 +57,16 @@ Agent responses stream to the terminal token-by-token:
 3. Client receives chunks and renders them as markdown in real time
 4. Syntax highlighting and formatting update progressively
 
+## Shared Shell State
+
+The orchestrator agent shares the user's shell environment through a command relay protocol:
+
+- When the orchestrator runs a bash command, it is routed through the client's PTY co-process via `ExecuteCommand` / `CommandExecutionResult` IPC messages. Commands like `cd /tmp` or `export FOO=bar` immediately take effect in the user's terminal, and vice versa.
+- Independent agents (engineer, reviewer, etc. in multi-agent mode) get isolated `DaemonShell` instances — pipe-based `bash -i` processes on the daemon side with fresh state and the initial working directory inherited from the parent.
+- The shared working directory is tracked via `Arc<RwLock<String>>` so both the agent and IPC layer stay in sync.
+
+This design means the AI operates in the same shell context as the user, making tool execution feel seamless.
+
 ## Error Handling and Stop Conditions
 
 The agent loop terminates when:

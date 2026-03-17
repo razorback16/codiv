@@ -142,6 +142,20 @@ codiv                          codivd
 - **Contains**: session_id, request_id, approved (bool), add_to_allowlist (bool), add_to_denylist (bool)
 - **Constraint**: request_id must match a pending ConfirmationRequest
 
+#### ExecuteCommand
+- **Direction**: codivd → codiv
+- **When**: the Orchestrator's Bash tool needs to run a command through the client's shared PTY coprocess (command relay for shared shell state)
+- **Contains**: execution_id (unique correlation ID), command (string), timeout_ms (u64)
+- **Response**: exactly one CommandExecutionResult with matching execution_id
+- **Purpose**: enables the AI to execute commands in the same shell environment as the user, so state changes (cd, export, etc.) are immediately visible to both sides
+
+#### CommandExecutionResult
+- **Direction**: codiv → codivd
+- **When**: the client has finished executing a relayed command through its coprocess
+- **Contains**: execution_id, output (string), exit_code (i32), cwd (string — the working directory after execution)
+- **Constraint**: execution_id must match a pending ExecuteCommand
+- **Purpose**: returns the command output and updated cwd to the daemon, which resolves the waiting tool closure via a oneshot channel
+
 ### 4.3 Phase 3+ (Planned)
 
 #### WorkItemUpdate
@@ -224,6 +238,21 @@ codiv                          codivd
   |--- Heartbeat -------------->|  (t=45s: reconnect attempt)
   |--- EnvSnapshot ------------>|  (re-handshake)
 ```
+
+### 5.6 Command Relay (Shared Shell)
+
+```
+codiv                          codivd
+  |                             |  [LLM tool call: Bash("cd /tmp && ls")]
+  |<-- ExecuteCommand ----------|  (execution_id, command, timeout_ms)
+  |  [runs through coprocess]   |
+  |--- CommandExecutionResult ->|  (execution_id, output, exit_code, cwd="/tmp")
+  |                             |  [daemon resolves oneshot, returns result to LLM]
+```
+
+The command relay enables the Orchestrator agent to share shell state with the user. When the daemon's Bash tool uses `ShellBackend::ClientRelay`, it sends an `ExecuteCommand` IPC message to the client, which queues it as a `PendingAiExecution` and runs it through the same PTY coprocess used for user commands. The client sends back a `CommandExecutionResult` with the output, exit code, and updated cwd. AI command output is not displayed in the terminal (the PTY parser's `process` step is skipped for relayed commands).
+
+Independent agents (Engineers, Reviewers) use `ShellBackend::Local` with a `DaemonShell` — a pipe-based `bash -i` process on the daemon side — and do not participate in the command relay.
 
 ## 6. Error Handling
 
