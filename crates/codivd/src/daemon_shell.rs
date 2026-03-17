@@ -21,10 +21,12 @@ struct DaemonShellInner {
 }
 
 impl DaemonShell {
-    /// Spawn a new daemon shell using `bash`.
-    pub fn spawn() -> std::io::Result<Self> {
+    /// Spawn a new daemon shell using `bash -i` in the given directory.
+    /// Uses interactive mode so `.bashrc` is sourced (access to nvm, pyenv, etc.).
+    pub fn spawn(initial_cwd: &str) -> std::io::Result<Self> {
         let mut child = Command::new("bash")
-            .args(["--norc", "--noprofile"])
+            .arg("-i")
+            .current_dir(initial_cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -91,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_daemon_shell_execute() {
-        let shell = DaemonShell::spawn().expect("failed to spawn daemon shell");
+        let shell = DaemonShell::spawn("/tmp").expect("failed to spawn daemon shell");
         let result = shell.execute_default("echo hello_daemon");
         assert_eq!(result.exit_code, 0);
         assert!(
@@ -103,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_daemon_shell_cwd_persistence() {
-        let shell = DaemonShell::spawn().expect("failed to spawn daemon shell");
+        let shell = DaemonShell::spawn("/tmp").expect("failed to spawn daemon shell");
         shell.execute_default("cd /tmp");
         let cwd = shell.capture_cwd();
         assert!(
@@ -115,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_daemon_shell_env_persistence() {
-        let shell = DaemonShell::spawn().expect("failed to spawn daemon shell");
+        let shell = DaemonShell::spawn("/tmp").expect("failed to spawn daemon shell");
         shell.execute_default("export DAEMON_TEST_VAR=from_daemon");
         let env = shell.capture_env();
         let found = env
@@ -126,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_daemon_shell_exit_code() {
-        let shell = DaemonShell::spawn().expect("failed to spawn daemon shell");
+        let shell = DaemonShell::spawn("/tmp").expect("failed to spawn daemon shell");
         let result = shell.execute_default("(exit 42)");
         assert_eq!(
             result.exit_code, 42,
@@ -139,7 +141,7 @@ mod tests {
     fn test_daemon_shell_drop_kills_child() {
         let pid;
         {
-            let shell = DaemonShell::spawn().expect("failed to spawn daemon shell");
+            let shell = DaemonShell::spawn("/tmp").expect("failed to spawn daemon shell");
             pid = shell.child_pid();
             // shell is dropped here
         }

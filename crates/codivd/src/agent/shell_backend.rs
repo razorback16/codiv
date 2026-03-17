@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use codiv_common::messages::{frame_message, DaemonMessage};
 use codiv_common::truncate::truncate_output;
@@ -29,7 +29,8 @@ impl ShellBackend {
     /// Execute a command, blocking until the result is available.
     /// For `ClientRelay`, sends an `ExecuteCommand` IPC message and waits
     /// for the client to respond with `CommandExecutionResult`.
-    pub fn execute(&self, command: &str, timeout_ms: u64, cwd: &str) -> Result<String, String> {
+    /// Updates `cwd_ref` with the new working directory after execution.
+    pub fn execute(&self, command: &str, timeout_ms: u64, cwd_ref: &Arc<RwLock<String>>) -> Result<String, String> {
         match self {
             ShellBackend::ClientRelay {
                 client_tx,
@@ -65,12 +66,32 @@ impl ShellBackend {
                 // Wait for the result with a timeout slightly longer than the command timeout
                 let wait_timeout =
                     std::time::Duration::from_millis(timeout_ms.saturating_add(5000));
+                let pending_for_cleanup = Arc::clone(pending);
+                let eid_for_cleanup = execution_id.clone();
                 let result = handle.block_on(async {
-                    tokio::time::timeout(wait_timeout, rx)
-                        .await
-                        .map_err(|_| "relay timeout waiting for client response".to_string())?
-                        .map_err(|_| "relay channel closed".to_string())
+                    match tokio::time::timeout(wait_timeout, rx).await {
+                        Ok(Ok(result)) => Ok(result),
+                        Ok(Err(_)) => {
+                            // Channel closed — remove stale entry
+                            if let Ok(mut map) = pending_for_cleanup.lock() {
+                                map.remove(&eid_for_cleanup);
+                            }
+                            Err("relay channel closed".to_string())
+                        }
+                        Err(_) => {
+                            // Timeout — remove stale entry
+                            if let Ok(mut map) = pending_for_cleanup.lock() {
+                                map.remove(&eid_for_cleanup);
+                            }
+                            Err("relay timeout waiting for client response".to_string())
+                        }
+                    }
                 })?;
+
+                // Update shared cwd from the client's response
+                if let Ok(mut cwd) = cwd_ref.write() {
+                    *cwd = result.cwd;
+                }
 
                 Ok(format_output(&result.output, result.exit_code))
             }

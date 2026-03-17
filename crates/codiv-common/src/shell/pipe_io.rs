@@ -1,47 +1,76 @@
 //! `PipeIO`: `ShellIO` implementation over stdin/stdout/stderr pipes.
 //!
 //! Spawns no process itself — the caller provides `ChildStdin`, `ChildStdout`,
-//! and `ChildStderr` from a `std::process::Command`. A background thread drains
-//! stderr so it never blocks.
+//! and `ChildStderr` from a `std::process::Command`. Background threads drain
+//! both stdout and stderr so reads never block the calling thread past the
+//! configured timeout.
 
 use super::{find_expanded_sentinel, ShellIO};
+use crossbeam_channel::{self, Receiver, Sender};
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// `ShellIO` backend that communicates via stdin/stdout/stderr pipes.
+///
+/// A background thread reads stdout and sends chunks through a channel
+/// (same pattern as `PtyIO`), giving us proper timeout support on reads.
+/// A second background thread drains stderr into a buffer.
 pub struct PipeIO {
     stdin: Box<dyn Write + Send>,
-    stdout: Box<dyn Read + Send>,
+    stdout_rx: Receiver<Vec<u8>>,
     stderr_buf: Arc<Mutex<String>>,
+    _stdout_handle: Option<JoinHandle<()>>,
     _stderr_handle: Option<JoinHandle<()>>,
 }
 
 impl PipeIO {
     /// Create a new `PipeIO` from the given stdin, stdout, and stderr handles.
     ///
-    /// Starts a background thread that drains stderr into an internal buffer.
+    /// Starts background threads that drain stdout (into a channel) and
+    /// stderr (into an internal buffer).
     pub fn new(
         stdin: Box<dyn Write + Send>,
         stdout: Box<dyn Read + Send>,
         stderr: Box<dyn Read + Send>,
     ) -> Self {
+        // Stdout reader thread → channel (for timeout-aware reads)
+        let (stdout_tx, stdout_rx) = crossbeam_channel::unbounded();
+        let stdout_handle = thread::Builder::new()
+            .name("pipe-stdout-drain".into())
+            .spawn(move || Self::reader_thread(stdout, stdout_tx))
+            .expect("failed to spawn stdout drain thread");
+
+        // Stderr reader thread → buffer
         let stderr_buf = Arc::new(Mutex::new(String::new()));
         let buf_clone = Arc::clone(&stderr_buf);
-
-        let handle = thread::Builder::new()
+        let stderr_handle = thread::Builder::new()
             .name("pipe-stderr-drain".into())
-            .spawn(move || {
-                Self::drain_stderr_thread(stderr, buf_clone);
-            })
+            .spawn(move || Self::drain_stderr_thread(stderr, buf_clone))
             .expect("failed to spawn stderr drain thread");
 
         Self {
             stdin,
-            stdout,
+            stdout_rx,
             stderr_buf,
-            _stderr_handle: Some(handle),
+            _stdout_handle: Some(stdout_handle),
+            _stderr_handle: Some(stderr_handle),
+        }
+    }
+
+    fn reader_thread(mut stdout: Box<dyn Read + Send>, tx: Sender<Vec<u8>>) {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
         }
     }
 
@@ -71,7 +100,6 @@ impl ShellIO for PipeIO {
     fn read_until_sentinel(&mut self, sentinel: &str, timeout: Duration) -> String {
         let mut accumulated = String::new();
         let deadline = Instant::now() + timeout;
-        let mut buf = [0u8; 4096];
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -79,22 +107,19 @@ impl ShellIO for PipeIO {
                 break;
             }
 
-            // Use a short read with a non-blocking check. Since std pipes
-            // are blocking, we rely on the shell producing data promptly
-            // after the sentinel echo. We set a short read timeout by
-            // using a small buffer read — the shell will write the sentinel
-            // line, so read() will return.
-            match self.stdout.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
+            let wait = remaining.min(Duration::from_millis(1000));
+            match self.stdout_rx.recv_timeout(wait) {
+                Ok(data) => {
+                    let chunk = String::from_utf8_lossy(&data);
                     accumulated.push_str(&chunk);
                     if find_expanded_sentinel(&accumulated, sentinel).is_some() {
                         break;
                     }
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Loop back for deadline check
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
         }
 
