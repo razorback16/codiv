@@ -9,11 +9,9 @@
 //! User commands are still executed through this bash instance, but interactive
 //! and daemon-side command execution respect `$SHELL`.
 
+use codiv_common::shell::{self, pty_io::PtyIO, ShellSession};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use rand::Rng;
-use std::io::{Read, Write};
-use crossbeam_channel::{self, Receiver};
-use std::thread::JoinHandle;
+use crossbeam_channel::Receiver;
 use std::time::{Duration, Instant};
 
 /// Result of executing a command in the bash co-process.
@@ -33,29 +31,15 @@ pub struct GitInfo {
 }
 
 /// A bash co-process that communicates over a PTY using a sentinel protocol.
+///
+/// Delegates blocking command execution to `ShellSession<PtyIO>` while
+/// retaining PTY-specific methods for resize, interrupt, and non-blocking IO.
 pub struct BashCoprocess {
-    writer: Box<dyn Write + Send>,
-    reader_rx: Receiver<Vec<u8>>,
+    session: ShellSession<PtyIO>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    reader_handle: Option<JoinHandle<()>>,
     real_rows: u16,
     real_cols: u16,
-}
-
-fn reader_thread(mut reader: Box<dyn Read + Send>, tx: crossbeam_channel::Sender<Vec<u8>>) {
-    let mut buf = [0u8; 4096];
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if tx.send(buf[..n].to_vec()).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
 }
 
 impl BashCoprocess {
@@ -109,29 +93,23 @@ impl BashCoprocess {
             .take_writer()
             .map_err(std::io::Error::other)?;
 
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let handle = std::thread::Builder::new()
-            .name("pty-reader".into())
-            .spawn(move || reader_thread(reader, tx))
-            .map_err(std::io::Error::other)?;
-
-        let mut coprocess = BashCoprocess {
-            writer,
-            reader_rx: rx,
-            master: pair.master,
-            child,
-            reader_handle: Some(handle),
-            real_rows: rows,
-            real_cols: cols,
-        };
+        let pty_io = PtyIO::new(writer, reader);
+        let mut session = ShellSession::new(pty_io);
 
         // Drain the initial prompt output adaptively.
-        coprocess.drain_initial_output();
+        session.drain_initial(Duration::from_secs(5));
         // Suppress PTY echo so the sentinel-wrapped command line is never echoed back.
         // Programs that need echo (vim, python, ssh) call tcsetattr() themselves.
-        coprocess.execute("stty -echo", 2000);
+        session.execute("stty -echo", Duration::from_secs(2));
+
         log::info!("bash coprocess ready (pid=child)");
-        Ok(coprocess)
+        Ok(BashCoprocess {
+            session,
+            master: pair.master,
+            child,
+            real_rows: rows,
+            real_cols: cols,
+        })
     }
 
     /// Send Ctrl-C to the PTY. This causes the terminal driver to deliver
@@ -151,8 +129,8 @@ impl BashCoprocess {
     }
 
     /// Expose the PTY reader channel for use in `select!`-based event loops.
-    pub fn pty_receiver(&self) -> &crossbeam_channel::Receiver<Vec<u8>> {
-        &self.reader_rx
+    pub fn pty_receiver(&self) -> &Receiver<Vec<u8>> {
+        self.session.io.reader_rx()
     }
 
     /// Update the PTY window size. Called on terminal resize so that
@@ -179,41 +157,18 @@ impl BashCoprocess {
     /// Execute a command in the bash co-process and return its output and exit code.
     pub fn execute(&mut self, command: &str, timeout_ms: i32) -> CommandResult {
         log::debug!("execute: cmd={:?} timeout={}ms", command, timeout_ms);
-        let sentinel = Self::generate_sentinel();
-        let cmd_trimmed = command.trim_end_matches('\n');
-        // Single-line format: command and sentinel on one line so bash parses
-        // the entire compound command before executing. This prevents commands
-        // that read from stdin (like `read`) from consuming the sentinel line.
-        let full_cmd = format!(
-            "{}; __CODIV_EXIT=$?; echo \"{}${{__CODIV_EXIT}}__\"\n",
-            cmd_trimmed, sentinel
+        let result = self
+            .session
+            .execute(command, Duration::from_millis(timeout_ms as u64));
+        log::debug!(
+            "execute: exit_code={} output_len={}",
+            result.exit_code,
+            result.stdout.len()
         );
-
-        if !self.write_all(full_cmd.as_bytes()) {
-            return CommandResult {
-                output: String::new(),
-                exit_code: -1,
-            };
+        CommandResult {
+            output: result.stdout,
+            exit_code: result.exit_code,
         }
-
-        let raw = self.read_until_sentinel(&sentinel, timeout_ms);
-
-        let mut exit_code: i32 = -1;
-        if let Some(pos) = Self::find_expanded_sentinel(&raw, &sentinel) {
-            let code_start = pos + sentinel.len();
-            if let Some(rest) = raw.get(code_start..) {
-                if let Some(code_end) = rest.find("__") {
-                    let code_str = &rest[..code_end];
-                    if let Ok(code) = code_str.parse::<i32>() {
-                        exit_code = code;
-                    }
-                }
-            }
-        }
-
-        let output = Self::clean_output(&raw, command, &sentinel);
-        log::debug!("execute: exit_code={} output_len={}", exit_code, output.len());
-        CommandResult { output, exit_code }
     }
 
     /// Convenience: execute with default 30s timeout.
@@ -223,25 +178,12 @@ impl BashCoprocess {
 
     /// Capture the current working directory of the shell.
     pub fn capture_cwd(&mut self) -> String {
-        let result = self.execute_default("pwd");
-        result.output.trim().to_string()
+        self.session.capture_cwd()
     }
 
     /// Capture the current environment variables of the shell.
     pub fn capture_env(&mut self) -> Vec<(String, String)> {
-        let result = self.execute_default("env");
-        let mut env_vars = Vec::new();
-        for line in result.output.lines() {
-            if let Some(eq_pos) = line.find('=') {
-                let key = &line[..eq_pos];
-                let value = &line[eq_pos + 1..];
-                // Skip empty keys or lines that don't look like env vars
-                if !key.is_empty() && !key.contains(' ') {
-                    env_vars.push((key.to_string(), value.to_string()));
-                }
-            }
-        }
-        env_vars
+        self.session.capture_env()
     }
 
     /// Capture git branch and working-tree diff stats in a single PTY round-trip.
@@ -313,7 +255,7 @@ impl BashCoprocess {
     /// if the write failed.
     pub fn start_command(&mut self, command: &str) -> Option<String> {
         log::debug!("start_command: cmd={:?}", command);
-        let sentinel = Self::generate_sentinel();
+        let sentinel = shell::generate_sentinel();
         let cmd_trimmed = command.trim_end_matches('\n');
         // Single-line format: see execute() for rationale.
         let full_cmd = format!(
@@ -331,7 +273,8 @@ impl BashCoprocess {
     /// or an empty vec if there is nothing to read right now.
     pub fn try_read(&self) -> Vec<u8> {
         let mut result = Vec::new();
-        while let Ok(data) = self.reader_rx.try_recv() {
+        let rx = self.session.io.reader_rx();
+        while let Ok(data) = rx.try_recv() {
             result.extend_from_slice(&data);
         }
         result
@@ -341,16 +284,17 @@ impl BashCoprocess {
     /// Used after SIGINT to clear bash's `^C` echo and prompt.
     pub fn drain_for(&self, ms: i32) {
         let deadline = Instant::now() + Duration::from_millis(ms as u64);
+        let rx = self.session.io.reader_rx();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
-            match self.reader_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            match rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
                 Ok(_) => {
                     // Data received and discarded; keep draining.
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => break, // silence — done draining
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -364,7 +308,7 @@ impl BashCoprocess {
         command: &str,
         sentinel: &str,
     ) -> Option<CommandResult> {
-        let pos = Self::find_expanded_sentinel(accumulated, sentinel)?;
+        let pos = shell::find_expanded_sentinel(accumulated, sentinel)?;
 
         let mut exit_code: i32 = -1;
         let code_start = pos + sentinel.len();
@@ -381,142 +325,29 @@ impl BashCoprocess {
         Some(CommandResult { output, exit_code })
     }
 
-    // --- Private helpers ---
-
-    /// Generate a unique sentinel string like `__CODIV_SENTINEL_abcd1234efgh5678_`
-    fn generate_sentinel() -> String {
-        let mut rng = rand::thread_rng();
-        let a: u32 = rng.gen();
-        let b: u32 = rng.gen();
-        format!("__CODIV_SENTINEL_{:08x}{:08x}_", a, b)
-    }
-
-    /// Find the position of the "expanded" sentinel in the output.
-    ///
-    /// The expanded sentinel is followed by a digit (the exit code), as opposed
-    /// to the echoed command line which contains `${__CODIV_EXIT}` literally.
-    pub fn find_expanded_sentinel(text: &str, sentinel: &str) -> Option<usize> {
-        let mut search_from = 0;
-        loop {
-            match text[search_from..].find(sentinel) {
-                None => return None,
-                Some(relative_pos) => {
-                    let pos = search_from + relative_pos;
-                    let after = pos + sentinel.len();
-                    if after < text.len() {
-                        let ch = text.as_bytes()[after];
-                        if ch.is_ascii_digit() {
-                            return Some(pos);
-                        }
-                    }
-                    search_from = pos + sentinel.len();
-                }
-            }
-        }
-    }
-
-    /// Write all bytes to the PTY writer.
-    fn write_all(&mut self, data: &[u8]) -> bool {
-        self.writer.write_all(data).is_ok()
-    }
-
-    /// Read from the PTY until the expanded sentinel is found or timeout expires.
-    fn read_until_sentinel(&self, sentinel: &str, timeout_ms: i32) -> String {
-        let mut accumulated = String::new();
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            let wait = remaining.min(Duration::from_millis(1000));
-            match self.reader_rx.recv_timeout(wait) {
-                Ok(data) => {
-                    // Strip \r so that macOS PTY line-wrap injections (\r\n at
-                    // column boundaries) don't split the sentinel string.
-                    let chunk = String::from_utf8_lossy(&data).replace('\r', "");
-                    accumulated.push_str(&chunk);
-                    // Check if expanded sentinel is present
-                    if Self::find_expanded_sentinel(&accumulated, sentinel).is_some() {
-                        break;
-                    }
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Loop back so deadline check can fire
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-
-        accumulated
-    }
-
-    /// Drain initial prompt output after spawning.
-    ///
-    /// Uses the full sentinel protocol (with `__CODIV_EXIT`) so the expanded
-    /// sentinel is distinguishable from the echoed command line. This ensures
-    /// the initial prompt and any shell startup messages are consumed before
-    /// the first `execute` call sees the PTY output.
-    fn drain_initial_output(&mut self) {
-        log::debug!("draining initial PTY output");
-        let sentinel = Self::generate_sentinel();
-        let cmd = format!(
-            "true; __CODIV_EXIT=$?; echo \"{}${{__CODIV_EXIT}}__\"\n",
-            sentinel
-        );
-        if self.write_all(cmd.as_bytes()) {
-            self.read_until_sentinel(&sentinel, 5000);
-        }
-    }
+    // --- Public helpers (kept for backward compatibility) ---
 
     /// Strip ANSI escape sequences and carriage returns from text.
     pub fn strip_ansi(text: &str) -> String {
-        let mut result = String::with_capacity(text.len());
-        let mut chars = text.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '\x1b' {
-                // CSI sequence: ESC [ ... final_byte
-                if chars.peek() == Some(&'[') {
-                    chars.next(); // consume '['
-                    // Read until a letter (0x40-0x7E)
-                    loop {
-                        match chars.next() {
-                            Some(c) if ('@'..='~').contains(&c) => break,
-                            Some(_) => continue,
-                            None => break,
-                        }
-                    }
-                } else if chars.peek() == Some(&']') {
-                    // OSC sequence: ESC ] ... BEL  or  ESC ] ... ESC backslash (ST)
-                    chars.next(); // consume ']'
-                    loop {
-                        match chars.next() {
-                            Some('\x07') => break,           // BEL terminator
-                            Some('\x1b') => {
-                                // ST terminator (ESC \)
-                                if chars.peek() == Some(&'\\') {
-                                    chars.next();
-                                }
-                                break;
-                            }
-                            Some(_) => continue,
-                            None => break,
-                        }
-                    }
-                } else {
-                    // Other ESC sequences: consume next char
-                    chars.next();
-                }
-            } else if ch == '\r' || ch == '\x07' {
-                // Strip carriage returns and standalone BEL
-                continue;
-            } else {
-                result.push(ch);
-            }
-        }
-        result
+        shell::strip_ansi(text)
+    }
+
+    /// Find the position of the "expanded" sentinel in the output.
+    pub fn find_expanded_sentinel(text: &str, sentinel: &str) -> Option<usize> {
+        shell::find_expanded_sentinel(text, sentinel)
+    }
+
+    /// Generate a unique sentinel string like `__CODIV_SENTINEL_abcd1234efgh5678_`
+    fn generate_sentinel() -> String {
+        shell::generate_sentinel()
+    }
+
+    // --- Private helpers ---
+
+    /// Write all bytes to the PTY writer.
+    fn write_all(&mut self, data: &[u8]) -> bool {
+        use codiv_common::shell::ShellIO;
+        self.session.io.write_all(data).is_ok()
     }
 
     /// Clean the raw output: strip ANSI escapes, sentinel lines, exit code lines,
@@ -532,7 +363,7 @@ impl BashCoprocess {
 
         for line in &lines {
             // Strip ANSI only for comparison purposes
-            let plain = Self::strip_ansi(line);
+            let plain = shell::strip_ansi(line);
             let trimmed = plain.trim();
 
             // Skip lines containing the sentinel
@@ -570,10 +401,10 @@ impl BashCoprocess {
         }
 
         // Trim leading and trailing empty lines (check plain version)
-        while result_lines.first().is_some_and(|l| Self::strip_ansi(l).trim().is_empty()) {
+        while result_lines.first().is_some_and(|l| shell::strip_ansi(l).trim().is_empty()) {
             result_lines.remove(0);
         }
-        while result_lines.last().is_some_and(|l| Self::strip_ansi(l).trim().is_empty()) {
+        while result_lines.last().is_some_and(|l| shell::strip_ansi(l).trim().is_empty()) {
             result_lines.pop();
         }
 
@@ -586,9 +417,6 @@ impl Drop for BashCoprocess {
         let _ = self.child.kill();
         let _ = self.child.wait();
         // Child is dead → slave fd closed → reader's read() returns error → thread exits.
-        if let Some(handle) = self.reader_handle.take() {
-            let _ = handle.join();
-        }
     }
 }
 
