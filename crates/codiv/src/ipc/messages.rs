@@ -113,3 +113,19 @@ pub fn build_cancel_request(request_id: &str) -> Option<Vec<u8>> {
     };
     frame_message(&msg).ok()
 }
+
+/// Build a framed CommandExecutionResult message.
+pub fn build_command_execution_result(
+    execution_id: &str,
+    output: &str,
+    exit_code: i32,
+    cwd: &str,
+) -> Option<Vec<u8>> {
+    let msg = ClientMessage::CommandExecutionResult {
+        execution_id: execution_id.to_string(),
+        output: output.to_string(),
+        exit_code,
+        cwd: cwd.to_string(),
+    };
+    frame_message(&msg).ok()
+}

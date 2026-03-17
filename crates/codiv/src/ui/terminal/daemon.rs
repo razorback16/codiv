@@ -540,6 +540,8 @@ fn handle_single_message(
         // SessionList and SessionReplay are handled in handle_daemon_message
         ipc_messages::DaemonMessage::SessionList { .. }
         | ipc_messages::DaemonMessage::SessionReplay { .. } => {}
+        // ExecuteCommand will be handled by the client relay (future chunk)
+        ipc_messages::DaemonMessage::ExecuteCommand { .. } => {}
     }
 }
 

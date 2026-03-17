@@ -68,6 +68,12 @@ pub enum ClientMessage {
     CancelRequest {
         request_id: String,
     },
+    CommandExecutionResult {
+        execution_id: String,
+        output: String,
+        exit_code: i32,
+        cwd: String,
+    },
 }
 
 /// Messages sent from the codivd daemon to the codiv client.
@@ -129,6 +135,11 @@ pub enum DaemonMessage {
     /// Generic notice pushed to the client (e.g. config reloaded).
     Notice {
         message: String,
+    },
+    ExecuteCommand {
+        command: String,
+        execution_id: String,
+        timeout_ms: u64,
     },
 }
 
