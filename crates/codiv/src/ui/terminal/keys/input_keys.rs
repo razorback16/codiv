@@ -206,6 +206,7 @@ pub(crate) fn handle_input_keys(
                                                 super::super::state::command_modifies_env(
                                                     &raw_input,
                                                 ),
+                                            ai_execution_id: None,
                                         });
                                     }
                                     None => {

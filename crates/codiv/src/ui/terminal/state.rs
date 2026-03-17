@@ -20,6 +20,16 @@ pub(crate) struct PendingCommand {
     pub(crate) command: String,
     pub(crate) last_activity: Instant,
     pub(crate) needs_env_refresh: bool,
+    /// If set, this command was triggered by the AI agent and the result should
+    /// be sent back as `CommandExecutionResult` instead of `CommandResult`.
+    pub(crate) ai_execution_id: Option<String>,
+}
+
+/// An AI-requested command waiting to be executed in the coprocess.
+pub(crate) struct PendingAiExecution {
+    pub(crate) execution_id: String,
+    pub(crate) command: String,
+    pub(crate) _timeout_ms: u64,
 }
 
 const ENV_MODIFIERS: &[&str] = &[
@@ -157,6 +167,9 @@ pub(crate) struct TerminalState {
     pub cwd: String,
     pub git_info: Option<GitInfo>,
     pub cached_env_vars: Vec<(String, String)>,
+
+    // AI-requested command execution queue
+    pub pending_ai_executions: std::collections::VecDeque<PendingAiExecution>,
 }
 
 impl TerminalState {
@@ -226,6 +239,9 @@ impl TerminalState {
             cwd: initial_cwd,
             git_info: None,
             cached_env_vars: Vec::new(),
+
+            // AI-requested command execution queue
+            pending_ai_executions: std::collections::VecDeque::new(),
         }
     }
 }

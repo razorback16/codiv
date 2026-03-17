@@ -721,6 +721,20 @@ pub(crate) fn handle_daemon_message(
             // Final separator before returning to normal input
             parser.process(b"\r\n");
         }
+        ipc_messages::DaemonMessage::ExecuteCommand {
+            execution_id,
+            command,
+            timeout_ms,
+        } => {
+            // Queue AI-requested command for execution in the coprocess
+            state.pending_ai_executions.push_back(
+                super::state::PendingAiExecution {
+                    execution_id,
+                    command,
+                    _timeout_ms: timeout_ms,
+                },
+            );
+        }
         // All other messages delegate to the core handler
         other => {
             let mut ds = DaemonStreamState {
