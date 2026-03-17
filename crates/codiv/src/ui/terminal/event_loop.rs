@@ -312,13 +312,16 @@ pub(crate) fn event_loop(
                 &pending.command,
                 &pending.sentinel,
             ) {
-                parser.process(b"\x1b[A\x1b[2K");
-                if result.exit_code != 0 {
-                    parser_push_notice(
-                        parser,
-                        NoticeKind::Error,
-                        &format!("exit code: {}", result.exit_code),
-                    );
+                let is_ai_command = pending.ai_execution_id.is_some();
+                if !is_ai_command {
+                    parser.process(b"\x1b[A\x1b[2K");
+                    if result.exit_code != 0 {
+                        parser_push_notice(
+                            parser,
+                            NoticeKind::Error,
+                            &format!("exit code: {}", result.exit_code),
+                        );
+                    }
                 }
                 state.cwd = bash.capture_cwd();
                 state.git_info = bash.capture_git_info();
@@ -350,19 +353,21 @@ pub(crate) fn event_loop(
                         }
                     }
                 }
-                let cmd_end = get_scrollback_line(parser);
-                if let Some(start) = state.cmd_start_scrollback.take() {
-                    let line_count = (cmd_end.saturating_sub(start)) as u16;
-                    if line_count > 0 {
-                        state.tracker.record_cmd_response(
-                            &pending.command,
-                            start,
-                            line_count,
-                            result.exit_code,
-                        );
+                if !is_ai_command {
+                    let cmd_end = get_scrollback_line(parser);
+                    if let Some(start) = state.cmd_start_scrollback.take() {
+                        let line_count = (cmd_end.saturating_sub(start)) as u16;
+                        if line_count > 0 {
+                            state.tracker.record_cmd_response(
+                                &pending.command,
+                                start,
+                                line_count,
+                                result.exit_code,
+                            );
+                        }
                     }
+                    parser.process(b"\r\n");
                 }
-                parser.process(b"\r\n");
                 state.pending_command = None;
                 state.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);

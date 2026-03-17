@@ -14,7 +14,7 @@ const SYSTEM_PROMPT: &str = "You are a helpful coding assistant embedded in a te
     Use this context to give relevant, concise answers. \
     When referencing files or directories, use paths relative to the user's current working directory when possible.";
 
-fn create_agent(cwd: String, env_vars: Vec<(String, String)>, config: &crate::agent::config::AppConfig) -> crate::agent::agent::Agent {
+fn create_agent(cwd: String, config: &crate::agent::config::AppConfig) -> crate::agent::agent::Agent {
     let assignment = config.models.assignment_for(&codiv_common::types::AgentRole::Engineer);
     let provider_config = config.models.resolve_provider_config(&assignment);
     crate::agent::agent::Agent::new(
@@ -23,7 +23,6 @@ fn create_agent(cwd: String, env_vars: Vec<(String, String)>, config: &crate::ag
         provider_config,
         SYSTEM_PROMPT.to_string(),
         cwd,
-        env_vars,
     )
 }
 
@@ -246,19 +245,18 @@ impl Daemon {
                     // Take the agent out of the session so we can move it into the task.
                     // If none exists yet, create one.
                     let session = self.sessions.get_mut(&client_id);
-                    let (cwd, env_vars, taken_agent) = match session {
+                    let (cwd, taken_agent) = match session {
                         Some(s) => {
                             let cwd = s.cwd.clone();
-                            let env = s.env_vars.clone();
                             let agent = s.agent.take();
-                            (cwd, env, agent)
+                            (cwd, agent)
                         }
-                        None => (String::new(), Vec::new(), None),
+                        None => (String::new(), None),
                     };
 
                     let mut agent = taken_agent.unwrap_or_else(|| {
                         let cfg = self.config.read().unwrap();
-                        create_agent(cwd.clone(), env_vars, &cfg)
+                        create_agent(cwd.clone(), &cfg)
                     });
 
                     // Ensure agent uses the session's latest cwd.
@@ -501,9 +499,8 @@ impl Daemon {
                     // Create a fresh agent
                     if let Some(session) = self.sessions.get_mut(&client_id) {
                         let cwd = session.cwd.clone();
-                        let env_vars = session.env_vars.clone();
                         let cfg = self.config.read().unwrap();
-                        let agent = create_agent(cwd.clone(), env_vars, &cfg);
+                        let agent = create_agent(cwd.clone(), &cfg);
                         drop(cfg);
                         session.agent = Some(agent);
                         session.session_id = None;
@@ -541,9 +538,8 @@ impl Daemon {
                     if let Some(session) = self.sessions.get_mut(&client_id) {
                         // Clear agent history and reload from events
                         let cwd = session.cwd.clone();
-                        let env_vars = session.env_vars.clone();
                         let cfg = self.config.read().unwrap();
-                        let mut agent = create_agent(cwd, env_vars, &cfg);
+                        let mut agent = create_agent(cwd, &cfg);
                         drop(cfg);
                         agent.add_tool_events(&events);
                         session.agent = Some(agent);
@@ -622,11 +618,10 @@ impl Daemon {
                     session.cwd = cwd.clone();
 
                     let session_cwd = session.cwd.clone();
-                    let session_env_vars = session.env_vars.clone();
                     let config_ref = Arc::clone(&self.config);
                     let agent = session.agent.get_or_insert_with(|| {
                         let cfg = config_ref.read().unwrap();
-                        create_agent(session_cwd, session_env_vars, &cfg)
+                        create_agent(session_cwd, &cfg)
                     });
                     // Update the agent's cwd so tools execute in the right directory.
                     agent.cwd = cwd.clone();
@@ -672,9 +667,8 @@ impl Daemon {
                     if let Some(ref sid) = session.session_id {
                         let events = self.store.load_events(sid, None).unwrap_or_default();
                         let cwd = session.cwd.clone();
-                        let env_vars = session.env_vars.clone();
                         let cfg = self.config.read().unwrap();
-                        let mut agent = create_agent(cwd, env_vars, &cfg);
+                        let mut agent = create_agent(cwd, &cfg);
                         drop(cfg);
                         agent.add_tool_events(&events);
                         session.agent = Some(agent);

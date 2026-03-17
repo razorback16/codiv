@@ -38,13 +38,12 @@ pub struct Agent {
     pub provider_config: ProviderConfig,
     pub history: Vec<ConversationEvent>,
     pub cwd: String,
-    pub env_vars: Vec<(String, String)>,
     pub shell_backend: Option<super::shell_backend::ShellBackend>,
     pub cwd_ref: Arc<RwLock<String>>,
 }
 
 impl Agent {
-    pub fn new(role: AgentRole, model_config: ModelAssignment, provider_config: ProviderConfig, system_prompt: String, cwd: String, env_vars: Vec<(String, String)>) -> Self {
+    pub fn new(role: AgentRole, model_config: ModelAssignment, provider_config: ProviderConfig, system_prompt: String, cwd: String) -> Self {
         let cwd_ref = Arc::new(RwLock::new(cwd.clone()));
         Self {
             role,
@@ -53,7 +52,6 @@ impl Agent {
             provider_config,
             history: Vec::new(),
             cwd,
-            env_vars,
             shell_backend: None,
             cwd_ref,
         }
