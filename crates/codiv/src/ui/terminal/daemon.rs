@@ -11,25 +11,43 @@ use crate::ui::theme::Theme;
 use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState};
 use super::utils::{get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
 
+/// Mutable state used by the daemon message handler.
+/// Constructed from `TerminalState` fields for live messages,
+/// or from replay-local variables during `SessionReplay`.
+pub(super) struct DaemonStreamState<'a> {
+    pub md_stream: &'a mut MarkdownStream,
+    pub agent_streaming: &'a mut bool,
+    pub last_daemon_timestamp: &'a mut u64,
+    pub model_alias: &'a mut String,
+    pub context_usage: &'a mut (usize, usize),
+    pub tracker: &'a mut BlockRegistry,
+    pub ai_start_scrollback: &'a mut Option<u64>,
+    pub thinking_buffer: &'a mut String,
+    pub thinking_start: &'a mut Option<Instant>,
+    pub thinking_scrollback: &'a mut Option<u64>,
+    pub pending_confirmation: &'a mut Option<PendingConfirmation>,
+    pub permission_mode: &'a mut PermissionMode,
+    pub last_permission_outcome: &'a mut Option<(String, bool, String)>,
+    pub session_id: &'a mut Option<String>,
+    pub session_name: &'a mut Option<String>,
+}
+
 /// Finalize an in-progress thinking block: overwrite the placeholder line
 /// with a "Thought for Ns" summary and register it in the block tracker.
 fn finalize_thinking(
     parser: &mut vt100::Parser,
-    tracker: &mut BlockRegistry,
-    thinking_buffer: &mut String,
-    thinking_start: &mut Option<Instant>,
-    thinking_scrollback: &mut Option<u64>,
+    ds: &mut DaemonStreamState,
     theme: &Theme,
 ) -> bool {
-    if let Some(start) = thinking_start.take() {
+    if let Some(start) = ds.thinking_start.take() {
         let duration_secs = start.elapsed().as_secs_f32();
         // Move cursor up one line and clear it (overwrite placeholder)
         parser.process(b"\x1b[A\r\x1b[K");
         let summary = format!("{}Thought for {:.0}s\x1b[0m\r\n", theme.ansi_thinking, duration_secs);
         parser.process(summary.as_bytes());
-        let content = std::mem::take(thinking_buffer);
-        if let Some(sl) = thinking_scrollback.take() {
-            tracker.record_thinking_block(content, duration_secs, sl);
+        let content = std::mem::take(ds.thinking_buffer);
+        if let Some(sl) = ds.thinking_scrollback.take() {
+            ds.tracker.record_thinking_block(content, duration_secs, sl);
         }
         // Blank line separator after thinking block
         parser.process(b"\r\n");
@@ -156,25 +174,10 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
 
 /// Handle a single `DaemonMessage` — all match arms except `SessionList` and
 /// `SessionReplay`, which are handled in the outer `handle_daemon_message`.
-#[allow(clippy::too_many_arguments)]
 fn handle_single_message(
     msg: ipc_messages::DaemonMessage,
     parser: &mut vt100::Parser,
-    md_stream: &mut MarkdownStream,
-    agent_streaming: &mut bool,
-    last_daemon_timestamp: &mut u64,
-    model_alias: &mut String,
-    context_usage: &mut (usize, usize),
-    tracker: &mut BlockRegistry,
-    ai_start_scrollback: &mut Option<u64>,
-    thinking_buffer: &mut String,
-    thinking_start: &mut Option<Instant>,
-    thinking_scrollback: &mut Option<u64>,
-    pending_confirmation: &mut Option<PendingConfirmation>,
-    permission_mode: &mut PermissionMode,
-    last_permission_outcome: &mut Option<(String, bool, String)>,
-    session_id: &mut Option<String>,
-    session_name: &mut Option<String>,
+    ds: &mut DaemonStreamState,
     theme: &Theme,
 ) {
     match msg {
@@ -184,16 +187,9 @@ fn handle_single_message(
         } => {
             match chunk {
                 ipc_messages::StreamChunk::Text(t) => {
-                    finalize_thinking(
-                        parser,
-                        tracker,
-                        thinking_buffer,
-                        thinking_start,
-                        thinking_scrollback,
-                        theme,
-                    );
+                    finalize_thinking(parser, ds, theme);
                     // Strip leading whitespace from the first text chunk of a response.
-                    let t = if ai_start_scrollback.is_none() {
+                    let t = if ds.ai_start_scrollback.is_none() {
                         t.trim_start().to_string()
                     } else {
                         t
@@ -201,23 +197,23 @@ fn handle_single_message(
                     if t.is_empty() {
                         // Entire chunk was leading whitespace — skip it.
                     } else {
-                        if ai_start_scrollback.is_none() {
-                            *ai_start_scrollback = Some(get_scrollback_line(parser));
+                        if ds.ai_start_scrollback.is_none() {
+                            *ds.ai_start_scrollback = Some(get_scrollback_line(parser));
                         }
-                        if let Some(ansi) = md_stream.push(&t) {
+                        if let Some(ansi) = ds.md_stream.push(&t) {
                             parser.process(&ansi);
                         }
                     }
                 }
                 ipc_messages::StreamChunk::Reasoning(t) => {
-                    if thinking_start.is_none() {
-                        *thinking_start = Some(Instant::now());
-                        *thinking_scrollback = Some(get_scrollback_line(parser));
+                    if ds.thinking_start.is_none() {
+                        *ds.thinking_start = Some(Instant::now());
+                        *ds.thinking_scrollback = Some(get_scrollback_line(parser));
                         // Write placeholder line
                         let thinking_line = format!("{}Thinking...\x1b[0m\r\n", theme.ansi_thinking);
                         parser.process(thinking_line.as_bytes());
                     }
-                    thinking_buffer.push_str(&t);
+                    ds.thinking_buffer.push_str(&t);
                 }
                 ipc_messages::StreamChunk::ToolCallDelta {
                     tool_call_id: _,
@@ -225,29 +221,22 @@ fn handle_single_message(
                     delta: _,
                 } => {
                     // On the FIRST delta for a tool call, show spinner placeholder
-                    if tracker.pending_tool().is_none() {
-                        finalize_thinking(
-                            parser,
-                            tracker,
-                            thinking_buffer,
-                            thinking_start,
-                            thinking_scrollback,
-                            theme,
-                        );
+                    if ds.tracker.pending_tool().is_none() {
+                        finalize_thinking(parser, ds, theme);
                         // Flush any buffered markdown
-                        let pending = md_stream.finish();
+                        let pending = ds.md_stream.finish();
                         if !pending.is_empty() {
                             parser.process(&pending);
                         }
-                        md_stream.reset();
+                        ds.md_stream.reset();
 
                         // Close AI response block if open
-                        let had_ai_content = ai_start_scrollback.is_some();
-                        if let Some(start) = ai_start_scrollback.take() {
+                        let had_ai_content = ds.ai_start_scrollback.is_some();
+                        if let Some(start) = ds.ai_start_scrollback.take() {
                             let ai_end = get_scrollback_line(parser);
                             let line_count = (ai_end.saturating_sub(start)) as u16;
                             if line_count > 0 {
-                                tracker.record_ai_response(start, line_count);
+                                ds.tracker.record_ai_response(start, line_count);
                             }
                         }
                         if !pending.is_empty() || had_ai_content {
@@ -262,7 +251,7 @@ fn handle_single_message(
                             scrollback_line,
                             canonical
                         );
-                        tracker.record_tool_call_delta(canonical, scrollback_line);
+                        ds.tracker.record_tool_call_delta(canonical, scrollback_line);
                         let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, canonical);
                         parser.process(header_line.as_bytes());
                     }
@@ -270,27 +259,20 @@ fn handle_single_message(
                 }
                 ipc_messages::StreamChunk::ToolCall { name, arguments } => {
                     // If no ToolCallDelta preceded this, do the visual transition now
-                    if tracker.pending_tool().is_none() {
-                        finalize_thinking(
-                            parser,
-                            tracker,
-                            thinking_buffer,
-                            thinking_start,
-                            thinking_scrollback,
-                            theme,
-                        );
-                        let pending = md_stream.finish();
+                    if ds.tracker.pending_tool().is_none() {
+                        finalize_thinking(parser, ds, theme);
+                        let pending = ds.md_stream.finish();
                         if !pending.is_empty() {
                             parser.process(&pending);
                         }
-                        md_stream.reset();
+                        ds.md_stream.reset();
 
-                        let had_ai_content = ai_start_scrollback.is_some();
-                        if let Some(start) = ai_start_scrollback.take() {
+                        let had_ai_content = ds.ai_start_scrollback.is_some();
+                        if let Some(start) = ds.ai_start_scrollback.take() {
                             let ai_end = get_scrollback_line(parser);
                             let line_count = (ai_end.saturating_sub(start)) as u16;
                             if line_count > 0 {
-                                tracker.record_ai_response(start, line_count);
+                                ds.tracker.record_ai_response(start, line_count);
                             }
                         }
                         if !pending.is_empty() || had_ai_content {
@@ -298,33 +280,33 @@ fn handle_single_message(
                         }
                     }
 
-                    tracker.record_tool_call(&name, &arguments);
+                    ds.tracker.record_tool_call(&name, &arguments);
                     // Don't update header here — the ConfirmationRequest (if permission-gated)
                     // or ToolResult handler will render the final header with full args.
                     // This avoids a double-render when ConfirmationRequest follows immediately.
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
                     {
-                        let had_pending = tracker.pending_tool().is_some();
+                        let had_pending = ds.tracker.pending_tool().is_some();
                         if had_pending {
                             // Move up to overwrite the yellow header line
                             parser.process(b"\x1b[A\r\x1b[K");
                         }
                         let scrollback_line = get_scrollback_line(parser);
-                        match tracker.record_tool_result(&name, &result, scrollback_line) {
+                        match ds.tracker.record_tool_result(&name, &result, scrollback_line) {
                             ToolResultAction::Merged => {
                                 // Consume any pending permission outcome if it matches this tool
-                                if last_permission_outcome
+                                if ds.last_permission_outcome
                                     .as_ref()
                                     .is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name))
                                 {
-                                    let _ = last_permission_outcome.take();
+                                    let _ = ds.last_permission_outcome.take();
                                 }
                                 // Block merged into previous — update the summary
                                 // line in the VT100 buffer by moving cursor up and
                                 // rewriting the line.
                                 let summary =
-                                    tracker.last_tool_block_mut().map(|tb| tb.summary.clone());
+                                    ds.tracker.last_tool_block_mut().map(|tb| tb.summary.clone());
                                 if let Some(summary) = summary {
                                     parser.process(b"\x1b[A\r\x1b[K");
                                     let line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done_suffix, summary);
@@ -333,11 +315,11 @@ fn handle_single_message(
                             }
                             ToolResultAction::Summary { header, summary } => {
                                 // Check if there's a permission outcome matching this tool
-                                let perm = if last_permission_outcome
+                                let perm = if ds.last_permission_outcome
                                     .as_ref()
                                     .is_some_and(|(t, _, _)| t.eq_ignore_ascii_case(&name))
                                 {
-                                    last_permission_outcome.take()
+                                    ds.last_permission_outcome.take()
                                 } else {
                                     None
                                 };
@@ -397,32 +379,25 @@ fn handle_single_message(
             request_id: _,
             summary: _,
         } => {
-            finalize_thinking(
-                parser,
-                tracker,
-                thinking_buffer,
-                thinking_start,
-                thinking_scrollback,
-                theme,
-            );
-            if *agent_streaming {
-                let final_bytes = md_stream.finish();
+            finalize_thinking(parser, ds, theme);
+            if *ds.agent_streaming {
+                let final_bytes = ds.md_stream.finish();
                 if !final_bytes.is_empty() {
                     parser.process(&final_bytes);
                 }
                 let ai_end = get_scrollback_line(parser);
-                let had_ai_content = ai_start_scrollback.is_some();
-                if let Some(start) = ai_start_scrollback.take() {
+                let had_ai_content = ds.ai_start_scrollback.is_some();
+                if let Some(start) = ds.ai_start_scrollback.take() {
                     let line_count = (ai_end.saturating_sub(start)) as u16;
                     if line_count > 0 {
-                        tracker.record_ai_response(start, line_count);
+                        ds.tracker.record_ai_response(start, line_count);
                     }
                 }
                 if !final_bytes.is_empty() || had_ai_content {
                     parser.process(b"\r\n"); // AI block trailing separator
                 }
-                md_stream.reset();
-                *agent_streaming = false;
+                ds.md_stream.reset();
+                *ds.agent_streaming = false;
             }
         }
         ipc_messages::DaemonMessage::ConfirmationRequest {
@@ -440,7 +415,7 @@ fn handle_single_message(
             let header_lines = crate::ui::blocks::build_tool_header_lines(&tool_name, &args, 10);
 
             // Move cursor up to overwrite the placeholder header line
-            if tracker.pending_tool().is_some() {
+            if ds.tracker.pending_tool().is_some() {
                 parser.process(b"\x1b[A\r\x1b[K");
             }
 
@@ -509,7 +484,7 @@ fn handle_single_message(
                 prompt_lines += 1;
             }
 
-            *pending_confirmation = Some(PendingConfirmation {
+            *ds.pending_confirmation = Some(PendingConfirmation {
                 request_id,
                 description,
                 risk,
@@ -521,21 +496,21 @@ fn handle_single_message(
             });
         }
         ipc_messages::DaemonMessage::PermissionModeChanged { mode } => {
-            *permission_mode = mode;
+            *ds.permission_mode = mode;
         }
         ipc_messages::DaemonMessage::PermissionOutcome {
             tool_name,
             granted,
             reason,
         } => {
-            *last_permission_outcome = Some((tool_name, granted, reason));
+            *ds.last_permission_outcome = Some((tool_name, granted, reason));
         }
         ipc_messages::DaemonMessage::Error {
             request_id,
             message,
         } => {
-            *agent_streaming = false;
-            md_stream.reset();
+            *ds.agent_streaming = false;
+            ds.md_stream.reset();
             let _ = request_id; // suppress unused warning
             parser_push_notice(parser, NoticeKind::Error, &format!("[error] {}", message));
         }
@@ -544,24 +519,24 @@ fn handle_single_message(
             total_tokens,
             context_window,
         } => {
-            *model_alias = alias;
-            *context_usage = (total_tokens, context_window);
+            *ds.model_alias = alias;
+            *ds.context_usage = (total_tokens, context_window);
         }
         ipc_messages::DaemonMessage::Heartbeat { timestamp } => {
-            *last_daemon_timestamp = timestamp;
+            *ds.last_daemon_timestamp = timestamp;
         }
         ipc_messages::DaemonMessage::SessionCreated {
             session_id: sid,
             name,
         } => {
-            *session_id = Some(sid);
-            *session_name = name;
+            *ds.session_id = Some(sid);
+            *ds.session_name = name;
         }
         ipc_messages::DaemonMessage::SessionNameUpdated {
             session_id: _,
             name,
         } => {
-            *session_name = Some(name);
+            *ds.session_name = Some(name);
         }
         ipc_messages::DaemonMessage::Notice { message } => {
             parser_push_notice(parser, NoticeKind::Notice, &message);
@@ -719,26 +694,24 @@ pub(crate) fn handle_daemon_message(
                             }
                         }
                         ReplayItem::Daemon(daemon_msg) => {
-                            handle_single_message(
-                                daemon_msg,
-                                parser,
-                                &mut replay_md,
-                                &mut replay_agent_streaming,
-                                &mut replay_timestamp,
-                                &mut replay_model,
-                                &mut replay_context,
-                                &mut state.tracker,
-                                &mut replay_ai_start,
-                                &mut replay_thinking_buffer,
-                                &mut replay_thinking_start,
-                                &mut replay_thinking_scrollback,
-                                &mut replay_pending_confirmation,
-                                &mut replay_permission_mode,
-                                &mut replay_last_perm,
-                                &mut replay_session_id,
-                                &mut replay_session_name,
-                                theme,
-                            );
+                            let mut ds = DaemonStreamState {
+                                md_stream: &mut replay_md,
+                                agent_streaming: &mut replay_agent_streaming,
+                                last_daemon_timestamp: &mut replay_timestamp,
+                                model_alias: &mut replay_model,
+                                context_usage: &mut replay_context,
+                                tracker: &mut state.tracker,
+                                ai_start_scrollback: &mut replay_ai_start,
+                                thinking_buffer: &mut replay_thinking_buffer,
+                                thinking_start: &mut replay_thinking_start,
+                                thinking_scrollback: &mut replay_thinking_scrollback,
+                                pending_confirmation: &mut replay_pending_confirmation,
+                                permission_mode: &mut replay_permission_mode,
+                                last_permission_outcome: &mut replay_last_perm,
+                                session_id: &mut replay_session_id,
+                                session_name: &mut replay_session_name,
+                            };
+                            handle_single_message(daemon_msg, parser, &mut ds, theme);
                         }
                     }
                 }
@@ -748,26 +721,24 @@ pub(crate) fn handle_daemon_message(
         }
         // All other messages delegate to the core handler
         other => {
-            handle_single_message(
-                other,
-                parser,
-                &mut state.md_stream,
-                &mut state.agent_streaming,
-                &mut state.last_daemon_timestamp,
-                &mut state.model_alias,
-                &mut state.context_usage,
-                &mut state.tracker,
-                &mut state.ai_start_scrollback,
-                &mut state.thinking_buffer,
-                &mut state.thinking_start,
-                &mut state.thinking_scrollback,
-                &mut state.pending_confirmation,
-                &mut state.permission_mode,
-                &mut state.last_permission_outcome,
-                &mut state.session_id,
-                &mut state.session_name,
-                theme,
-            );
+            let mut ds = DaemonStreamState {
+                md_stream: &mut state.md_stream,
+                agent_streaming: &mut state.agent_streaming,
+                last_daemon_timestamp: &mut state.last_daemon_timestamp,
+                model_alias: &mut state.model_alias,
+                context_usage: &mut state.context_usage,
+                tracker: &mut state.tracker,
+                ai_start_scrollback: &mut state.ai_start_scrollback,
+                thinking_buffer: &mut state.thinking_buffer,
+                thinking_start: &mut state.thinking_start,
+                thinking_scrollback: &mut state.thinking_scrollback,
+                pending_confirmation: &mut state.pending_confirmation,
+                permission_mode: &mut state.permission_mode,
+                last_permission_outcome: &mut state.last_permission_outcome,
+                session_id: &mut state.session_id,
+                session_name: &mut state.session_name,
+            };
+            handle_single_message(other, parser, &mut ds, theme);
         }
     }
 }
