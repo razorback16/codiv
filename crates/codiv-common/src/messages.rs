@@ -68,6 +68,7 @@ pub enum ClientMessage {
     CancelRequest {
         request_id: String,
     },
+    /// Result of an AI-requested command execution from the client.
     CommandExecutionResult {
         execution_id: String,
         output: String,
@@ -136,9 +137,10 @@ pub enum DaemonMessage {
     Notice {
         message: String,
     },
+    /// Request from the daemon for the client to execute a command in its shell.
     ExecuteCommand {
-        command: String,
         execution_id: String,
+        command: String,
         timeout_ms: u64,
     },
 }
