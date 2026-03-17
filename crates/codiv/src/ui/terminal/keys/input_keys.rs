@@ -219,7 +219,7 @@ pub(crate) fn handle_input_keys(
                             }
                             InputMode::Ai => {
                                 if let Some(ref mut c) = client {
-                                    if send_agent_request(
+                                    if let Some(rid) = send_agent_request(
                                         c,
                                         &raw_input,
                                         &state.cwd,
@@ -227,6 +227,7 @@ pub(crate) fn handle_input_keys(
                                         &state.cached_env_vars,
                                     ) {
                                         state.agent_streaming = true;
+                                        state.active_request_id = Some(rid);
                                     }
                                 } else {
                                     let hint = daemon_launcher::daemon_start_hint();

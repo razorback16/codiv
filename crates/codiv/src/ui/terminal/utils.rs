@@ -1,14 +1,14 @@
 use crate::ipc::client::CodivdClient;
 use crate::ipc::messages as ipc_messages;
 
-/// Send an agent request to the daemon. Returns `true` if the request was sent.
+/// Send an agent request to the daemon. Returns the request_id if the request was sent.
 pub(crate) fn send_agent_request(
     client: &mut CodivdClient,
     query: &str,
     cwd: &str,
     thinking: bool,
     env_vars: &[(String, String)],
-) -> bool {
+) -> Option<String> {
     let request_id = format!("agent-{}", rand::random::<u64>());
     let context = ipc_messages::SessionContext {
         cwd: cwd.to_string(),
@@ -17,9 +17,9 @@ pub(crate) fn send_agent_request(
     };
     if let Some(frame) = ipc_messages::build_agent_request(query, &request_id, context, thinking) {
         client.send(&frame);
-        true
+        Some(request_id)
     } else {
-        false
+        None
     }
 }
 
@@ -68,6 +68,33 @@ pub(crate) fn push_intro(parser: &mut vt100::Parser) {
 pub(crate) fn parser_push_notice(parser: &mut vt100::Parser, kind: NoticeKind, text: &str) {
     let line = format!("  {}{}\x1b[0m\r\n\r\n", kind.ansi_prefix(), text);
     parser.process(line.as_bytes());
+}
+
+/// Finalize an in-progress thinking block: overwrite the placeholder line
+/// with a "Thought for Ns" summary and register it in the block tracker.
+/// Returns `true` if a thinking block was finalized.
+pub(crate) fn finalize_thinking(
+    parser: &mut vt100::Parser,
+    thinking_start: &mut Option<std::time::Instant>,
+    thinking_buffer: &mut String,
+    thinking_scrollback: &mut Option<u64>,
+    tracker: &mut crate::ui::blocks::BlockRegistry,
+    ansi_thinking: &str,
+) -> bool {
+    if let Some(start) = thinking_start.take() {
+        let duration_secs = start.elapsed().as_secs_f32();
+        // Move cursor up one line and clear it (overwrite placeholder)
+        parser.process(b"\x1b[A\r\x1b[K");
+        let summary = format!("{}Thought for {:.0}s\x1b[0m\r\n", ansi_thinking, duration_secs);
+        parser.process(summary.as_bytes());
+        let content = std::mem::take(thinking_buffer);
+        if let Some(sl) = thinking_scrollback.take() {
+            tracker.record_thinking_block(content, duration_secs, sl);
+        }
+        true
+    } else {
+        false
+    }
 }
 
 /// Get the true scrollback buffer length by probing set_scrollback's clamping behaviour.

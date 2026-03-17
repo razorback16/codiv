@@ -18,7 +18,7 @@ use super::render::render_frame;
 use super::state::TerminalState;
 use crate::ui::theme::Theme;
 
-use super::utils::{get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
+use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
@@ -173,6 +173,46 @@ pub(crate) fn event_loop(
                                     parser,
                                     client,
                                 );
+                            }
+
+                            // --- Cancel AI streaming on Escape ---
+                            if state.agent_streaming && !key_handled {
+                                if key.code == KeyCode::Esc {
+                                    if let Some(ref rid) = state.active_request_id {
+                                        if let Some(ref mut c) = client {
+                                            if let Some(frame) = ipc_messages::build_cancel_request(rid) {
+                                                c.send(&frame);
+                                            }
+                                        }
+                                    }
+                                    // Finalize thinking block if in progress
+                                    finalize_thinking(
+                                        parser,
+                                        &mut state.thinking_start,
+                                        &mut state.thinking_buffer,
+                                        &mut state.thinking_scrollback,
+                                        &mut state.tracker,
+                                        theme.ansi_thinking,
+                                    );
+                                    // Flush any in-progress AI content
+                                    let final_bytes = state.md_stream.finish();
+                                    if !final_bytes.is_empty() {
+                                        parser.process(&final_bytes);
+                                    }
+                                    // Close AI response block if one was open
+                                    if let Some(start) = state.ai_start_scrollback.take() {
+                                        let ai_end = get_scrollback_line(parser);
+                                        let line_count = (ai_end.saturating_sub(start)) as u16;
+                                        if line_count > 0 {
+                                            state.tracker.record_ai_response(start, line_count);
+                                        }
+                                    }
+                                    state.agent_streaming = false;
+                                    state.active_request_id = None;
+                                    state.md_stream.reset();
+                                    parser_push_notice(parser, NoticeKind::Notice, "[cancelled]");
+                                    key_handled = true;
+                                }
                             }
 
                             // --- Forward keystrokes to PTY when a command is executing ---
