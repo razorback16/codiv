@@ -287,6 +287,23 @@ impl Daemon {
                         }
                     };
 
+                    // Set up the ShellBackend for this agent request
+                    {
+                        let session = self.sessions.get_mut(&client_id).unwrap();
+                        let pending_executions = session
+                            .pending_executions
+                            .get_or_insert_with(|| {
+                                Arc::new(std::sync::Mutex::new(HashMap::new()))
+                            })
+                            .clone();
+                        let shell_backend = crate::agent::shell_backend::ShellBackend::ClientRelay {
+                            client_tx: client_tx.clone(),
+                            pending: pending_executions,
+                            handle: tokio::runtime::Handle::current(),
+                        };
+                        agent.shell_backend = Some(shell_backend);
+                    }
+
                     // We need to put the agent back after the spawn completes.
                     // Use a channel to return it along with collected tool events.
                     let (agent_return_tx, agent_return_rx) =

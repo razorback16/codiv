@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use aisdk::core::tools::{Tool, ToolExecute};
 use serde_json::Value;
 
-use codiv_tools::tools::{bash, edit, glob, grep, read, write};
+use codiv_tools::tools::bash::BashInput;
+use codiv_tools::tools::{edit, glob, grep, read, write};
 
 use super::permissions::PermissionContext;
+use super::shell_backend::ShellBackend;
 
 fn make_tool_with_permissions<T: schemars::JsonSchema>(
     name: &str,
@@ -31,22 +33,25 @@ fn make_tool_with_permissions<T: schemars::JsonSchema>(
 }
 
 pub fn build_tools(
-    cwd: String,
-    env_vars: Vec<(String, String)>,
+    backend: ShellBackend,
+    cwd_ref: Arc<RwLock<String>>,
     permission_ctx: Option<Arc<PermissionContext>>,
 ) -> Vec<Tool> {
-    let cwd = Arc::new(cwd);
-    let env_vars = Arc::new(env_vars);
     let pctx = &permission_ctx;
 
     vec![
         {
-            let cwd = Arc::clone(&cwd);
-            let env_vars = Arc::clone(&env_vars);
-            make_tool_with_permissions::<bash::BashInput>(
+            let backend = backend.clone();
+            let cwd_ref = Arc::clone(&cwd_ref);
+            make_tool_with_permissions::<BashInput>(
                 "bash",
                 "Execute a bash command and return its output. Use for running shell commands, installing packages, running tests, etc.",
-                move |v| bash::execute(v, &cwd, &env_vars),
+                move |v| {
+                    let input: BashInput = serde_json::from_value(v)
+                        .map_err(|e| format!("invalid bash input: {}", e))?;
+                    let cwd = cwd_ref.read().unwrap().clone();
+                    backend.execute(&input.command, input.timeout_ms, &cwd)
+                },
                 pctx.as_ref(),
             )
         },
@@ -69,20 +74,26 @@ pub fn build_tools(
             pctx.as_ref(),
         ),
         {
-            let cwd = Arc::clone(&cwd);
+            let cwd_ref = Arc::clone(&cwd_ref);
             make_tool_with_permissions::<glob::GlobInput>(
                 "glob",
                 "Find files matching a glob pattern. Returns sorted list of file paths.",
-                move |v| glob::execute(v, &cwd),
+                move |v| {
+                    let cwd = cwd_ref.read().unwrap().clone();
+                    glob::execute(v, &cwd)
+                },
                 pctx.as_ref(),
             )
         },
         {
-            let cwd = Arc::clone(&cwd);
+            let cwd_ref = Arc::clone(&cwd_ref);
             make_tool_with_permissions::<grep::GrepInput>(
                 "grep",
                 "Search file contents using regex. Returns matching lines with file paths and line numbers.",
-                move |v| grep::execute(v, &cwd),
+                move |v| {
+                    let cwd = cwd_ref.read().unwrap().clone();
+                    grep::execute(v, &cwd)
+                },
                 pctx.as_ref(),
             )
         },

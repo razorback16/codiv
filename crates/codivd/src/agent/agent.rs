@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::agent::config::{self, ModelAssignment, ProviderConfig};
 use aisdk::core::messages::{AssistantMessage, Message, Messages};
@@ -39,10 +39,13 @@ pub struct Agent {
     pub history: Vec<ConversationEvent>,
     pub cwd: String,
     pub env_vars: Vec<(String, String)>,
+    pub shell_backend: Option<super::shell_backend::ShellBackend>,
+    pub cwd_ref: Arc<RwLock<String>>,
 }
 
 impl Agent {
     pub fn new(role: AgentRole, model_config: ModelAssignment, provider_config: ProviderConfig, system_prompt: String, cwd: String, env_vars: Vec<(String, String)>) -> Self {
+        let cwd_ref = Arc::new(RwLock::new(cwd.clone()));
         Self {
             role,
             system_prompt,
@@ -51,6 +54,8 @@ impl Agent {
             history: Vec::new(),
             cwd,
             env_vars,
+            shell_backend: None,
+            cwd_ref,
         }
     }
 
@@ -243,9 +248,16 @@ impl Agent {
 
         let messages = self.build_messages();
 
+        // Update the shared cwd reference so tools use the latest cwd
+        {
+            let mut cwd_guard = self.cwd_ref.write().unwrap();
+            *cwd_guard = self.cwd.clone();
+        }
+
+        let backend = self.shell_backend.clone().expect("shell_backend must be set before run_streaming");
         let tools = super::tools::build_tools(
-            self.cwd.clone(),
-            self.env_vars.clone(),
+            backend,
+            Arc::clone(&self.cwd_ref),
             permission_ctx,
         );
 
