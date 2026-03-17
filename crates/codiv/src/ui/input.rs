@@ -70,14 +70,22 @@ impl InputLine {
         }
     }
 
-    /// Move cursor to the beginning of the line.
+    /// Move cursor to the beginning of the current line.
     pub fn home(&mut self) {
-        self.cursor = 0;
+        let before_cursor = &self.buffer[..self.cursor];
+        self.cursor = match before_cursor.rfind('\n') {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
     }
 
-    /// Move cursor to the end of the line.
+    /// Move cursor to the end of the current line.
     pub fn end(&mut self) {
-        self.cursor = self.buffer.len();
+        let after_cursor = &self.buffer[self.cursor..];
+        self.cursor = match after_cursor.find('\n') {
+            Some(pos) => self.cursor + pos,
+            None => self.buffer.len(),
+        };
     }
 
     /// Clear the buffer and reset cursor to 0.
@@ -187,6 +195,74 @@ impl InputLine {
         self.history_index = None;
         self.saved_input.clear();
     }
+
+    /// Insert a newline character at the current cursor position.
+    pub fn insert_newline(&mut self) {
+        self.insert('\n');
+    }
+
+    /// Returns the number of lines in the buffer.
+    pub fn line_count(&self) -> usize {
+        self.buffer.split('\n').count()
+    }
+
+    /// Compute the (row, col) of the cursor within the multiline buffer.
+    /// `row` is the zero-based line index, `col` is the character offset
+    /// within that line.
+    pub fn cursor_row_col(&self) -> (usize, usize) {
+        let before_cursor = &self.buffer[..self.cursor];
+        let row = before_cursor.matches('\n').count();
+        let col = match before_cursor.rfind('\n') {
+            Some(pos) => before_cursor[pos + 1..].chars().count(),
+            None => before_cursor.chars().count(),
+        };
+        (row, col)
+    }
+
+    /// Returns an iterator over the lines of the buffer, split by `'\n'`.
+    pub fn lines(&self) -> impl Iterator<Item = &str> + '_ {
+        self.buffer.split('\n')
+    }
+
+    /// Move cursor up one row, keeping the same column (clamped to the
+    /// previous line's length). Returns `true` if the cursor moved.
+    pub fn move_up(&mut self) -> bool {
+        let (row, col) = self.cursor_row_col();
+        if row == 0 {
+            return false;
+        }
+        self.set_cursor_to_row_col(row - 1, col);
+        true
+    }
+
+    /// Move cursor down one row, keeping the same column (clamped to the
+    /// next line's length). Returns `true` if the cursor moved.
+    pub fn move_down(&mut self) -> bool {
+        let (row, col) = self.cursor_row_col();
+        if row + 1 >= self.line_count() {
+            return false;
+        }
+        self.set_cursor_to_row_col(row + 1, col);
+        true
+    }
+
+    /// Position cursor at the given (row, col), clamped to valid bounds.
+    pub fn set_cursor_to_row_col(&mut self, row: usize, col: usize) {
+        let lines: Vec<&str> = self.buffer.split('\n').collect();
+        let row = row.min(lines.len().saturating_sub(1));
+        // Compute byte offset of the start of the target row.
+        let mut byte_offset = 0;
+        for line in &lines[..row] {
+            byte_offset += line.len() + 1; // +1 for the '\n'
+        }
+        // Clamp col to the char count of the target line.
+        let target_line = lines[row];
+        let clamped_col = col.min(target_line.chars().count());
+        // Advance by clamped_col characters worth of bytes.
+        let col_bytes: usize = target_line.chars().take(clamped_col).map(|c| c.len_utf8()).sum();
+        self.cursor = byte_offset + col_bytes;
+    }
+
     // --- Private helpers ---
 
     /// Find the byte offset of the previous character boundary before `self.cursor`.
@@ -468,5 +544,207 @@ mod tests {
         assert_eq!(input.cursor_byte_offset(), 4);
         input.home();
         assert_eq!(input.cursor_byte_offset(), 0);
+    }
+
+    // --- Multiline tests ---
+
+    #[test]
+    fn insert_newline_basic() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.content(), "hello\nworld");
+    }
+
+    #[test]
+    fn line_count_single() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.line_count(), 1);
+    }
+
+    #[test]
+    fn line_count_multi() {
+        let mut input = InputLine::new();
+        for c in "a".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "b".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "c".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.line_count(), 3);
+    }
+
+    #[test]
+    fn cursor_row_col_first_line() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.cursor_row_col(), (0, 5));
+        input.move_left();
+        input.move_left();
+        assert_eq!(input.cursor_row_col(), (0, 3));
+    }
+
+    #[test]
+    fn cursor_row_col_second_line() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "ab".chars() {
+            input.insert(c);
+        }
+        assert_eq!(input.cursor_row_col(), (1, 2));
+    }
+
+    #[test]
+    fn move_up_from_second_line() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "ab".chars() {
+            input.insert(c);
+        }
+        assert!(input.move_up());
+        assert_eq!(input.cursor_row_col(), (0, 2));
+    }
+
+    #[test]
+    fn move_up_from_first_line() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        assert!(!input.move_up());
+    }
+
+    #[test]
+    fn move_down_from_first_line() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        // Move to first line
+        input.set_cursor_to_row_col(0, 3);
+        assert!(input.move_down());
+        assert_eq!(input.cursor_row_col(), (1, 3));
+    }
+
+    #[test]
+    fn move_down_from_last_line() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        assert!(!input.move_down());
+    }
+
+    #[test]
+    fn move_up_clamps_col() {
+        let mut input = InputLine::new();
+        for c in "ab".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "longline".chars() {
+            input.insert(c);
+        }
+        // Cursor is at (1, 8). Moving up should clamp col to 2.
+        assert!(input.move_up());
+        assert_eq!(input.cursor_row_col(), (0, 2));
+    }
+
+    #[test]
+    fn home_multiline() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        // Cursor is at end of "world". Home should go to start of "world".
+        input.home();
+        assert_eq!(input.cursor_row_col(), (1, 0));
+        // Should NOT be at byte 0 (absolute start).
+        assert_eq!(input.cursor_byte_offset(), 6); // "hello\n" = 6 bytes
+    }
+
+    #[test]
+    fn end_multiline() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        // Move to start of first line.
+        input.set_cursor_to_row_col(0, 0);
+        // End should go to end of first line, not absolute end.
+        input.end();
+        assert_eq!(input.cursor_row_col(), (0, 5));
+        assert_eq!(input.cursor_byte_offset(), 5);
+    }
+
+    #[test]
+    fn set_cursor_to_row_col_basic() {
+        let mut input = InputLine::new();
+        for c in "hello".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "world".chars() {
+            input.insert(c);
+        }
+        input.set_cursor_to_row_col(0, 3);
+        assert_eq!(input.cursor_row_col(), (0, 3));
+        input.set_cursor_to_row_col(1, 2);
+        assert_eq!(input.cursor_row_col(), (1, 2));
+    }
+
+    #[test]
+    fn set_cursor_to_row_col_clamped() {
+        let mut input = InputLine::new();
+        for c in "hi".chars() {
+            input.insert(c);
+        }
+        input.insert_newline();
+        for c in "there".chars() {
+            input.insert(c);
+        }
+        // Row out of bounds: clamp to last row.
+        input.set_cursor_to_row_col(99, 1);
+        assert_eq!(input.cursor_row_col(), (1, 1));
+        // Col out of bounds: clamp to line length.
+        input.set_cursor_to_row_col(0, 99);
+        assert_eq!(input.cursor_row_col(), (0, 2));
     }
 }

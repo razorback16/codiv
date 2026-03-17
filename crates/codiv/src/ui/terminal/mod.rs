@@ -10,11 +10,12 @@ mod daemon;
 mod event_loop;
 mod input;
 pub(crate) mod io;
+mod keys;
 mod render;
-mod state;
+pub(crate) mod state;
 mod utils;
 
-use self::state::MAX_SCROLLBACK;
+use self::state::{TerminalState, MAX_SCROLLBACK};
 pub(crate) use event_loop::event_loop;
 
 use std::sync::atomic::AtomicBool;
@@ -28,7 +29,6 @@ use ratatui::Terminal;
 
 use crate::ipc::client::CodivdClient;
 use crate::shell::bash_coprocess::BashCoprocess;
-use crate::ui::input::InputLine;
 use crate::ui::theme::Theme;
 use utils::push_intro;
 
@@ -71,12 +71,12 @@ pub fn run(
     let parser_rows = parser_rows_from_term_height(term_size.height);
     let parser_cols = parser_cols_from_term_width(term_size.width);
     let mut parser = vt100::Parser::new(parser_rows, parser_cols, MAX_SCROLLBACK);
-    let mut scroll_offset: usize = 0;
-
-    let mut input = InputLine::new();
-    let mut cwd = initial_cwd;
     let mut client = client;
-    let mut prompt_is_live = false;
+
+    let md_stream_width = parser_cols;
+    let mut state = TerminalState::new(initial_cwd, client.is_some(), md_stream_width, theme);
+    state.git_info = bash.capture_git_info();
+    state.cached_env_vars = bash.capture_env();
 
     // Welcome message.
     push_intro(&mut parser);
@@ -85,13 +85,10 @@ pub fn run(
     let result = event_loop(
         &mut term,
         &mut parser,
-        &mut scroll_offset,
-        &mut input,
         bash,
         &shutdown,
-        &mut cwd,
         &mut client,
-        &mut prompt_is_live,
+        &mut state,
         &terminal_colors,
         theme,
     );

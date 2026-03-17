@@ -189,7 +189,7 @@ impl BlockRegistry {
             id,
             text: text.to_string(),
             start_index,
-            height: 1,
+            height: text.split('\n').count().max(1) as u16,
             mode,
         }));
     }
