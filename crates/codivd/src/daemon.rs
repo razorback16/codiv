@@ -618,6 +618,31 @@ impl Daemon {
                 }
             }
 
+            ClientMessage::CommandExecutionResult {
+                execution_id,
+                output,
+                exit_code,
+                cwd,
+            } => {
+                // Update session cwd from the execution result
+                if let Some(session) = self.sessions.get_mut(&client_id) {
+                    session.cwd = cwd.clone();
+                    // Resolve the pending execution
+                    if let Some(ref pending) = session.pending_executions {
+                        use crate::agent::shell_backend::{RelayResult, ShellBackend};
+                        ShellBackend::resolve_pending(
+                            pending,
+                            &execution_id,
+                            RelayResult {
+                                output,
+                                exit_code,
+                                cwd,
+                            },
+                        );
+                    }
+                }
+            }
+
             ClientMessage::CancelRequest { request_id } => {
                 info!("cancel request: {}", request_id);
                 if let Some(session) = self.sessions.get_mut(&client_id) {

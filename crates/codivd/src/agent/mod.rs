@@ -7,4 +7,5 @@ pub mod llm_evaluator;
 pub mod permission_evaluator;
 pub mod permissions;
 pub mod risk_classifier;
+pub mod shell_backend;
 pub mod tools;

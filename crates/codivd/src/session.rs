@@ -1,7 +1,9 @@
 use crate::agent::agent::Agent;
 use crate::agent::permissions::PermissionContext;
+use crate::agent::shell_backend::RelayResult;
 use codiv_common::conversation::ConversationEvent;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::oneshot;
 
@@ -21,6 +23,8 @@ pub struct ClientSession {
     /// First prompt text, set when the session is created so that background
     /// LLM name generation can be deferred until the agent completes.
     pub pending_name_gen: Option<String>,
+    /// Pending command executions relayed to the client, keyed by execution_id.
+    pub pending_executions: Option<Arc<Mutex<HashMap<String, oneshot::Sender<RelayResult>>>>>,
 }
 
 impl ClientSession {
@@ -37,6 +41,7 @@ impl ClientSession {
             session_id: None,
             event_seq: 0,
             pending_name_gen: None,
+            pending_executions: None,
         }
     }
 

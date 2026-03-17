@@ -537,6 +537,8 @@ fn handle_single_message(
         ipc_messages::DaemonMessage::Notice { message } => {
             parser_push_notice(parser, NoticeKind::Notice, &message);
         }
+        // ExecuteCommand is handled in handle_daemon_message (needs full state)
+        ipc_messages::DaemonMessage::ExecuteCommand { .. } => {}
         // SessionList and SessionReplay are handled in handle_daemon_message
         ipc_messages::DaemonMessage::SessionList { .. }
         | ipc_messages::DaemonMessage::SessionReplay { .. } => {}
