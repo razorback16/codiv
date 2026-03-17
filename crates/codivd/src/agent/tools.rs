@@ -49,8 +49,7 @@ pub fn build_tools(
                 move |v| {
                     let input: BashInput = serde_json::from_value(v)
                         .map_err(|e| format!("invalid bash input: {}", e))?;
-                    let cwd = cwd_ref.read().unwrap().clone();
-                    backend.execute(&input.command, input.timeout_ms, &cwd)
+                    backend.execute(&input.command, input.timeout_ms, &cwd_ref)
                 },
                 pctx.as_ref(),
             )
