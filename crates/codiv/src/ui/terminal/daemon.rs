@@ -8,7 +8,7 @@ use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 use crate::ui::theme::Theme;
 
-use super::state::{PendingConfirmation, PendingSessionPicker};
+use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState};
 use super::utils::{get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
 
 /// Finalize an in-progress thinking block: overwrite the placeholder line
@@ -572,28 +572,10 @@ fn handle_single_message(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_daemon_message(
     msg: ipc_messages::DaemonMessage,
     parser: &mut vt100::Parser,
-    md_stream: &mut MarkdownStream,
-    agent_streaming: &mut bool,
-    last_daemon_timestamp: &mut u64,
-    model_alias: &mut String,
-    context_usage: &mut (usize, usize),
-    _cwd: &str,
-    tracker: &mut BlockRegistry,
-    ai_start_scrollback: &mut Option<u64>,
-    thinking_buffer: &mut String,
-    thinking_start: &mut Option<Instant>,
-    thinking_scrollback: &mut Option<u64>,
-    pending_confirmation: &mut Option<PendingConfirmation>,
-    permission_mode: &mut PermissionMode,
-    last_permission_outcome: &mut Option<(String, bool, String)>,
-    session_id: &mut Option<String>,
-    session_name: &mut Option<String>,
-    pending_session_picker: &mut Option<PendingSessionPicker>,
-    scroll_offset: &mut usize,
+    state: &mut TerminalState,
     md_stream_width: u16,
     theme: &Theme,
 ) {
@@ -640,7 +622,7 @@ pub(crate) fn handle_daemon_message(
                 parser.process(select_line.as_bytes());
                 prompt_lines += 2; // blank line + select line
 
-                *pending_session_picker = Some(PendingSessionPicker {
+                state.pending_session_picker = Some(PendingSessionPicker {
                     sessions,
                     selected_index: 0,
                     viewport_offset: 0,
@@ -650,7 +632,7 @@ pub(crate) fn handle_daemon_message(
         }
         ipc_messages::DaemonMessage::SessionReplay { events } => {
             // 1. Clear screen and re-emit welcome header
-            reset_screen(parser, scroll_offset, tracker);
+            reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
 
             // 2. Create fresh local replay state
             let mut replay_md = MarkdownStream::new(md_stream_width, theme);
@@ -679,7 +661,7 @@ pub(crate) fn handle_daemon_message(
                             let scrollback_line = get_scrollback_line(parser);
                             let prompt_display = format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, text);
                             parser.process(prompt_display.as_bytes());
-                            tracker.record_prompt(
+                            state.tracker.record_prompt(
                                 &text,
                                 scrollback_line,
                                 crate::ui::blocks::InputMode::Ai,
@@ -718,7 +700,7 @@ pub(crate) fn handle_daemon_message(
                             );
                             let end = get_scrollback_line(parser);
                             let line_count = (end.saturating_sub(scrollback_line)) as u16;
-                            tracker.record_cmd_response(
+                            state.tracker.record_cmd_response(
                                 &command,
                                 scrollback_line,
                                 line_count,
@@ -745,7 +727,7 @@ pub(crate) fn handle_daemon_message(
                                 &mut replay_timestamp,
                                 &mut replay_model,
                                 &mut replay_context,
-                                tracker,
+                                &mut state.tracker,
                                 &mut replay_ai_start,
                                 &mut replay_thinking_buffer,
                                 &mut replay_thinking_start,
@@ -769,21 +751,21 @@ pub(crate) fn handle_daemon_message(
             handle_single_message(
                 other,
                 parser,
-                md_stream,
-                agent_streaming,
-                last_daemon_timestamp,
-                model_alias,
-                context_usage,
-                tracker,
-                ai_start_scrollback,
-                thinking_buffer,
-                thinking_start,
-                thinking_scrollback,
-                pending_confirmation,
-                permission_mode,
-                last_permission_outcome,
-                session_id,
-                session_name,
+                &mut state.md_stream,
+                &mut state.agent_streaming,
+                &mut state.last_daemon_timestamp,
+                &mut state.model_alias,
+                &mut state.context_usage,
+                &mut state.tracker,
+                &mut state.ai_start_scrollback,
+                &mut state.thinking_buffer,
+                &mut state.thinking_start,
+                &mut state.thinking_scrollback,
+                &mut state.pending_confirmation,
+                &mut state.permission_mode,
+                &mut state.last_permission_outcome,
+                &mut state.session_id,
+                &mut state.session_name,
                 theme,
             );
         }
