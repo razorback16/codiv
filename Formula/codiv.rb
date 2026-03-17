@@ -1,25 +1,25 @@
 class Codiv < Formula
   desc "Terminal-native AI coding assistant built in Rust"
   homepage "https://codiv.ai"
-  version "v0.1.2"
+  version "v0.1.3"
   license "GPL-3.0-only"
 
   on_macos do
     on_arm do
-      url "https://github.com/razorback16/codiv/releases/download/v0.1.2/codiv-v0.1.2-aarch64-apple-darwin.tar.gz"
-      sha256 "cb1f42d48514341f3a842a29431edeab9d19fee5b05546c63a76015b4bfd78c5"
+      url "https://github.com/razorback16/codiv/releases/download/v0.1.3/codiv-v0.1.3-aarch64-apple-darwin.tar.gz"
+      sha256 "d592af3e0503dfaeeeb81106727235fef677664a4c0071421842249c01624c65"
     end
 
     on_intel do
-      url "https://github.com/razorback16/codiv/releases/download/v0.1.2/codiv-v0.1.2-x86_64-apple-darwin.tar.gz"
-      sha256 "aea328ccc84c359b9685e62407814b3292206a739c824f5d7215b5b901c67ea1"
+      url "https://github.com/razorback16/codiv/releases/download/v0.1.3/codiv-v0.1.3-x86_64-apple-darwin.tar.gz"
+      sha256 "a0dbb578267bee95cea2099eaaab89c30e4efcf40afadbb85a846b2d8500b26b"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/razorback16/codiv/releases/download/v0.1.2/codiv-v0.1.2-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "beb755f836b43a8aacf7fe4693778db2bf83fd5e7600f70df306d37123c236db"
+      url "https://github.com/razorback16/codiv/releases/download/v0.1.3/codiv-v0.1.3-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "9018bd9539478d0ec10a0431c59f5583dedb266e88509c6af6353ff6aa843a8b"
     end
   end
 
