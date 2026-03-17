@@ -325,14 +325,29 @@ pub(crate) fn event_loop(
                 if pending.needs_env_refresh {
                     state.cached_env_vars = bash.capture_env();
                 }
-                if let Some(ref mut c) = client {
-                    if let Some(frame) = ipc_messages::build_command_result(
-                        &pending.command,
-                        &result.output,
-                        result.exit_code,
-                        &state.cwd,
-                    ) {
-                        c.send(&frame);
+                if let Some(ref execution_id) = pending.ai_execution_id {
+                    // AI-requested command: send CommandExecutionResult back
+                    if let Some(ref mut c) = client {
+                        if let Some(frame) = ipc_messages::build_command_execution_result(
+                            execution_id,
+                            &result.output,
+                            result.exit_code,
+                            &state.cwd,
+                        ) {
+                            c.send(&frame);
+                        }
+                    }
+                } else {
+                    // User command: send CommandResult as before
+                    if let Some(ref mut c) = client {
+                        if let Some(frame) = ipc_messages::build_command_result(
+                            &pending.command,
+                            &result.output,
+                            result.exit_code,
+                            &state.cwd,
+                        ) {
+                            c.send(&frame);
+                        }
                     }
                 }
                 let cmd_end = get_scrollback_line(parser);
@@ -372,6 +387,40 @@ pub(crate) fn event_loop(
                 state.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
                 state.needs_render = true;
+            }
+        }
+
+        // --- Start queued AI command executions when the coprocess is free ---
+        if state.pending_command.is_none() {
+            if let Some(ai_exec) = state.pending_ai_executions.pop_front() {
+                let needs_env = super::state::command_modifies_env(&ai_exec.command);
+                match bash.start_command(&ai_exec.command) {
+                    Some(sentinel) => {
+                        state.cmd_start_scrollback = Some(get_scrollback_line(parser));
+                        state.pending_command = Some(super::state::PendingCommand {
+                            sentinel,
+                            accumulated: String::new(),
+                            command: ai_exec.command,
+                            last_activity: Instant::now(),
+                            needs_env_refresh: needs_env,
+                            ai_execution_id: Some(ai_exec.execution_id),
+                        });
+                        state.needs_render = true;
+                    }
+                    None => {
+                        // Failed to start — send back error result
+                        if let Some(ref mut c) = client {
+                            if let Some(frame) = ipc_messages::build_command_execution_result(
+                                &ai_exec.execution_id,
+                                "failed to send command to shell",
+                                -1,
+                                &state.cwd,
+                            ) {
+                                c.send(&frame);
+                            }
+                        }
+                    }
+                }
             }
         }
 
