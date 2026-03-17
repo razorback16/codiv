@@ -780,6 +780,12 @@ impl Daemon {
 
         for id in stale {
             info!("cleaning stale session {}", id);
+            // Fail all pending relay executions before removing the session
+            if let Some(session) = self.sessions.get(&id) {
+                if let Some(ref pending) = session.pending_executions {
+                    crate::agent::shell_backend::ShellBackend::fail_all_pending(pending);
+                }
+            }
             self.sessions.remove(&id);
             self.ipc.disconnect(id);
         }
