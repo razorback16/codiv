@@ -68,7 +68,7 @@ pub fn build_tools(
         ),
         make_tool_with_permissions::<edit::EditInput>(
             "edit",
-            "Replace a unique string in a file. The old_string must appear exactly once in the file.",
+            "Replace a string in a file. The old_string must be unique unless replace_all is true.",
             edit::execute,
             pctx.as_ref(),
         ),
