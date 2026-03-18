@@ -8,6 +8,8 @@ use serde_json::Value;
 
 use super::diff::generate_unified_diff;
 
+const MAX_PREVIEW_LINES: usize = 10;
+
 // ---------------------------------------------------------------------------
 // Block types
 // ---------------------------------------------------------------------------
@@ -82,7 +84,7 @@ pub enum ToolResultAction {
     /// Render nothing new to VT100 — block was merged into previous entry.
     Merged,
     /// Render the 2-line summary to VT100.
-    Summary { header: String, summary: String },
+    Summary { header: String, summary: String, preview_lines: Vec<String> },
 }
 
 // ---------------------------------------------------------------------------
@@ -308,8 +310,10 @@ impl BlockRegistry {
         full_content: String,
         is_diff: bool,
         start_index: u64,
+        preview_lines: Vec<String>,
     ) -> ToolResultAction {
         let id = self.next_id();
+        let height = 2 + preview_lines.len() as u16;
         self.blocks.push(Block::Tool(ToolBlock {
             id,
             tool_name: tool_name.to_string(),
@@ -318,11 +322,11 @@ impl BlockRegistry {
             full_content,
             is_diff,
             start_index,
-            height: 2,
+            height,
             merge_count: 0,
             edit_file_path: None,
         }));
-        ToolResultAction::Summary { header, summary }
+        ToolResultAction::Summary { header, summary, preview_lines }
     }
 
     // -- per-tool recording -------------------------------------------------
@@ -369,14 +373,14 @@ impl BlockRegistry {
             edit_file_path: Some(file_path),
         }));
 
-        ToolResultAction::Summary { header, summary }
+        ToolResultAction::Summary { header, summary, preview_lines: vec![] }
     }
 
     fn record_read(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let line_count = result.lines().count();
         let header = build_tool_header("Read", args);
         let summary = format!("  \u{2514} Read {} lines", line_count);
-        self.push_tool_block("Read", header, summary, result.to_string(), false, start_index)
+        self.push_tool_block("Read", header, summary, result.to_string(), false, start_index, vec![])
     }
 
     fn record_write(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
@@ -386,7 +390,8 @@ impl BlockRegistry {
         let short_path = short_filename(&file_path);
         let header = build_tool_header("Write", args);
         let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
-        self.push_tool_block("Write", header, summary, result.to_string(), false, start_index)
+        let preview = generate_preview_lines(&content, MAX_PREVIEW_LINES, Some(1));
+        self.push_tool_block("Write", header, summary, result.to_string(), false, start_index, preview)
     }
 
     fn record_bash(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
@@ -402,7 +407,9 @@ impl BlockRegistry {
                 format!("  \u{2514} exit {}: {}", exit_code, stderr_first)
             }
         };
-        self.push_tool_block("Bash", header, summary, result.to_string(), false, start_index)
+        let stdout = extract_bash_stdout(result);
+        let preview = generate_preview_lines(&stdout, MAX_PREVIEW_LINES, None);
+        self.push_tool_block("Bash", header, summary, result.to_string(), false, start_index, preview)
     }
 
     fn record_grep(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
@@ -410,7 +417,7 @@ impl BlockRegistry {
         let header = build_tool_header("Grep", args);
         let noun = if match_count == 1 { "line" } else { "lines" };
         let summary = format!("  \u{2514} Found {} {}", match_count, noun);
-        self.push_tool_block("Grep", header, summary, result.to_string(), false, start_index)
+        self.push_tool_block("Grep", header, summary, result.to_string(), false, start_index, vec![])
     }
 
     fn record_glob(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
@@ -418,13 +425,13 @@ impl BlockRegistry {
         let header = build_tool_header("Glob", args);
         let noun = if file_count == 1 { "file" } else { "files" };
         let summary = format!("  \u{2514} Found {} {}", file_count, noun);
-        self.push_tool_block("Glob", header, summary, result.to_string(), false, start_index)
+        self.push_tool_block("Glob", header, summary, result.to_string(), false, start_index, vec![])
     }
 
     fn record_other(&mut self, tool_name: &str, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let header = build_tool_header(tool_name, args);
         let summary = "  \u{2514} completed".to_string();
-        self.push_tool_block(tool_name, header, summary, result.to_string(), false, start_index)
+        self.push_tool_block(tool_name, header, summary, result.to_string(), false, start_index, vec![])
     }
 }
 
@@ -651,6 +658,75 @@ fn extract_stderr_first_line(result: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Generate preview lines from content, indented and truncated.
+/// When `start_line` is Some(n), line numbers are shown starting from n.
+/// When `start_line` is None, no line numbers are shown (e.g. Bash output).
+fn generate_preview_lines(content: &str, max_lines: usize, start_line: Option<usize>) -> Vec<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return vec![];
+    }
+
+    let format_line = |line_idx: usize, content: &str, width: usize| -> String {
+        match start_line {
+            Some(start) => {
+                let num = start + line_idx;
+                format!("     {:>width$}  {}", num, truncate_str(content, 120), width = width)
+            }
+            None => format!("     {}", truncate_str(content, 120)),
+        }
+    };
+
+    if lines.len() <= max_lines {
+        let last_num = start_line.map(|s| s + lines.len() - 1).unwrap_or(0);
+        let width = if last_num > 0 { last_num.to_string().len() } else { 0 };
+        lines.iter().enumerate().map(|(i, l)| format_line(i, l, width)).collect()
+    } else {
+        let visible = max_lines - 1;
+        let last_num = start_line.map(|s| s + visible - 1).unwrap_or(0);
+        let width = if last_num > 0 { last_num.to_string().len() } else { 0 };
+        let mut result: Vec<String> = lines[..visible]
+            .iter()
+            .enumerate()
+            .map(|(i, l)| format_line(i, l, width))
+            .collect();
+        let remaining = lines.len() - visible;
+        match start_line {
+            Some(_) => {
+                let padding = " ".repeat(width + 2);
+                result.push(format!("     {}… +{} more lines", padding, remaining));
+            }
+            None => {
+                result.push(format!("     … +{} more lines", remaining));
+            }
+        }
+        result
+    }
+}
+
+/// Extract stdout from a bash result by stripping stderr blocks and exit code.
+fn extract_bash_stdout(result: &str) -> String {
+    let mut cleaned = result.to_string();
+    // Strip all <stderr>...</stderr> blocks
+    while let Some(start) = cleaned.find("<stderr>") {
+        if let Some(end) = cleaned[start..].find("</stderr>") {
+            cleaned.replace_range(start..start + end + "</stderr>".len(), "");
+        } else {
+            break;
+        }
+    }
+    // Strip trailing "exit code: N" or "success, exit code: N" line
+    let trimmed = cleaned.trim_end();
+    if let Some(pos) = trimmed.rfind("\nexit code: ") {
+        cleaned = trimmed[..pos].to_string();
+    } else if let Some(pos) = trimmed.rfind("\nsuccess, exit code: ") {
+        cleaned = trimmed[..pos].to_string();
+    } else if trimmed.starts_with("exit code: ") || trimmed.starts_with("success, exit code: ") {
+        cleaned = String::new();
+    }
+    cleaned.trim().to_string()
 }
 
 /// Create a short summary of JSON arguments for "Other" tools.
