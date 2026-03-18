@@ -399,7 +399,14 @@ pub(crate) fn event_loop(
         if state.pending_command.is_none() {
             if let Some(ai_exec) = state.pending_ai_executions.pop_front() {
                 let needs_env = super::state::command_modifies_env(&ai_exec.command);
-                match bash.start_command(&ai_exec.command) {
+                // Wrap AI commands with env vars that prevent pagers, credential
+                // prompts, and editor launches from hanging. These are scoped to
+                // the subshell so they don't leak into user-typed commands.
+                let wrapped_command = format!(
+                    "GIT_PAGER=cat PAGER=cat SYSTEMD_PAGER=cat GIT_TERMINAL_PROMPT=0 GIT_EDITOR=true {}",
+                    &ai_exec.command
+                );
+                match bash.start_command(&wrapped_command) {
                     Some(sentinel) => {
                         state.cmd_start_scrollback = Some(get_scrollback_line(parser));
                         state.pending_command = Some(super::state::PendingCommand {

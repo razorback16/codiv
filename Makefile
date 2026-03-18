@@ -12,7 +12,7 @@ test:
 	cargo test --workspace
 
 debug:
-	@pkill -f codivd 2>/dev/null || true
+	@pkill codivd 2>/dev/null || true
 	RUST_LOG=codivd=debug cargo run -p codivd
 	cargo run -p codiv -- --debug
 

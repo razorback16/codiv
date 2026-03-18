@@ -45,7 +45,7 @@ pub fn build_tools(
             let cwd_ref = Arc::clone(&cwd_ref);
             make_tool_with_permissions::<BashInput>(
                 "bash",
-                "Execute a bash command and return its output. Use for running shell commands, installing packages, running tests, etc.",
+                "Execute a bash command and return its output. Pagers are disabled and stdin is /dev/null — do not run interactive/TUI programs (vim, top, less, htop, nano, etc.) as they will hang. Use for running shell commands, installing packages, running tests, etc.",
                 move |v| {
                     let input: BashInput = serde_json::from_value(v)
                         .map_err(|e| format!("invalid bash input: {}", e))?;

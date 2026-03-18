@@ -32,6 +32,11 @@ impl DaemonShell {
             .stderr(Stdio::piped())
             .env("PS1", "")
             .env("HISTFILE", "/dev/null")
+            .env("GIT_PAGER", "cat")
+            .env("PAGER", "cat")
+            .env("SYSTEMD_PAGER", "cat")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
             .env_remove("PROMPT_COMMAND")
             .spawn()?;
 
