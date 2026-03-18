@@ -114,6 +114,7 @@ pub struct BlockRegistry {
     pending_tool_name: Option<String>,
     pending_tool_start_index: Option<u64>,
     pending_edit_old_content: Option<String>,
+    replay_mode: bool,
 }
 
 impl BlockRegistry {
@@ -126,7 +127,12 @@ impl BlockRegistry {
             pending_tool_name: None,
             pending_tool_start_index: None,
             pending_edit_old_content: None,
+            replay_mode: false,
         }
+    }
+
+    pub fn set_replay_mode(&mut self, replay: bool) {
+        self.replay_mode = replay;
     }
 
     pub fn pending_tool(&self) -> Option<&str> {
@@ -144,9 +150,11 @@ impl BlockRegistry {
     pub fn record_tool_call(&mut self, name: &str, arguments: &str) {
         // Stash old file content for Edit tools to compute file-level diff later.
         if canonical_tool_name(name) == "Edit" {
-            if let Ok(args) = serde_json::from_str::<Value>(arguments) {
-                if let Some(path) = json_str(&args, "file_path") {
-                    self.pending_edit_old_content = std::fs::read_to_string(&path).ok();
+            if !self.replay_mode {
+                if let Ok(args) = serde_json::from_str::<Value>(arguments) {
+                    if let Some(path) = json_str(&args, "file_path") {
+                        self.pending_edit_old_content = std::fs::read_to_string(&path).ok();
+                    }
                 }
             }
         }
@@ -188,7 +196,7 @@ impl BlockRegistry {
 
         let canonical = canonical_tool_name(name);
 
-        match canonical {
+        let action = match canonical {
             "Edit" => self.record_edit(&args, result, start_index),
             "Read" => self.record_read(&args, result, start_index),
             "Write" => self.record_write(&args, result, start_index),
@@ -196,6 +204,24 @@ impl BlockRegistry {
             "Grep" => self.record_grep(&args, result, start_index),
             "Glob" => self.record_glob(&args, result, start_index),
             other => self.record_other(other, &args, result, start_index),
+        };
+        if self.replay_mode {
+            match action {
+                ToolResultAction::Summary { header, summary, .. } => {
+                    if let Some(Block::Tool(tb)) = self.blocks.last_mut() {
+                        tb.height = 2;
+                    }
+                    ToolResultAction::Summary { header, summary, preview_lines: vec![] }
+                }
+                ToolResultAction::Merged { start_index, header, summary, .. } => {
+                    if let Some(Block::Tool(tb)) = self.blocks.last_mut() {
+                        tb.height = 2;
+                    }
+                    ToolResultAction::Merged { start_index, header, summary, preview_lines: vec![] }
+                }
+            }
+        } else {
+            action
         }
     }
 
@@ -299,6 +325,7 @@ impl BlockRegistry {
         self.pending_tool_name = None;
         self.pending_tool_start_index = None;
         self.pending_edit_old_content = None;
+        self.replay_mode = false;
     }
 
     // -- private helpers ----------------------------------------------------
@@ -351,6 +378,14 @@ impl BlockRegistry {
             let summary = format!("  \u{2514} Edit failed: {}", result);
             self.pending_edit_old_content.take(); // consume stashed content
             return self.push_tool_block("Edit", header, summary, result.to_string(), false, start_index, vec![]);
+        }
+        // In replay mode, skip file I/O — files have stale content.
+        if self.replay_mode {
+            let old_string = json_str(args, "old_string").unwrap_or_default();
+            let new_string = json_str(args, "new_string").unwrap_or_default();
+            let header = build_tool_header("Edit", args);
+            let summary = format!("  \u{2514} {}", edit_args_summary(&old_string, &new_string));
+            return self.push_tool_block("Edit", header, summary, String::new(), true, start_index, vec![]);
         }
         let file_path = json_str(args, "file_path").unwrap_or_default();
         let stashed = self.pending_edit_old_content.take().unwrap_or_default();

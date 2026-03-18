@@ -55,7 +55,8 @@ pub(crate) fn render_frame(
     let in_alt_screen = parser.screen().alternate_screen();
     let is_executing = state.pending_command.is_some();
     let is_thinking = state.thinking_start.is_some();
-    if state.scroll_offset == 0 && !is_executing && !state.agent_streaming && !in_alt_screen {
+    let has_inline_picker = state.pending_session_picker.is_some() || state.pending_confirmation.is_some();
+    if state.scroll_offset == 0 && !is_executing && !state.agent_streaming && !in_alt_screen && !has_inline_picker {
         let lines: Vec<&str> = state.input.lines().collect();
         let line_count = lines.len() as u16;
         let screen_rows = parser.screen().size().0;

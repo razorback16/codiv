@@ -628,6 +628,8 @@ pub(crate) fn handle_daemon_message(
         ipc_messages::DaemonMessage::SessionReplay { events } => {
             // 1. Clear screen and re-emit welcome header
             reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
+            state.tracker.set_replay_mode(true);
+            state.prompt_anchor_row = None;
 
             // 2. Create fresh local replay state
             let mut replay_md = MarkdownStream::new(md_stream_width, theme);
@@ -738,6 +740,7 @@ pub(crate) fn handle_daemon_message(
                     }
                 }
             }
+            state.tracker.set_replay_mode(false);
             // Final separator before returning to normal input
             parser.process(b"\r\n");
         }
