@@ -307,7 +307,7 @@ fn handle_single_message(
                                     parser.process(line.as_bytes());
                                 }
                             }
-                            ToolResultAction::Summary { header, summary } => {
+                            ToolResultAction::Summary { header, summary, preview_lines } => {
                                 // Check if there's a permission outcome matching this tool
                                 let perm = if ds.last_permission_outcome
                                     .as_ref()
@@ -320,14 +320,14 @@ fn handle_single_message(
 
                                 if let Some((ref _perm_tool, granted, ref reason)) = perm {
                                     if granted {
-                                        // Green header + "└ {reason}" + green summary
+                                        // Green header + "└ {reason}" + summary + preview
                                         let header_line =
                                             format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
                                         parser.process(header_line.as_bytes());
                                         let perm_line =
                                             format!("{}  \u{2514} {}\x1b[0m\r\n", theme.ansi_tool_done_suffix, reason);
                                         parser.process(perm_line.as_bytes());
-                                        // Normal summary line
+                                        // Summary line before preview
                                         let is_bash_error = name.eq_ignore_ascii_case("bash")
                                             && !summary.contains("exit 0");
                                         let color = if is_bash_error {
@@ -338,6 +338,10 @@ fn handle_single_message(
                                         let summary_line =
                                             format!("{}{}\x1b[0m\r\n", color, summary);
                                         parser.process(summary_line.as_bytes());
+                                        for pline in &preview_lines {
+                                            let preview_line = format!("{}{}\x1b[0m\r\n", theme.ansi_thinking, pline);
+                                            parser.process(preview_line.as_bytes());
+                                        }
                                     } else {
                                         // Red header + "└ {reason}" (no tool summary since tool wasn't executed)
                                         let header_line =
@@ -348,7 +352,7 @@ fn handle_single_message(
                                         parser.process(perm_line.as_bytes());
                                     }
                                 } else {
-                                    // No permission check — render as before (green header + summary)
+                                    // No permission check — render header + summary + preview
                                     let header_line =
                                         format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
                                     parser.process(header_line.as_bytes());
@@ -361,6 +365,10 @@ fn handle_single_message(
                                     };
                                     let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
                                     parser.process(summary_line.as_bytes());
+                                    for pline in &preview_lines {
+                                        let preview_line = format!("{}{}\x1b[0m\r\n", theme.ansi_thinking, pline);
+                                        parser.process(preview_line.as_bytes());
+                                    }
                                 }
                                 parser.process(b"\r\n"); // trailing separator
                             }
