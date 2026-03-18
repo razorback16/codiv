@@ -288,7 +288,7 @@ fn handle_single_message(
                         }
                         let scrollback_line = get_scrollback_line(parser);
                         match ds.tracker.record_tool_result(&name, &result, scrollback_line) {
-                            ToolResultAction::Merged => {
+                            ToolResultAction::Merged { start_index, header, summary, preview_lines } => {
                                 // Consume any pending permission outcome if it matches this tool
                                 if ds.last_permission_outcome
                                     .as_ref()
@@ -296,16 +296,28 @@ fn handle_single_message(
                                 {
                                     let _ = ds.last_permission_outcome.take();
                                 }
-                                // Block merged into previous — update the summary
-                                // line in the VT100 buffer by moving cursor up and
-                                // rewriting the line.
-                                let summary =
-                                    ds.tracker.last_tool_block_mut().map(|tb| tb.summary.clone());
-                                if let Some(summary) = summary {
+                                // Erase from current position back to the block's start line.
+                                let current_line = get_scrollback_line(parser);
+                                let lines_to_erase = (current_line.saturating_sub(start_index)) as u16;
+                                for _ in 0..lines_to_erase {
                                     parser.process(b"\x1b[A\r\x1b[K");
-                                    let line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done_suffix, summary);
-                                    parser.process(line.as_bytes());
                                 }
+                                // Redraw: header + summary + preview lines
+                                let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
+                                parser.process(header_line.as_bytes());
+                                let is_tool_error = summary.contains(" failed:");
+                                let color = if is_tool_error {
+                                    theme.ansi_exit_failure
+                                } else {
+                                    theme.ansi_tool_done_suffix
+                                };
+                                let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
+                                parser.process(summary_line.as_bytes());
+                                for pline in &preview_lines {
+                                    let preview_line = format!("{}{}\x1b[0m\r\n", theme.ansi_thinking, pline);
+                                    parser.process(preview_line.as_bytes());
+                                }
+                                parser.process(b"\r\n"); // trailing separator
                             }
                             ToolResultAction::Summary { header, summary, preview_lines } => {
                                 // Check if there's a permission outcome matching this tool
@@ -328,9 +340,10 @@ fn handle_single_message(
                                             format!("{}  \u{2514} {}\x1b[0m\r\n", theme.ansi_tool_done_suffix, reason);
                                         parser.process(perm_line.as_bytes());
                                         // Summary line before preview
-                                        let is_bash_error = name.eq_ignore_ascii_case("bash")
-                                            && !summary.contains("exit 0");
-                                        let color = if is_bash_error {
+                                        let is_tool_error = (name.eq_ignore_ascii_case("bash")
+                                            && !summary.contains("exit 0"))
+                                            || summary.contains(" failed:");
+                                        let color = if is_tool_error {
                                             theme.ansi_exit_failure
                                         } else {
                                             theme.ansi_tool_done_suffix
@@ -356,9 +369,10 @@ fn handle_single_message(
                                     let header_line =
                                         format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
                                     parser.process(header_line.as_bytes());
-                                    let is_bash_error = name.eq_ignore_ascii_case("bash")
-                                        && !summary.contains("exit 0");
-                                    let color = if is_bash_error {
+                                    let is_tool_error = (name.eq_ignore_ascii_case("bash")
+                                        && !summary.contains("exit 0"))
+                                        || summary.contains(" failed:");
+                                    let color = if is_tool_error {
                                         theme.ansi_exit_failure
                                     } else {
                                         theme.ansi_tool_done_suffix

@@ -23,10 +23,10 @@ pub struct ToolBlock {
     pub is_diff: bool,
     pub start_index: u64,
     pub height: u16,
-    /// Track the number of merged edits for consecutive-edit merging.
-    merge_count: usize,
     /// Stores the file_path for Edit blocks so we can detect consecutive edits.
     edit_file_path: Option<String>,
+    /// Original file content before the first edit in a merge chain.
+    edit_original_content: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,9 +81,14 @@ pub enum Block {
 // ---------------------------------------------------------------------------
 
 pub enum ToolResultAction {
-    /// Render nothing new to VT100 — block was merged into previous entry.
-    Merged,
-    /// Render the 2-line summary to VT100.
+    /// Block was merged into previous entry — erase back to `start_index` and redraw.
+    Merged {
+        start_index: u64,
+        header: String,
+        summary: String,
+        preview_lines: Vec<String>,
+    },
+    /// Render the header + summary + preview lines to VT100.
     Summary { header: String, summary: String, preview_lines: Vec<String> },
 }
 
@@ -108,6 +113,7 @@ pub struct BlockRegistry {
     pending_tool_call: Option<PendingToolCall>,
     pending_tool_name: Option<String>,
     pending_tool_start_index: Option<u64>,
+    pending_edit_old_content: Option<String>,
 }
 
 impl BlockRegistry {
@@ -119,6 +125,7 @@ impl BlockRegistry {
             pending_tool_call: None,
             pending_tool_name: None,
             pending_tool_start_index: None,
+            pending_edit_old_content: None,
         }
     }
 
@@ -135,6 +142,14 @@ impl BlockRegistry {
     /// Save the pending tool call so its arguments are available when
     /// `record_tool_result` is called.
     pub fn record_tool_call(&mut self, name: &str, arguments: &str) {
+        // Stash old file content for Edit tools to compute file-level diff later.
+        if canonical_tool_name(name) == "Edit" {
+            if let Ok(args) = serde_json::from_str::<Value>(arguments) {
+                if let Some(path) = json_str(&args, "file_path") {
+                    self.pending_edit_old_content = std::fs::read_to_string(&path).ok();
+                }
+            }
+        }
         // Do NOT set pending_tool_name here — only record_tool_call_delta does that,
         // because only that path writes a spinner placeholder to overwrite.
         self.pending_tool_call = Some(PendingToolCall {
@@ -283,14 +298,7 @@ impl BlockRegistry {
         self.pending_tool_call = None;
         self.pending_tool_name = None;
         self.pending_tool_start_index = None;
-    }
-
-    /// Returns a mutable reference to the last [`ToolBlock`], if any.
-    pub fn last_tool_block_mut(&mut self) -> Option<&mut ToolBlock> {
-        self.blocks.iter_mut().rev().find_map(|b| match b {
-            Block::Tool(tb) => Some(tb),
-            _ => None,
-        })
+        self.pending_edit_old_content = None;
     }
 
     // -- private helpers ----------------------------------------------------
@@ -323,8 +331,9 @@ impl BlockRegistry {
             is_diff,
             start_index,
             height,
-            merge_count: 0,
+
             edit_file_path: None,
+            edit_original_content: None,
         }));
         ToolResultAction::Summary { header, summary, preview_lines }
     }
@@ -334,64 +343,145 @@ impl BlockRegistry {
     fn record_edit(
         &mut self,
         args: &Value,
-        _result: &str,
+        result: &str,
         start_index: u64,
     ) -> ToolResultAction {
+        if result.starts_with("Error:") {
+            let header = build_tool_header("Edit", args);
+            let summary = format!("  \u{2514} Edit failed: {}", result);
+            self.pending_edit_old_content.take(); // consume stashed content
+            return self.push_tool_block("Edit", header, summary, result.to_string(), false, start_index, vec![]);
+        }
         let file_path = json_str(args, "file_path").unwrap_or_default();
-        let old_string = json_str(args, "old_string").unwrap_or_default();
-        let new_string = json_str(args, "new_string").unwrap_or_default();
+        let stashed = self.pending_edit_old_content.take().unwrap_or_default();
+        let new_content = std::fs::read_to_string(&file_path).unwrap_or_default();
 
-        let diff = generate_unified_diff(&file_path, &old_string, &new_string);
-
-        // Check if previous block is an Edit to the same file — merge if so.
-        if let Some(Block::Tool(prev)) = self.blocks.last_mut() {
-            if prev.tool_name == "Edit" && prev.edit_file_path.as_deref() == Some(&file_path) {
-                prev.merge_count += 1;
-                prev.summary = format!("  \u{2514} Edited ({} edits)", prev.merge_count);
-                prev.full_content.push('\n');
-                prev.full_content.push_str(&diff);
-                return ToolResultAction::Merged;
+        // Merging? Use the original baseline. Otherwise use the stashed pre-edit content.
+        // Skip trailing Thinking blocks to find a previous Edit on the same file.
+        let (merging, baseline) = {
+            let mut merge_candidate = None;
+            for block in self.blocks.iter().rev() {
+                match block {
+                    Block::Thinking(_) => continue,
+                    Block::Tool(prev)
+                        if prev.tool_name == "Edit"
+                            && prev.edit_file_path.as_deref() == Some(&file_path) =>
+                    {
+                        merge_candidate = Some(prev.edit_original_content.as_deref().unwrap_or_default().to_string());
+                        break;
+                    }
+                    _ => break,
+                }
             }
+            match merge_candidate {
+                Some(baseline) => (true, baseline),
+                None => (false, stashed.clone()),
+            }
+        };
+
+        let diff = generate_unified_diff(&file_path, &baseline, &new_content);
+
+        // Replay / no-op: diff is empty because the file already has edits applied.
+        if diff.is_empty() {
+            let old_string = json_str(args, "old_string").unwrap_or_default();
+            let new_string = json_str(args, "new_string").unwrap_or_default();
+            let header = build_tool_header("Edit", args);
+            let summary = format!("  \u{2514} {}", edit_args_summary(&old_string, &new_string));
+            if merging {
+                // Remove trailing Thinking blocks so the Edit block is last again.
+                while matches!(self.blocks.last(), Some(Block::Thinking(_))) {
+                    self.blocks.pop();
+                }
+                let prev = match self.blocks.last_mut() {
+                    Some(Block::Tool(tb)) => tb,
+                    _ => unreachable!(),
+                };
+                let start_index = prev.start_index;
+                let header = prev.header.clone();
+                prev.summary = summary.clone();
+                prev.height = 2;
+                return ToolResultAction::Merged { start_index, header, summary, preview_lines: vec![] };
+            }
+            let id = self.next_id();
+            self.blocks.push(Block::Tool(ToolBlock {
+                id,
+                tool_name: "Edit".to_string(),
+                header: header.clone(),
+                summary: summary.clone(),
+                full_content: String::new(),
+                is_diff: true,
+                start_index,
+                height: 2,
+                edit_file_path: Some(file_path),
+                edit_original_content: Some(stashed),
+            }));
+            return ToolResultAction::Summary { header, summary, preview_lines: vec![] };
         }
 
-        // First edit (or new file) — compute single-edit summary.
-        let summary_text = single_edit_summary(&old_string, &new_string);
-        let header = build_tool_header("Edit", args);
-        let summary = format!("  \u{2514} {}", summary_text);
+        let diff_preview = generate_diff_preview_lines(&diff);
+        let summary = format!("  \u{2514} {}", diff_summary(&diff));
 
-        let id = self.next_id();
-        self.blocks.push(Block::Tool(ToolBlock {
-            id,
-            tool_name: "Edit".to_string(),
-            header: header.clone(),
-            summary: summary.clone(),
-            full_content: diff,
-            is_diff: true,
-            start_index,
-            height: 2,
-            merge_count: 1,
-            edit_file_path: Some(file_path),
-        }));
-
-        ToolResultAction::Summary { header, summary, preview_lines: vec![] }
+        if merging {
+            // Remove trailing Thinking blocks so the Edit block is last again.
+            while matches!(self.blocks.last(), Some(Block::Thinking(_))) {
+                self.blocks.pop();
+            }
+            let prev = match self.blocks.last_mut() {
+                Some(Block::Tool(tb)) => tb,
+                _ => unreachable!(),
+            };
+            let start_index = prev.start_index;
+            let header = prev.header.clone();
+            prev.full_content = diff;
+            prev.summary = summary.clone();
+            prev.height = 2 + diff_preview.len() as u16;
+            ToolResultAction::Merged { start_index, header, summary, preview_lines: diff_preview }
+        } else {
+            let header = build_tool_header("Edit", args);
+            let id = self.next_id();
+            self.blocks.push(Block::Tool(ToolBlock {
+                id,
+                tool_name: "Edit".to_string(),
+                header: header.clone(),
+                summary: summary.clone(),
+                full_content: diff,
+                is_diff: true,
+                start_index,
+                height: 2 + diff_preview.len() as u16,
+                edit_file_path: Some(file_path),
+                edit_original_content: Some(stashed),
+            }));
+            ToolResultAction::Summary { header, summary, preview_lines: diff_preview }
+        }
     }
 
     fn record_read(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let line_count = result.lines().count();
         let header = build_tool_header("Read", args);
-        let summary = format!("  \u{2514} Read {} lines", line_count);
-        self.push_tool_block("Read", header, summary, result.to_string(), false, start_index, vec![])
+        if result.starts_with("Error:") {
+            let summary = format!("  \u{2514} Read failed: {}", result);
+            self.push_tool_block("Read", header, summary, result.to_string(), false, start_index, vec![])
+        } else {
+            let line_count = result.lines().count();
+            let summary = format!("  \u{2514} Read {} lines", line_count);
+            self.push_tool_block("Read", header, summary, result.to_string(), false, start_index, vec![])
+        }
     }
 
     fn record_write(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
         let file_path = json_str(args, "file_path").unwrap_or_default();
         let content = json_str(args, "content").unwrap_or_default();
-        let line_count = content.lines().count();
-        let short_path = short_filename(&file_path);
         let header = build_tool_header("Write", args);
-        let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
-        let preview = generate_preview_lines(&content, MAX_PREVIEW_LINES, Some(1));
-        self.push_tool_block("Write", header, summary, result.to_string(), false, start_index, preview)
+
+        if result.starts_with("Error:") {
+            let summary = format!("  \u{2514} Write failed: {}", result);
+            self.push_tool_block("Write", header, summary, result.to_string(), false, start_index, vec![])
+        } else {
+            let line_count = content.lines().count();
+            let short_path = short_filename(&file_path);
+            let summary = format!("  \u{2514} Wrote {} lines to {}", line_count, short_path);
+            let preview = generate_preview_lines(&content, MAX_PREVIEW_LINES, Some(1));
+            self.push_tool_block("Write", header, summary, result.to_string(), false, start_index, preview)
+        }
     }
 
     fn record_bash(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
@@ -594,36 +684,58 @@ fn short_filename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
-/// Build a short summary for a single edit based on old/new string comparison.
-fn single_edit_summary(old_string: &str, new_string: &str) -> String {
-    let old_count = if old_string.is_empty() {
-        0
-    } else {
-        old_string.lines().count()
-    };
-    let new_count = if new_string.is_empty() {
-        0
-    } else {
-        new_string.lines().count()
-    };
+/// Build a summary like "Added 3 lines, removed 1 line" from a unified diff.
+fn diff_summary(diff: &str) -> String {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    match (added, removed) {
+        (0, 0) => "No changes".to_string(),
+        (a, 0) => {
+            let noun = if a == 1 { "line" } else { "lines" };
+            format!("Added {} {}", a, noun)
+        }
+        (0, r) => {
+            let noun = if r == 1 { "line" } else { "lines" };
+            format!("Removed {} {}", r, noun)
+        }
+        (a, r) => {
+            let an = if a == 1 { "line" } else { "lines" };
+            let rn = if r == 1 { "line" } else { "lines" };
+            format!("Added {} {}, removed {} {}", a, an, r, rn)
+        }
+    }
+}
 
-    if old_count == 0 && new_count > 0 {
-        let noun = if new_count == 1 { "line" } else { "lines" };
-        format!("Added {} {}", new_count, noun)
-    } else if new_count == 0 && old_count > 0 {
-        let noun = if old_count == 1 { "line" } else { "lines" };
-        format!("Removed {} {}", old_count, noun)
-    } else if new_count > old_count {
-        let diff = new_count - old_count;
-        let noun = if diff == 1 { "line" } else { "lines" };
-        format!("Added {} {}", diff, noun)
-    } else if old_count > new_count {
-        let diff = old_count - new_count;
-        let noun = if diff == 1 { "line" } else { "lines" };
-        format!("Removed {} {}", diff, noun)
-    } else {
-        let noun = if old_count == 1 { "line" } else { "lines" };
-        format!("Changed {} {}", old_count, noun)
+/// Build a summary from Edit tool args (old_string/new_string) for replay/no-op cases
+/// where the diff is empty because edits are already applied.
+fn edit_args_summary(old_string: &str, new_string: &str) -> String {
+    let added = new_string.lines().count();
+    let removed = old_string.lines().count();
+    match (added, removed) {
+        (0, 0) => "No changes".to_string(),
+        (a, 0) => {
+            let noun = if a == 1 { "line" } else { "lines" };
+            format!("Added {} {}", a, noun)
+        }
+        (0, r) => {
+            let noun = if r == 1 { "line" } else { "lines" };
+            format!("Removed {} {}", r, noun)
+        }
+        (a, r) => {
+            let an = if a == 1 { "line" } else { "lines" };
+            let rn = if r == 1 { "line" } else { "lines" };
+            format!("Added {} {}, removed {} {}", a, an, r, rn)
+        }
     }
 }
 
@@ -658,6 +770,64 @@ fn extract_stderr_first_line(result: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Generate GitHub-style diff preview lines from a unified diff.
+/// Shows line numbers and +/- markers with ANSI colors (red for removals, green for additions).
+fn generate_diff_preview_lines(diff: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut old_line: usize = 0;
+    let mut new_line: usize = 0;
+
+    for line in diff.lines() {
+        if line.starts_with("---") || line.starts_with("+++") {
+            // Skip file headers
+            continue;
+        }
+        if line.starts_with("@@") {
+            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            if let Some(rest) = line.strip_prefix("@@ -") {
+                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                if let Some(old_part) = parts.first() {
+                    let old_start: &str = old_part.split(',').next().unwrap_or("1");
+                    old_line = old_start.parse().unwrap_or(1);
+                }
+                if let Some(new_part) = parts.get(1) {
+                    if let Some(new_spec) = new_part.strip_prefix('+') {
+                        let new_start = new_spec.split(',').next().unwrap_or("1");
+                        new_line = new_start.parse().unwrap_or(1);
+                    }
+                }
+            }
+            // Render hunk header as a separator
+            result.push(format!("     \x1b[36m{}\x1b[0m", line));
+            continue;
+        }
+        if let Some(content) = line.strip_prefix('-') {
+            // Removed line: old line number, no new line number, red
+            result.push(format!(
+                "     \x1b[31m{:>4}      -{}\x1b[0m",
+                old_line, content
+            ));
+            old_line += 1;
+        } else if let Some(content) = line.strip_prefix('+') {
+            // Added line: no old line number, new line number, green
+            result.push(format!(
+                "     \x1b[32m     {:>4} +{}\x1b[0m",
+                new_line, content
+            ));
+            new_line += 1;
+        } else if let Some(content) = line.strip_prefix(' ') {
+            // Context line: both line numbers
+            result.push(format!(
+                "     {:>4} {:>4}  {}",
+                old_line, new_line, content
+            ));
+            old_line += 1;
+            new_line += 1;
+        }
+    }
+    result
 }
 
 /// Generate preview lines from content, indented and truncated.
