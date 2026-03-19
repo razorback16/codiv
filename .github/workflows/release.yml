@@ -36,8 +36,9 @@ jobs:
       - name: Cache Cargo registry and build
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.target }}
+          shared-key: release-${{ matrix.target }}
           cache-on-failure: true
+          cache-all-crates: "true"
 
       - name: Build
         run: cargo build --workspace --release --target ${{ matrix.target }}
