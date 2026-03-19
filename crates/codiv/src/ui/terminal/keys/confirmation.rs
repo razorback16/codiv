@@ -1,5 +1,7 @@
 use crossterm::event::KeyCode;
 
+use codiv_common::tools::tool_names;
+
 use crate::ipc::client::CodivdClient;
 use crate::ipc::messages as ipc_messages;
 
@@ -8,7 +10,7 @@ use super::super::state::{PendingConfirmation, TerminalState};
 fn redraw_options(conf: &PendingConfirmation, p: &mut vt100::Parser) {
     let is_native = matches!(
         conf.tool_name.as_str(),
-        "read" | "write" | "edit" | "glob" | "grep"
+        tool_names::READ | tool_names::WRITE | tool_names::EDIT | tool_names::GLOB | tool_names::GREP
     );
     let options: Vec<&str> = if is_native {
         vec!["1. Yes, allow this action", "2. No, reject"]
@@ -27,9 +29,7 @@ fn redraw_options(conf: &PendingConfirmation, p: &mut vt100::Parser) {
         ]
     };
     // Move cursor up by option_count lines to overwrite them
-    for _ in 0..conf.option_count {
-        p.process(b"\x1b[A\r\x1b[K");
-    }
+    super::clear_modal_lines(p, conf.option_count);
     // Redraw each option line
     for (i, option) in options.iter().enumerate() {
         let (prefix, color) = if i == conf.selected_index {
@@ -42,15 +42,13 @@ fn redraw_options(conf: &PendingConfirmation, p: &mut vt100::Parser) {
 }
 
 fn clear_prompt(conf: &PendingConfirmation, p: &mut vt100::Parser) {
-    for _ in 0..conf.prompt_lines {
-        p.process(b"\x1b[A\r\x1b[K");
-    }
+    super::clear_modal_lines(p, conf.prompt_lines as usize);
 }
 
 fn resolve_action(conf: &PendingConfirmation) -> (bool, bool, bool) {
     let is_native = matches!(
         conf.tool_name.as_str(),
-        "read" | "write" | "edit" | "glob" | "grep"
+        tool_names::READ | tool_names::WRITE | tool_names::EDIT | tool_names::GLOB | tool_names::GREP
     );
     if is_native {
         // Native tools: 0=allow, 1=reject (no permanent options)

@@ -13,6 +13,7 @@ use crate::shell::completion_engine::CompletionEngine;
 use crate::ui::blocks::InputMode;
 
 use super::super::input as terminal_input;
+use super::super::render::HINT_INPUT_THRESHOLD;
 use super::super::state::{PendingCommand, TerminalState, MAX_SCROLLBACK};
 use super::super::utils::{
     get_scrollback_line, parser_push_notice, reset_screen, send_agent_request, true_scrollback_len,
@@ -412,9 +413,9 @@ pub(crate) fn handle_input_keys(
                 state.input_mode = InputMode::Ai;
                 state.hint_shown_at = Some(Instant::now());
             } else {
-                let was_below = state.input.content().len() < 3;
+                let was_below = state.input.content().len() < HINT_INPUT_THRESHOLD;
                 state.input.insert(ch);
-                if was_below && state.input.content().len() >= 3 {
+                if was_below && state.input.content().len() >= HINT_INPUT_THRESHOLD {
                     state.hint_shown_at = Some(Instant::now());
                 }
                 state.scroll_offset = 0;
