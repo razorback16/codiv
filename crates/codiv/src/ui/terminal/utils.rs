@@ -85,11 +85,11 @@ pub(crate) fn finalize_thinking(
         let duration_secs = start.elapsed().as_secs_f32();
         // Move cursor up one line and clear it (overwrite placeholder)
         parser.process(b"\x1b[A\r\x1b[K");
-        let summary = format!("{}Thought for {:.0}s\x1b[0m\r\n", ansi_thinking, duration_secs);
-        parser.process(summary.as_bytes());
+        let rendered_line = format!("{}Thought for {:.0}s\x1b[0m", ansi_thinking, duration_secs);
+        parser.process(format!("{}\r\n", rendered_line).as_bytes());
         let content = std::mem::take(thinking_buffer);
         if let Some(sl) = thinking_scrollback.take() {
-            tracker.record_thinking_block(content, duration_secs, sl);
+            tracker.record_thinking_block(content, duration_secs, sl, rendered_line);
         }
         true
     } else {
