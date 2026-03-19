@@ -205,7 +205,10 @@ pub(crate) fn event_loop(
                                         let ai_end = get_scrollback_line(parser);
                                         let line_count = (ai_end.saturating_sub(start)) as u16;
                                         if line_count > 0 {
-                                            state.tracker.record_ai_response(start, line_count);
+                                            let lines = std::mem::take(&mut state.ai_rendered_lines);
+                                            state.tracker.record_ai_response(start, line_count, lines);
+                                        } else {
+                                            state.ai_rendered_lines.clear();
                                         }
                                     }
                                     state.agent_streaming = false;

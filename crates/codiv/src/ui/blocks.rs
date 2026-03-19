@@ -67,6 +67,8 @@ pub struct AiResponseBlock {
     pub id: usize,
     pub start_index: u64,
     pub height: u16,
+    /// ANSI-escaped rendered lines from the markdown stream.
+    pub rendered_lines: Vec<String>,
 }
 
 pub struct ThinkingBlock {
@@ -280,12 +282,13 @@ impl BlockRegistry {
     }
 
     /// Record an AI response block.
-    pub fn record_ai_response(&mut self, start_index: u64, height: u16) {
+    pub fn record_ai_response(&mut self, start_index: u64, height: u16, rendered_lines: Vec<String>) {
         let id = self.next_id();
         self.blocks.push(Block::AiResponse(AiResponseBlock {
             id,
             start_index,
             height,
+            rendered_lines,
         }));
     }
 

@@ -22,6 +22,7 @@ pub(super) struct DaemonStreamState<'a> {
     pub token_usage: &'a mut TokenUsage,
     pub tracker: &'a mut BlockRegistry,
     pub ai_start_scrollback: &'a mut Option<u64>,
+    pub ai_rendered_lines: &'a mut Vec<String>,
     pub thinking_buffer: &'a mut String,
     pub thinking_start: &'a mut Option<Instant>,
     pub thinking_scrollback: &'a mut Option<u64>,
@@ -178,6 +179,35 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
     }
 }
 
+/// Split ANSI bytes by `\r\n` and append complete lines to the accumulator.
+/// Partial lines (no trailing `\r\n`) are appended to the last entry or added as a new entry.
+fn accumulate_ai_lines(acc: &mut Vec<String>, ansi: &[u8]) {
+    let text = String::from_utf8_lossy(ansi);
+    let mut parts: Vec<&str> = text.split("\r\n").collect();
+    // If text ends with \r\n, split produces a trailing empty string — pop it.
+    if text.ends_with("\r\n") && parts.last() == Some(&"") {
+        parts.pop();
+    }
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            // Append to the last incomplete line, or start a new one.
+            if let Some(last) = acc.last_mut() {
+                last.push_str(part);
+            } else {
+                acc.push(part.to_string());
+            }
+            // If there are more parts, this line is now complete — next parts start new lines.
+        } else {
+            acc.push(part.to_string());
+        }
+    }
+    // If the original text ended with \r\n, the current last line is complete.
+    // Push an empty string to start a new line for future appends.
+    if text.ends_with("\r\n") {
+        acc.push(String::new());
+    }
+}
+
 /// Build the ANSI-formatted rendered lines for a tool block result.
 /// Each line does NOT include trailing `\r\n` — the caller adds that.
 fn build_tool_rendered_lines(
@@ -261,6 +291,7 @@ fn handle_single_message(
                         }
                         if let Some(ansi) = ds.md_stream.push(&t) {
                             parser.process(&ansi);
+                            accumulate_ai_lines(ds.ai_rendered_lines, &ansi);
                         }
                     }
                 }
@@ -286,6 +317,7 @@ fn handle_single_message(
                         let pending = ds.md_stream.finish();
                         if !pending.is_empty() {
                             parser.process(&pending);
+                            accumulate_ai_lines(ds.ai_rendered_lines, &pending);
                         }
                         ds.md_stream.reset();
 
@@ -295,7 +327,14 @@ fn handle_single_message(
                             let ai_end = get_scrollback_line(parser);
                             let line_count = (ai_end.saturating_sub(start)) as u16;
                             if line_count > 0 {
-                                ds.tracker.record_ai_response(start, line_count);
+                                let mut lines = std::mem::take(ds.ai_rendered_lines);
+                                // Remove trailing empty string from accumulator
+                                if lines.last().is_some_and(|s| s.is_empty()) {
+                                    lines.pop();
+                                }
+                                ds.tracker.record_ai_response(start, line_count, lines);
+                            } else {
+                                ds.ai_rendered_lines.clear();
                             }
                         }
                         if finalized || !pending.is_empty() || had_ai_content {
@@ -323,6 +362,7 @@ fn handle_single_message(
                         let pending = ds.md_stream.finish();
                         if !pending.is_empty() {
                             parser.process(&pending);
+                            accumulate_ai_lines(ds.ai_rendered_lines, &pending);
                         }
                         ds.md_stream.reset();
 
@@ -331,7 +371,13 @@ fn handle_single_message(
                             let ai_end = get_scrollback_line(parser);
                             let line_count = (ai_end.saturating_sub(start)) as u16;
                             if line_count > 0 {
-                                ds.tracker.record_ai_response(start, line_count);
+                                let mut lines = std::mem::take(ds.ai_rendered_lines);
+                                if lines.last().is_some_and(|s| s.is_empty()) {
+                                    lines.pop();
+                                }
+                                ds.tracker.record_ai_response(start, line_count, lines);
+                            } else {
+                                ds.ai_rendered_lines.clear();
                             }
                         }
                         if finalized || !pending.is_empty() || had_ai_content {
@@ -407,13 +453,20 @@ fn handle_single_message(
                 let final_bytes = ds.md_stream.finish();
                 if !final_bytes.is_empty() {
                     parser.process(&final_bytes);
+                    accumulate_ai_lines(ds.ai_rendered_lines, &final_bytes);
                 }
                 let ai_end = get_scrollback_line(parser);
                 let had_ai_content = ds.ai_start_scrollback.is_some();
                 if let Some(start) = ds.ai_start_scrollback.take() {
                     let line_count = (ai_end.saturating_sub(start)) as u16;
                     if line_count > 0 {
-                        ds.tracker.record_ai_response(start, line_count);
+                        let mut lines = std::mem::take(ds.ai_rendered_lines);
+                        if lines.last().is_some_and(|s| s.is_empty()) {
+                            lines.pop();
+                        }
+                        ds.tracker.record_ai_response(start, line_count, lines);
+                    } else {
+                        ds.ai_rendered_lines.clear();
                     }
                 }
                 if finalized || !final_bytes.is_empty() || had_ai_content {
@@ -652,6 +705,7 @@ pub(crate) fn handle_daemon_message(
             let mut replay_model = String::new();
             let mut replay_token_usage = TokenUsage::default();
             let mut replay_ai_start: Option<u64> = None;
+            let mut replay_ai_rendered_lines: Vec<String> = Vec::new();
             let mut replay_thinking_buffer = String::new();
             let mut replay_thinking_start: Option<Instant> = None;
             let mut replay_thinking_scrollback: Option<u64> = None;
@@ -746,6 +800,7 @@ pub(crate) fn handle_daemon_message(
                                 token_usage: &mut replay_token_usage,
                                 tracker: &mut state.tracker,
                                 ai_start_scrollback: &mut replay_ai_start,
+                                ai_rendered_lines: &mut replay_ai_rendered_lines,
                                 thinking_buffer: &mut replay_thinking_buffer,
                                 thinking_start: &mut replay_thinking_start,
                                 thinking_scrollback: &mut replay_thinking_scrollback,
@@ -790,6 +845,7 @@ pub(crate) fn handle_daemon_message(
                 token_usage: &mut state.token_usage,
                 tracker: &mut state.tracker,
                 ai_start_scrollback: &mut state.ai_start_scrollback,
+                ai_rendered_lines: &mut state.ai_rendered_lines,
                 thinking_buffer: &mut state.thinking_buffer,
                 thinking_start: &mut state.thinking_start,
                 thinking_scrollback: &mut state.thinking_scrollback,

@@ -194,6 +194,9 @@ pub(crate) struct TerminalState {
     /// Accumulates PTY bytes during command execution for CmdResponseBlock replay.
     pub cmd_output_capture: Vec<u8>,
 
+    /// Accumulates ANSI-rendered lines during AI streaming for AiResponseBlock.
+    pub ai_rendered_lines: Vec<String>,
+
     // Contextual hint (shown for 5s after trigger)
     pub hint_shown_at: Option<Instant>,
     pub last_mouse_drag: Option<Instant>,
@@ -270,6 +273,7 @@ impl TerminalState {
             pending_ai_executions: std::collections::VecDeque::new(),
 
             cmd_output_capture: Vec::new(),
+            ai_rendered_lines: Vec::new(),
 
             // Contextual hint (shown for 5s after trigger)
             hint_shown_at: None,
