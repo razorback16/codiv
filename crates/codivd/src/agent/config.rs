@@ -520,7 +520,7 @@ const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 
 /// Execute a streaming LLM call, forwarding chunks over IPC.
-/// Returns (response_text, input_tokens, output_tokens, collected_events).
+/// Returns (response_text, input_tokens, output_tokens, cache_read_tokens, collected_events).
 ///
 /// Retries transient errors (server errors, rate limits) up to `MAX_RETRIES`
 /// times with exponential backoff. Non-retryable errors fail immediately with
@@ -534,7 +534,7 @@ pub async fn stream_from_config(
     tx: &mpsc::Sender<Vec<u8>>,
     tools: Vec<Tool>,
     thinking: bool,
-) -> Result<(String, usize, usize, Vec<ConversationEvent>), DynError> {
+) -> Result<(String, usize, usize, usize, Vec<ConversationEvent>), DynError> {
     let mut attempt = 0u32;
     loop {
         let result = with_provider_model!(assignment, provider_config, |model, is_openai_compat| {
@@ -588,7 +588,7 @@ async fn run_stream<M>(
     config: &ModelAssignment,
     tools: Vec<Tool>,
     thinking: bool,
-) -> Result<(String, usize, usize, Vec<ConversationEvent>), DynError>
+) -> Result<(String, usize, usize, usize, Vec<ConversationEvent>), DynError>
 where
     M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + aisdk::core::capabilities::ReasoningSupport + Send + Sync + 'static,
 {
@@ -742,8 +742,9 @@ where
     let usage = response.usage().await;
     let input_tokens = usage.input_tokens.unwrap_or(0);
     let output_tokens = usage.output_tokens.unwrap_or(0);
+    let cache_read_tokens = usage.cached_tokens.unwrap_or(0);
 
-    Ok((full_text, input_tokens, output_tokens, collected_events))
+    Ok((full_text, input_tokens, output_tokens, cache_read_tokens, collected_events))
 }
 
 async fn send_ipc(tx: &mpsc::Sender<Vec<u8>>, msg: &DaemonMessage) -> Result<(), DynError> {

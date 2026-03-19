@@ -50,6 +50,13 @@ pub enum ConversationEvent {
         request_id: String,
         message: String,
     },
+    /// Token usage for a single request (persisted for session replay).
+    TokenUsage {
+        request_id: String,
+        input_tokens: usize,
+        output_tokens: usize,
+        cache_read_tokens: usize,
+    },
 }
 
 /// Metadata for a stored session (one row in the `sessions` table).

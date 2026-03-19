@@ -8,7 +8,7 @@ use crate::markdown::MarkdownStream;
 use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 use crate::ui::theme::Theme;
 
-use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState};
+use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState, TokenUsage};
 use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
 
 /// Mutable state used by the daemon message handler.
@@ -19,7 +19,7 @@ pub(super) struct DaemonStreamState<'a> {
     pub agent_streaming: &'a mut bool,
     pub last_daemon_timestamp: &'a mut u64,
     pub model_alias: &'a mut String,
-    pub context_usage: &'a mut (usize, usize),
+    pub token_usage: &'a mut TokenUsage,
     pub tracker: &'a mut BlockRegistry,
     pub ai_start_scrollback: &'a mut Option<u64>,
     pub thinking_buffer: &'a mut String,
@@ -159,6 +159,20 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
             vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::Error {
                 request_id: request_id.clone(),
                 message: message.clone(),
+            })]
+        }
+        ConversationEvent::TokenUsage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            ..
+        } => {
+            vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentMeta {
+                model_alias: String::new(),
+                input_tokens: *input_tokens,
+                output_tokens: *output_tokens,
+                cache_read_tokens: *cache_read_tokens,
+                context_window: 0,
             })]
         }
     }
@@ -534,11 +548,17 @@ fn handle_single_message(
         }
         ipc_messages::DaemonMessage::AgentMeta {
             model_alias: alias,
-            total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
             context_window,
         } => {
-            *ds.model_alias = alias;
-            *ds.context_usage = (total_tokens, context_window);
+            if !alias.is_empty() { *ds.model_alias = alias; }
+            if input_tokens > 0 || output_tokens > 0 {
+                ds.token_usage.record_request(input_tokens, output_tokens, cache_read_tokens, context_window);
+            } else {
+                ds.token_usage.context_window = context_window;
+            }
         }
         ipc_messages::DaemonMessage::Heartbeat { timestamp } => {
             *ds.last_daemon_timestamp = timestamp;
@@ -549,6 +569,7 @@ fn handle_single_message(
         } => {
             *ds.session_id = Some(sid);
             *ds.session_name = name;
+            ds.token_usage.reset();
         }
         ipc_messages::DaemonMessage::SessionNameUpdated {
             session_id: _,
@@ -636,7 +657,7 @@ pub(crate) fn handle_daemon_message(
             let mut replay_agent_streaming = false;
             let mut replay_timestamp: u64 = 0;
             let mut replay_model = String::new();
-            let mut replay_context: (usize, usize) = (0, 0);
+            let mut replay_token_usage = TokenUsage::default();
             let mut replay_ai_start: Option<u64> = None;
             let mut replay_thinking_buffer = String::new();
             let mut replay_thinking_start: Option<Instant> = None;
@@ -722,7 +743,7 @@ pub(crate) fn handle_daemon_message(
                                 agent_streaming: &mut replay_agent_streaming,
                                 last_daemon_timestamp: &mut replay_timestamp,
                                 model_alias: &mut replay_model,
-                                context_usage: &mut replay_context,
+                                token_usage: &mut replay_token_usage,
                                 tracker: &mut state.tracker,
                                 ai_start_scrollback: &mut replay_ai_start,
                                 thinking_buffer: &mut replay_thinking_buffer,
@@ -741,6 +762,7 @@ pub(crate) fn handle_daemon_message(
                 }
             }
             state.tracker.set_replay_mode(false);
+            state.token_usage = replay_token_usage;
             // Final separator before returning to normal input
             parser.process(b"\r\n");
         }
@@ -765,7 +787,7 @@ pub(crate) fn handle_daemon_message(
                 agent_streaming: &mut state.agent_streaming,
                 last_daemon_timestamp: &mut state.last_daemon_timestamp,
                 model_alias: &mut state.model_alias,
-                context_usage: &mut state.context_usage,
+                token_usage: &mut state.token_usage,
                 tracker: &mut state.tracker,
                 ai_start_scrollback: &mut state.ai_start_scrollback,
                 thinking_buffer: &mut state.thinking_buffer,

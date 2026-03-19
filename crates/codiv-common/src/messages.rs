@@ -112,7 +112,9 @@ pub enum DaemonMessage {
     },
     AgentMeta {
         model_alias: String,
-        total_tokens: usize,
+        input_tokens: usize,
+        output_tokens: usize,
+        cache_read_tokens: usize,
         context_window: usize,
     },
     /// Sent when a new SQLite session is created for this client.
