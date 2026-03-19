@@ -45,10 +45,16 @@ fn completion_anchor_x(term_area_left: u16, cursor_col: usize) -> u16 {
         .saturating_add(cursor_col)
 }
 
+/// How long a contextual hint stays visible after its trigger.
+pub(super) const HINT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Minimum input length before the "thinking" hint appears.
+pub(super) const HINT_INPUT_THRESHOLD: usize = 3;
+
 /// Returns the contextual hint text based on current UI state, or None if
-/// all hints have expired (each hint is visible for 5 seconds).
-fn current_hint(state: &TerminalState) -> Option<&str> {
-    let timeout = Duration::from_secs(5);
+/// all hints have expired (each hint is visible for `HINT_TIMEOUT`).
+pub(super) fn current_hint(state: &TerminalState) -> Option<&str> {
+    let timeout = HINT_TIMEOUT;
 
     // 1. Transient drag hint (within 5s, supported terminal)
     if state.term_supports_option_select {
@@ -66,7 +72,7 @@ fn current_hint(state: &TerminalState) -> Option<&str> {
     }
 
     // 2. User has typed enough → thinking hint
-    if state.input.content().len() >= 3 {
+    if state.input.content().len() >= HINT_INPUT_THRESHOLD {
         return if state.thinking_enabled {
             Some("Ctrl+T: thinking on")
         } else {
@@ -103,7 +109,7 @@ pub(crate) fn render_frame(
         // On subsequent renders, reuse the anchor so the start stays fixed.
         let first_row = if let Some(anchor) = state.prompt_anchor_row {
             // Anchor exists — ensure we have room for all lines below it.
-            let last_row = anchor + line_count + 1; // +1 ruler +1 hint
+            let last_row = anchor + line_count + 1; // +1 for hint row
             if last_row >= screen_rows {
                 // Need to scroll to make room at the bottom
                 let overflow = last_row - screen_rows + 1;
@@ -121,7 +127,7 @@ pub(crate) fn render_frame(
             // First render — cursor is at the line where the prompt starts.
             let (cursor_row, _) = parser.screen().cursor_position();
             // Ensure room for prompt lines + bottom ruler + hint
-            let last_row = cursor_row + line_count + 1; // prompt lines + 1 ruler + 1 hint
+            let last_row = cursor_row + line_count + 1; // +1 for hint row
             let first_row = if last_row >= screen_rows {
                 let overflow = last_row - screen_rows + 1;
                 for _ in 0..overflow {
@@ -196,124 +202,9 @@ pub(crate) fn render_frame(
             frame.render_widget(pseudo_term, content_area);
 
             // --- Render `>` prompt gutter for past and live prompts ---
-            {
-                // Compute the absolute line range currently visible on screen.
-                let screen_rows = parser.screen().size().0 as u64;
-                let sb_len = true_scrollback_len(parser) as u64;
-                // abs_bottom = first absolute line BELOW the visible area (at scroll_offset==0)
-                let abs_bottom = sb_len + screen_rows;
-                // when scrolled up, abs_top shifts back by scroll_offset rows
-                let abs_top = abs_bottom
-                    .saturating_sub(screen_rows)
-                    .saturating_sub(state.scroll_offset as u64);
-                let abs_view_bottom = abs_top + screen_rows;
-
-                let buf = frame.buffer_mut();
-                for block in state.tracker.blocks() {
-                    let (scrollback_line, gutter_char, gutter_fg) = match block {
-                        Block::Prompt(pb) => {
-                            let (ch, fg) = match pb.mode {
-                                InputMode::Command => ('$', theme.gutter_cmd),
-                                InputMode::Ai => ('>', theme.gutter_ai),
-                            };
-                            (pb.start_index, ch, fg)
-                        }
-                        Block::AiResponse(ab) => {
-                            (ab.start_index, '\u{25CF}', theme.ai_bullet)
-                        }
-                        Block::Thinking(tk) => (tk.start_index, '\u{25CB}', theme.thinking_text),
-                        Block::Tool(tb) => (tb.start_index, '\u{25CF}', theme.tool_bullet),
-                        Block::CmdResponse(cb) => (cb.start_index, '$', theme.gutter_cmd),
-                    };
-                    if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
-                        let screen_row = (scrollback_line - abs_top) as u16;
-                        let row = term_area.top() + screen_row;
-                        if row < term_area.bottom() {
-                            buf[(term_area.left(), row)]
-                                .set_char(gutter_char)
-                                .set_fg(gutter_fg);
-                        }
-                    }
-                }
-                // Live prompt: draw `>` at the anchor row.
-                if state.prompt_is_live && state.scroll_offset == 0 {
-                    if let Some(anchor) = state.prompt_anchor_row {
-                        let (live_char, live_fg) = match state.input_mode {
-                            InputMode::Command => ('$', theme.gutter_cmd),
-                            InputMode::Ai => ('>', theme.gutter_ai),
-                        };
-                        let prompt_lines = state.input.line_count() as u16;
-                        for i in 0..prompt_lines {
-                            let row = term_area.top() + anchor + i;
-                            if row < term_area.bottom() {
-                                let ch = if i == 0 { live_char } else { '·' };
-                                buf[(term_area.left(), row)]
-                                    .set_char(ch)
-                                    .set_fg(live_fg);
-                            }
-                        }
-                    }
-                } else if state.tracker.pending_tool().is_some() && state.scroll_offset == 0 {
-                    // Gutter-only spinner for pending tool (header is in VT100 content)
-                    if let Some(pending_sl) = state.tracker.pending_tool_start_index() {
-                        log::debug!(
-                            "pending_tool gutter: pending_sl={}, abs_top={}, abs_view_bottom={}",
-                            pending_sl,
-                            abs_top,
-                            abs_view_bottom
-                        );
-                        if pending_sl >= abs_top && pending_sl < abs_view_bottom {
-                            let screen_row = (pending_sl - abs_top) as u16;
-                            let row = term_area.top() + screen_row;
-                            if row < term_area.bottom() {
-                                buf[(term_area.left(), row)]
-                                    .set_char(state.anim.spinner_char())
-                                    .set_fg(theme.spinner);
-                            }
-                        }
-                    }
-                } else if state.agent_streaming && state.scroll_offset == 0 {
-                    let (cursor_row, _) = parser.screen().cursor_position();
-                    let row = term_area.top() + cursor_row;
-                    if row < term_area.bottom() {
-                        buf[(term_area.left(), row)]
-                            .set_char(state.anim.spinner_char())
-                            .set_fg(theme.spinner);
-                    }
-                } else if is_thinking && state.scroll_offset == 0 {
-                    let (cursor_row, _) = parser.screen().cursor_position();
-                    let row = term_area.top() + cursor_row;
-                    if row < term_area.bottom() {
-                        buf[(term_area.left(), row)]
-                            .set_char(state.anim.spinner_char())
-                            .set_fg(theme.spinner);
-                    }
-                    // Overwrite the placeholder line (one above cursor) with animated dots.
-                    let placeholder_row = row.saturating_sub(1);
-                    if placeholder_row >= term_area.top() && placeholder_row < term_area.bottom() {
-                        let text = format!("Thinking{}", state.anim.thinking_dots());
-                        for (i, ch) in text.chars().enumerate() {
-                            let col = content_area.left() + i as u16;
-                            if col < content_area.right() {
-                                buf[(col, placeholder_row)]
-                                    .set_char(ch)
-                                    .set_fg(theme.thinking_text);
-                            }
-                        }
-                        // Clear any leftover characters from longer previous text
-                        let clear_start = content_area.left() + text.len() as u16;
-                        for col in clear_start..content_area.right() {
-                            let ch = buf[(col, placeholder_row)].symbol();
-                            if ch == " " || ch.is_empty() {
-                                break;
-                            }
-                            buf[(col, placeholder_row)]
-                                .set_char(' ')
-                                .set_fg(Color::Reset);
-                        }
-                    }
-                }
-            }
+            render_prompt_gutter(
+                frame.buffer_mut(), parser, state, is_thinking, theme, term_area, content_area,
+            );
 
             // --- Render status bar ---
             let status_info = StatusBarInfo {
@@ -340,114 +231,10 @@ pub(crate) fn render_frame(
             }
 
             // --- Render block selection overlay ---
-            if let Some(focused) = state.tracker.focused() {
-                let (start_index, height) = match focused {
-                    Block::Tool(tb) => (tb.start_index, tb.height),
-                    Block::Prompt(pb) => (pb.start_index, pb.height),
-                    Block::CmdResponse(cb) => (cb.start_index, cb.height),
-                    Block::AiResponse(ab) => (ab.start_index, ab.height),
-                    Block::Thinking(tk) => (tk.start_index, tk.height),
-                };
-                let sb_len = true_scrollback_len(parser) as u64;
-                let screen_rows = parser.screen().size().0 as u64;
-                let abs_bottom = sb_len + screen_rows;
-                let abs_top = abs_bottom
-                    .saturating_sub(screen_rows)
-                    .saturating_sub(state.scroll_offset as u64);
-                if start_index >= abs_top && start_index < abs_bottom {
-                    let screen_row = (start_index - abs_top) as u16 + term_area.top();
-                    let top_rule = screen_row.saturating_sub(1);
-                    let bottom_rule = screen_row + height;
-                    let buf = frame.buffer_mut();
-                    for row in [top_rule, bottom_rule] {
-                        if row >= term_area.top() && row < term_area.bottom() {
-                            let is_blank = (term_area.left()..term_area.right()).all(|col| {
-                                let ch = buf[(col, row)].symbol();
-                                ch == " " || ch.is_empty()
-                            });
-                            if is_blank {
-                                for col in term_area.left()..term_area.right() {
-                                    let cell = &mut buf[(col, row)];
-                                    cell.set_char('\u{2500}');
-                                    cell.set_fg(theme.separator);
-                                }
-                            }
-                        }
-                    }
-                    // Show "(press Enter to expand)" hint for ToolBlocks and thinking
-                    if matches!(
-                        focused,
-                        Block::Tool(_) | Block::Thinking(_)
-                    ) {
-                        let hint = " (press Enter to expand)";
-                        // For tools: hint on the summary line (row+height-1).
-                        // For thinking: hint on the "Thought for Ns" line (row+0).
-                        let hint_row = if matches!(focused, Block::Thinking(_)) {
-                            screen_row
-                        } else {
-                            screen_row + height - 1
-                        };
-                        if hint_row >= term_area.top() && hint_row < term_area.bottom() {
-                            // Find end of existing text
-                            let buf = frame.buffer_mut();
-                            let mut text_end = term_area.left();
-                            for col in term_area.left()..term_area.right() {
-                                let ch = buf[(col, hint_row)].symbol();
-                                if ch != " " && !ch.is_empty() {
-                                    text_end = col + 1;
-                                }
-                            }
-                            for (i, ch) in hint.chars().enumerate() {
-                                let col = text_end + i as u16;
-                                if col < term_area.right() {
-                                    buf[(col, hint_row)].set_char(ch).set_fg(theme.hint_text);
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if state.prompt_is_live && state.scroll_offset == 0 {
-                if let Some(anchor) = state.prompt_anchor_row {
-                    // Live prompt is implicitly selected — draw ───── rules
-                    let prompt_lines = state.input.line_count() as u16;
-                    let first_prompt_row = term_area.top() + anchor;
-                    let top_rule = first_prompt_row.saturating_sub(1);
-                    let bottom_rule = first_prompt_row + prompt_lines;
-                    let buf = frame.buffer_mut();
-                    for row in [top_rule, bottom_rule] {
-                        if row >= term_area.top() && row < term_area.bottom() {
-                            let is_blank = (term_area.left()..term_area.right()).all(|col| {
-                                let ch = buf[(col, row)].symbol();
-                                ch == " " || ch.is_empty()
-                            });
-                            if is_blank {
-                                for col in term_area.left()..term_area.right() {
-                                    buf[(col, row)].set_char('\u{2500}').set_fg(theme.separator);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            render_block_selection_overlay(frame, parser, state, theme, term_area);
 
             // --- Render contextual hint below live prompt ---
-            if state.prompt_is_live && state.scroll_offset == 0 {
-                if let (Some(anchor), Some(hint)) = (state.prompt_anchor_row, current_hint(state)) {
-                    let prompt_lines = state.input.line_count() as u16;
-                    let bottom_rule = term_area.top() + anchor + prompt_lines;
-                    let hint_row = bottom_rule + 1;
-                    if hint_row >= term_area.top() && hint_row < term_area.bottom() {
-                        let buf = frame.buffer_mut();
-                        let start_x = term_area.left() + PROMPT_GUTTER_WIDTH;
-                        for (i, ch) in hint.chars().enumerate() {
-                            let x = start_x + i as u16;
-                            if x < term_area.right() {
-                                buf[(x, hint_row)].set_char(ch).set_fg(theme.hint_text);
-                            }
-                        }
-                    }
-                }
-            }
+            render_contextual_hint(frame.buffer_mut(), state, theme, term_area);
 
             // --- Render tool result modal ---
             if state.tool_result_modal.is_visible() {
@@ -457,6 +244,232 @@ pub(crate) fn render_frame(
     })?;
 
     Ok(())
+}
+
+/// Render the `>`, `$`, `●` gutter markers for all blocks and the live prompt,
+/// plus spinner indicators for pending tool calls, streaming, and thinking.
+fn render_prompt_gutter(
+    buf: &mut Buffer,
+    parser: &mut vt100::Parser,
+    state: &TerminalState,
+    is_thinking: bool,
+    theme: &Theme,
+    term_area: Rect,
+    content_area: Rect,
+) {
+    let screen_rows = parser.screen().size().0 as u64;
+    let sb_len = true_scrollback_len(parser) as u64;
+    let abs_bottom = sb_len + screen_rows;
+    let abs_top = abs_bottom
+        .saturating_sub(screen_rows)
+        .saturating_sub(state.scroll_offset as u64);
+    let abs_view_bottom = abs_top + screen_rows;
+
+    for block in state.tracker.blocks() {
+        let (scrollback_line, gutter_char, gutter_fg) = match block {
+            Block::Prompt(pb) => {
+                let (ch, fg) = match pb.mode {
+                    InputMode::Command => ('$', theme.gutter_cmd),
+                    InputMode::Ai => ('>', theme.gutter_ai),
+                };
+                (pb.start_index, ch, fg)
+            }
+            Block::AiResponse(ab) => (ab.start_index, '\u{25CF}', theme.ai_bullet),
+            Block::Thinking(tk) => (tk.start_index, '\u{25CB}', theme.thinking_text),
+            Block::Tool(tb) => (tb.start_index, '\u{25CF}', theme.tool_bullet),
+            Block::CmdResponse(cb) => (cb.start_index, '$', theme.gutter_cmd),
+        };
+        if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
+            let screen_row = (scrollback_line - abs_top) as u16;
+            let row = term_area.top() + screen_row;
+            if row < term_area.bottom() {
+                buf[(term_area.left(), row)]
+                    .set_char(gutter_char)
+                    .set_fg(gutter_fg);
+            }
+        }
+    }
+    // Live prompt: draw `>` at the anchor row.
+    if state.prompt_is_live && state.scroll_offset == 0 {
+        if let Some(anchor) = state.prompt_anchor_row {
+            let (live_char, live_fg) = match state.input_mode {
+                InputMode::Command => ('$', theme.gutter_cmd),
+                InputMode::Ai => ('>', theme.gutter_ai),
+            };
+            let prompt_lines = state.input.line_count() as u16;
+            for i in 0..prompt_lines {
+                let row = term_area.top() + anchor + i;
+                if row < term_area.bottom() {
+                    let ch = if i == 0 { live_char } else { '·' };
+                    buf[(term_area.left(), row)]
+                        .set_char(ch)
+                        .set_fg(live_fg);
+                }
+            }
+        }
+    } else if state.tracker.pending_tool().is_some() && state.scroll_offset == 0 {
+        // Gutter-only spinner for pending tool (header is in VT100 content)
+        if let Some(pending_sl) = state.tracker.pending_tool_start_index() {
+            log::debug!(
+                "pending_tool gutter: pending_sl={}, abs_top={}, abs_view_bottom={}",
+                pending_sl,
+                abs_top,
+                abs_view_bottom
+            );
+            if pending_sl >= abs_top && pending_sl < abs_view_bottom {
+                let screen_row = (pending_sl - abs_top) as u16;
+                let row = term_area.top() + screen_row;
+                if row < term_area.bottom() {
+                    buf[(term_area.left(), row)]
+                        .set_char(state.anim.spinner_char())
+                        .set_fg(theme.spinner);
+                }
+            }
+        }
+    } else if state.agent_streaming && state.scroll_offset == 0 {
+        let (cursor_row, _) = parser.screen().cursor_position();
+        let row = term_area.top() + cursor_row;
+        if row < term_area.bottom() {
+            buf[(term_area.left(), row)]
+                .set_char(state.anim.spinner_char())
+                .set_fg(theme.spinner);
+        }
+    } else if is_thinking && state.scroll_offset == 0 {
+        let (cursor_row, _) = parser.screen().cursor_position();
+        let row = term_area.top() + cursor_row;
+        if row < term_area.bottom() {
+            buf[(term_area.left(), row)]
+                .set_char(state.anim.spinner_char())
+                .set_fg(theme.spinner);
+        }
+        // Overwrite the placeholder line (one above cursor) with animated dots.
+        let placeholder_row = row.saturating_sub(1);
+        if placeholder_row >= term_area.top() && placeholder_row < term_area.bottom() {
+            let text = format!("Thinking{}", state.anim.thinking_dots());
+            for (i, ch) in text.chars().enumerate() {
+                let col = content_area.left() + i as u16;
+                if col < content_area.right() {
+                    buf[(col, placeholder_row)]
+                        .set_char(ch)
+                        .set_fg(theme.thinking_text);
+                }
+            }
+            // Clear any leftover characters from longer previous text
+            let clear_start = content_area.left() + text.len() as u16;
+            for col in clear_start..content_area.right() {
+                let ch = buf[(col, placeholder_row)].symbol();
+                if ch == " " || ch.is_empty() {
+                    break;
+                }
+                buf[(col, placeholder_row)]
+                    .set_char(' ')
+                    .set_fg(Color::Reset);
+            }
+        }
+    }
+}
+
+/// Render separator rules around the focused block or live prompt.
+fn render_block_selection_overlay(
+    frame: &mut Frame,
+    parser: &mut vt100::Parser,
+    state: &TerminalState,
+    theme: &Theme,
+    term_area: Rect,
+) {
+    if let Some(focused) = state.tracker.focused() {
+        let (start_index, height) = match focused {
+            Block::Tool(tb) => (tb.start_index, tb.height),
+            Block::Prompt(pb) => (pb.start_index, pb.height),
+            Block::CmdResponse(cb) => (cb.start_index, cb.height),
+            Block::AiResponse(ab) => (ab.start_index, ab.height),
+            Block::Thinking(tk) => (tk.start_index, tk.height),
+        };
+        let sb_len = true_scrollback_len(parser) as u64;
+        let screen_rows = parser.screen().size().0 as u64;
+        let abs_bottom = sb_len + screen_rows;
+        let abs_top = abs_bottom
+            .saturating_sub(screen_rows)
+            .saturating_sub(state.scroll_offset as u64);
+        if start_index >= abs_top && start_index < abs_bottom {
+            let screen_row = (start_index - abs_top) as u16 + term_area.top();
+            let top_rule = screen_row.saturating_sub(1);
+            let bottom_rule = screen_row + height;
+            let buf = frame.buffer_mut();
+            render_horizontal_rules(buf, &[top_rule, bottom_rule], term_area, theme);
+            // Show "(press Enter to expand)" hint for ToolBlocks and thinking
+            if matches!(focused, Block::Tool(_) | Block::Thinking(_)) {
+                let hint = " (press Enter to expand)";
+                let hint_row = if matches!(focused, Block::Thinking(_)) {
+                    screen_row
+                } else {
+                    screen_row + height - 1
+                };
+                if hint_row >= term_area.top() && hint_row < term_area.bottom() {
+                    let buf = frame.buffer_mut();
+                    let mut text_end = term_area.left();
+                    for col in term_area.left()..term_area.right() {
+                        let ch = buf[(col, hint_row)].symbol();
+                        if ch != " " && !ch.is_empty() {
+                            text_end = col + 1;
+                        }
+                    }
+                    for (i, ch) in hint.chars().enumerate() {
+                        let col = text_end + i as u16;
+                        if col < term_area.right() {
+                            buf[(col, hint_row)].set_char(ch).set_fg(theme.hint_text);
+                        }
+                    }
+                }
+            }
+        }
+    } else if state.prompt_is_live && state.scroll_offset == 0 {
+        if let Some(anchor) = state.prompt_anchor_row {
+            let prompt_lines = state.input.line_count() as u16;
+            let first_prompt_row = term_area.top() + anchor;
+            let top_rule = first_prompt_row.saturating_sub(1);
+            let bottom_rule = first_prompt_row + prompt_lines;
+            let buf = frame.buffer_mut();
+            render_horizontal_rules(buf, &[top_rule, bottom_rule], term_area, theme);
+        }
+    }
+}
+
+/// Draw `─────` separator rules on the given rows if they are blank.
+fn render_horizontal_rules(buf: &mut Buffer, rows: &[u16], term_area: Rect, theme: &Theme) {
+    for &row in rows {
+        if row >= term_area.top() && row < term_area.bottom() {
+            let is_blank = (term_area.left()..term_area.right()).all(|col| {
+                let ch = buf[(col, row)].symbol();
+                ch == " " || ch.is_empty()
+            });
+            if is_blank {
+                for col in term_area.left()..term_area.right() {
+                    buf[(col, row)].set_char('\u{2500}').set_fg(theme.separator);
+                }
+            }
+        }
+    }
+}
+
+/// Render the contextual hint text below the live prompt.
+fn render_contextual_hint(buf: &mut Buffer, state: &TerminalState, theme: &Theme, term_area: Rect) {
+    if state.prompt_is_live && state.scroll_offset == 0 {
+        if let (Some(anchor), Some(hint)) = (state.prompt_anchor_row, current_hint(state)) {
+            let prompt_lines = state.input.line_count() as u16;
+            let bottom_rule = term_area.top() + anchor + prompt_lines;
+            let hint_row = bottom_rule + 1;
+            if hint_row >= term_area.top() && hint_row < term_area.bottom() {
+                let start_x = term_area.left() + PROMPT_GUTTER_WIDTH;
+                for (i, ch) in hint.chars().enumerate() {
+                    let x = start_x + i as u16;
+                    if x < term_area.right() {
+                        buf[(x, hint_row)].set_char(ch).set_fg(theme.hint_text);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Render the status bar at the bottom of the screen.

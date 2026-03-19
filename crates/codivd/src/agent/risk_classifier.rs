@@ -1,12 +1,13 @@
 use codiv_common::messages::RiskLevel;
+use codiv_common::tools::tool_names;
 
 /// Classify the risk level of a tool call based on tool name and arguments.
 pub fn classify_risk(tool_name: &str, args: &serde_json::Value) -> RiskLevel {
     match tool_name {
-        "read" | "glob" | "grep" => RiskLevel::Low,
-        "write" => RiskLevel::Medium,
-        "edit" => RiskLevel::Medium,
-        "bash" => classify_bash_risk(args),
+        tool_names::READ | tool_names::GLOB | tool_names::GREP => RiskLevel::Low,
+        tool_names::WRITE => RiskLevel::Medium,
+        tool_names::EDIT => RiskLevel::Medium,
+        tool_names::BASH => classify_bash_risk(args),
         _ => RiskLevel::Medium, // unknown tools default to Medium
     }
 }

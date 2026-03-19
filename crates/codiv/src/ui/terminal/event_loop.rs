@@ -14,7 +14,7 @@ use crate::shell::bash_coprocess::BashCoprocess;
 use super::daemon;
 use super::input as terminal_input;
 use super::io as terminal_io;
-use super::render::render_frame;
+use super::render::{current_hint, render_frame};
 use super::state::TerminalState;
 use crate::ui::theme::Theme;
 
@@ -270,17 +270,13 @@ pub(crate) fn event_loop(
                 }
             }
             recv(tick_rx) -> _ => {
-                let hint_timeout = std::time::Duration::from_secs(5);
-                let has_active_hint = state.last_mouse_drag.map_or(false, |t| t.elapsed() < hint_timeout)
-                    || state.hint_shown_at.map_or(false, |t| t.elapsed() < hint_timeout);
                 state.anim.update_active(
                     state.pending_command.is_some(),
                     state.agent_streaming,
                     state.thinking_start.is_some(),
                     state.tracker.pending_tool().is_some(),
-                    has_active_hint,
                 );
-                if state.anim.tick() {
+                if state.anim.tick() || current_hint(&state).is_some() {
                     state.needs_render = true;
                 }
             }

@@ -8,9 +8,7 @@ use super::super::utils::{parser_push_notice, NoticeKind};
 
 fn redraw_picker(picker: &PendingSessionPicker, p: &mut vt100::Parser) {
     // Erase all picker lines (must match prompt_lines exactly)
-    for _ in 0..picker.prompt_lines {
-        p.process(b"\x1b[A\r\x1b[K");
-    }
+    super::clear_modal_lines(p, picker.prompt_lines as usize);
     // Re-render only the visible window of sessions
     let visible_count = picker.sessions.len().min(VISIBLE_SESSIONS);
     let end = picker.viewport_offset + visible_count;
@@ -85,17 +83,13 @@ pub(crate) fn handle_session_picker(
                     }
                 }
                 // Clear the picker lines
-                for _ in 0..picker.prompt_lines {
-                    parser.process(b"\x1b[A\r\x1b[K");
-                }
+                super::clear_modal_lines(parser, picker.prompt_lines as usize);
             }
             true
         }
         KeyCode::Esc => {
             if let Some(picker) = state.pending_session_picker.take() {
-                for _ in 0..picker.prompt_lines {
-                    parser.process(b"\x1b[A\r\x1b[K");
-                }
+                super::clear_modal_lines(parser, picker.prompt_lines as usize);
                 parser_push_notice(parser, NoticeKind::Notice, "Cancelled.");
             }
             true

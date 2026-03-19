@@ -35,26 +35,29 @@ pub enum InputMode {
     Ai,
 }
 
-#[allow(dead_code)]
 pub struct PromptBlock {
+    #[allow(dead_code)]
     pub id: usize,
+    #[allow(dead_code)]
     pub text: String,
     pub start_index: u64,
     pub height: u16,
     pub mode: InputMode,
 }
 
-#[allow(dead_code)]
 pub struct CmdResponseBlock {
+    #[allow(dead_code)]
     pub id: usize,
+    #[allow(dead_code)]
     pub command: String,
     pub start_index: u64,
     pub height: u16,
+    #[allow(dead_code)]
     pub exit_code: i32,
 }
 
-#[allow(dead_code)]
 pub struct AiResponseBlock {
+    #[allow(dead_code)]
     pub id: usize,
     pub start_index: u64,
     pub height: u16,
@@ -96,9 +99,7 @@ pub enum ToolResultAction {
 // Pending tool call (saved between ToolCall and ToolResult events)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct PendingToolCall {
-    name: String,
     arguments: String,
 }
 
@@ -161,7 +162,6 @@ impl BlockRegistry {
         // Do NOT set pending_tool_name here — only record_tool_call_delta does that,
         // because only that path writes a spinner placeholder to overwrite.
         self.pending_tool_call = Some(PendingToolCall {
-            name: name.to_string(),
             arguments: arguments.to_string(),
         });
     }
@@ -577,59 +577,27 @@ pub(crate) fn canonical_tool_name(name: &str) -> &str {
     }
 }
 
-/// Build the header line for a tool block (e.g. `Edit(foo.rs)`).
-/// Returns a single-line summary suitable for the green/red result header.
+/// Build the single-line header for a tool block (e.g. `Edit(foo.rs)`).
+/// Returns a summary suitable for the green/red result header.
 pub fn build_tool_header(name: &str, args: &Value) -> String {
-    let canonical = canonical_tool_name(name);
-    match canonical {
-        "Edit" => {
-            let file_path = json_str(args, "file_path").unwrap_or_default();
-            format!("Edit({})", short_filename(&file_path))
-        }
-        "Read" => {
-            let file_path = json_str(args, "file_path").unwrap_or_default();
-            format!("Read({})", short_filename(&file_path))
-        }
-        "Write" => {
-            let file_path = json_str(args, "file_path").unwrap_or_default();
-            format!("Write({})", short_filename(&file_path))
-        }
-        "Bash" => {
-            let command = json_str(args, "command").unwrap_or_default();
-            format!("Bash({})", truncate_str(&command, 60))
-        }
-        "Grep" => {
-            let pattern = json_str(args, "pattern").unwrap_or_default();
-            let path = json_str(args, "path").unwrap_or_default();
-            let args_preview = if path.is_empty() {
-                format!("pattern: \"{}\"", truncate_str(&pattern, 40))
-            } else {
-                format!(
-                    "pattern: \"{}\", path: \"{}\"",
-                    truncate_str(&pattern, 30),
-                    short_filename(&path)
-                )
-            };
-            format!("Grep({})", args_preview)
-        }
-        "Glob" => {
-            let pattern = json_str(args, "pattern").unwrap_or_default();
-            let path = json_str(args, "path").unwrap_or_default();
-            let args_preview = if path.is_empty() {
-                format!("pattern: \"{}\"", truncate_str(&pattern, 40))
-            } else {
-                format!(
-                    "pattern: \"{}\", path: \"{}\"",
-                    truncate_str(&pattern, 30),
-                    short_filename(&path)
-                )
-            };
-            format!("Glob({})", args_preview)
-        }
-        other => {
-            format!("{}({})", other, summarize_args(args))
-        }
-    }
+    // Single-line header is just the first line of the multi-line version.
+    build_tool_header_lines(name, args, 0).into_iter().next().unwrap_or_default()
+}
+
+/// Format a pattern+path pair for Grep/Glob tool headers.
+fn format_search_args(tool: &str, args: &Value) -> String {
+    let pattern = json_str(args, "pattern").unwrap_or_default();
+    let path = json_str(args, "path").unwrap_or_default();
+    let args_preview = if path.is_empty() {
+        format!("pattern: \"{}\"", truncate_str(&pattern, 40))
+    } else {
+        format!(
+            "pattern: \"{}\", path: \"{}\"",
+            truncate_str(&pattern, 30),
+            short_filename(&path)
+        )
+    };
+    format!("{}({})", tool, args_preview)
 }
 
 /// Build a multi-line header for a tool block, showing up to `max_lines` of content.
@@ -642,10 +610,8 @@ pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize) -> Ve
             let command = json_str(args, "command").unwrap_or_default();
             let cmd_lines: Vec<&str> = command.lines().collect();
             if cmd_lines.len() <= 1 {
-                // Single line: show inline
-                vec![format!("Bash({})", command)]
+                vec![format!("Bash({})", truncate_str(&command, 60))]
             } else {
-                // Multi-line: header + indented lines
                 let mut result = vec!["Bash".to_string()];
                 let show = cmd_lines.len().min(max_lines);
                 for line in &cmd_lines[..show] {
@@ -685,16 +651,19 @@ pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize) -> Ve
                 result
             }
         }
+        "Read" => {
+            let file_path = json_str(args, "file_path").unwrap_or_default();
+            vec![format!("Read({})", short_filename(&file_path))]
+        }
         "Write" => {
             let file_path = json_str(args, "file_path").unwrap_or_default();
             let content = json_str(args, "content").unwrap_or_default();
             let line_count = content.lines().count();
             vec![format!("Write({}) — {} lines", short_filename(&file_path), line_count)]
         }
-        _ => {
-            // For other tools, just use the single-line header
-            vec![build_tool_header(name, args)]
-        }
+        "Grep" => vec![format_search_args("Grep", args)],
+        "Glob" => vec![format_search_args("Glob", args)],
+        other => vec![format!("{}({})", other, summarize_args(args))],
     }
 }
 

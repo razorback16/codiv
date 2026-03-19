@@ -1,5 +1,6 @@
 use codiv_common::messages::RiskLevel;
 use codiv_common::permissions::{PermissionDecision, PermissionMode};
+use codiv_common::tools::tool_names;
 
 use super::risk_classifier::is_readonly_bash;
 
@@ -29,8 +30,8 @@ pub fn evaluate_permission(
         PermissionMode::Manual => {
             // In manual mode, allow read-only tools and read-only bash commands
             let is_readonly = match tool_name {
-                "read" | "glob" | "grep" => true,
-                "bash" => {
+                tool_names::READ | tool_names::GLOB | tool_names::GREP => true,
+                tool_names::BASH => {
                     let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
                     is_readonly_bash(cmd)
                 }

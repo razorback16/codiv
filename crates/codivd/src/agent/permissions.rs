@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 use serde_json::Value;
 use codiv_common::messages::{DaemonMessage, RiskLevel};
 use codiv_common::permissions::{PermissionDecision, PermissionMode};
+use codiv_common::tools::tool_names;
 use tokio::sync::{mpsc, oneshot};
 
 use super::config::ModelCatalog;
@@ -211,9 +212,9 @@ async fn request_confirmation(
 
     // Build description
     let args_summary = match tool_name {
-        "bash" => args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        "write" => args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        "edit" => args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        tool_names::BASH => args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        tool_names::WRITE => args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        tool_names::EDIT => args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         _ => serde_json::to_string(args).unwrap_or_default(),
     };
     let description = format!("{} `{}`", tool_name, args_summary);
