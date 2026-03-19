@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use codiv_common::conversation::ConversationEvent;
 use codiv_common::permissions::PermissionMode;
@@ -9,7 +9,7 @@ use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 use crate::ui::theme::Theme;
 
 use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState, TokenUsage};
-use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, reset_screen, write_block_lines_to_parser, NoticeKind};
+use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, rerender_all, NoticeKind, write_block_lines_to_parser};
 
 /// Mutable state used by the daemon message handler.
 /// Constructed from `TerminalState` fields for live messages,
@@ -50,134 +50,6 @@ fn finalize_thinking_ds(
     )
 }
 
-/// Items produced by converting a `ConversationEvent` for replay through the
-/// live rendering path.
-enum ReplayItem {
-    /// User prompt — rendered directly (not a DaemonMessage).
-    UserPrompt { text: String },
-    /// Shell command — rendered directly (not a DaemonMessage).
-    ShellCommand {
-        command: String,
-        output: String,
-        exit_code: i32,
-    },
-    /// Set agent_streaming = true so AgentComplete knows to flush.
-    SetAgentStreaming,
-    /// Backdate `thinking_start` so `finalize_thinking` computes the right duration.
-    SetThinkingDuration(f32),
-    /// A synthetic DaemonMessage to feed through `handle_single_message`.
-    Daemon(ipc_messages::DaemonMessage),
-}
-
-/// Convert a single `ConversationEvent` into one or more `ReplayItem`s that,
-/// when processed sequentially, reproduce the same visual output as the live
-/// streaming path.
-fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
-    match event {
-        ConversationEvent::UserPrompt { text, .. } => {
-            vec![ReplayItem::UserPrompt { text: text.clone() }]
-        }
-        ConversationEvent::ShellCommand {
-            command,
-            output,
-            exit_code,
-            ..
-        } => {
-            vec![ReplayItem::ShellCommand {
-                command: command.clone(),
-                output: output.clone(),
-                exit_code: *exit_code,
-            }]
-        }
-        ConversationEvent::AssistantReasoning {
-            text,
-            duration_secs,
-            ..
-        } => {
-            vec![
-                ReplayItem::SetAgentStreaming,
-                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
-                    request_id: String::new(),
-                    chunk: ipc_messages::StreamChunk::Reasoning(text.clone()),
-                }),
-                ReplayItem::SetThinkingDuration(*duration_secs),
-            ]
-        }
-        ConversationEvent::AssistantText { text, .. } => {
-            vec![
-                ReplayItem::SetAgentStreaming,
-                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
-                    request_id: String::new(),
-                    chunk: ipc_messages::StreamChunk::Text(text.clone()),
-                }),
-                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentComplete {
-                    request_id: String::new(),
-                    summary: String::new(),
-                }),
-            ]
-        }
-        ConversationEvent::ToolCall {
-            tool_name,
-            arguments,
-            ..
-        } => {
-            let canonical = canonical_tool_name(tool_name);
-            vec![
-                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
-                    request_id: String::new(),
-                    chunk: ipc_messages::StreamChunk::ToolCallDelta {
-                        tool_call_id: String::new(),
-                        tool_name: canonical.to_string(),
-                        delta: String::new(),
-                    },
-                }),
-                ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentStreamChunk {
-                    request_id: String::new(),
-                    chunk: ipc_messages::StreamChunk::ToolCall {
-                        name: tool_name.clone(),
-                        arguments: arguments.clone(),
-                    },
-                }),
-            ]
-        }
-        ConversationEvent::ToolResult {
-            tool_name, result, ..
-        } => {
-            vec![ReplayItem::Daemon(
-                ipc_messages::DaemonMessage::AgentStreamChunk {
-                    request_id: String::new(),
-                    chunk: ipc_messages::StreamChunk::ToolResult {
-                        name: tool_name.clone(),
-                        result: result.clone(),
-                    },
-                },
-            )]
-        }
-        ConversationEvent::Error {
-            request_id,
-            message,
-        } => {
-            vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::Error {
-                request_id: request_id.clone(),
-                message: message.clone(),
-            })]
-        }
-        ConversationEvent::TokenUsage {
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            ..
-        } => {
-            vec![ReplayItem::Daemon(ipc_messages::DaemonMessage::AgentMeta {
-                model_alias: String::new(),
-                input_tokens: *input_tokens,
-                output_tokens: *output_tokens,
-                cache_read_tokens: *cache_read_tokens,
-                context_window: 0,
-            })]
-        }
-    }
-}
 
 /// Split ANSI bytes by `\r\n` and append complete lines to the accumulator.
 /// Partial lines (no trailing `\r\n`) are appended to the last entry or added as a new entry.
@@ -693,133 +565,169 @@ pub(crate) fn handle_daemon_message(
             }
         }
         ipc_messages::DaemonMessage::SessionReplay { events } => {
-            // 1. Clear screen and re-emit welcome header
-            reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
-            state.tracker.set_replay_mode(true);
+            // Clear screen and block state
+            state.tracker.clear();
             state.prompt_anchor_row = None;
+            state.tracker.set_replay_mode(true);
 
-            // 2. Create fresh local replay state
-            let mut replay_md = MarkdownStream::new(md_stream_width, theme);
-            let mut replay_agent_streaming = false;
-            let mut replay_timestamp: u64 = 0;
-            let mut replay_model = String::new();
             let mut replay_token_usage = TokenUsage::default();
-            let mut replay_ai_start: Option<u64> = None;
-            let mut replay_ai_rendered_lines: Vec<String> = Vec::new();
-            let mut replay_thinking_buffer = String::new();
-            let mut replay_thinking_start: Option<Instant> = None;
-            let mut replay_thinking_scrollback: Option<u64> = None;
-            let mut replay_pending_confirmation: Option<PendingConfirmation> = None;
-            let mut replay_permission_mode = PermissionMode::default();
-            let mut replay_last_perm: Option<(String, bool, String)> = None;
-            // Use the real session_id/session_name (already set by SessionCreated)
-            // so replayed state doesn't clobber them — pass dummies to handle_single_message.
-            let mut replay_session_id: Option<String> = None;
-            let mut replay_session_name: Option<String> = None;
-            let mut replay_active_request_id: Option<String> = None;
+            let mut replay_md = MarkdownStream::new(md_stream_width, theme);
 
-            // 3. Convert each event and process through handle_single_message
+            // Build blocks from events
             for event in &events {
-                let items = convert_event_to_replay_items(event);
-                for item in items {
-                    match item {
-                        ReplayItem::UserPrompt { text } => {
-                            let scrollback_line = get_scrollback_line(parser);
-                            let rendered_line = format!("{}{}\x1b[0m", theme.ansi_user_prompt, text);
-                            parser.process(format!("{}\r\n", rendered_line).as_bytes());
-                            state.tracker.record_prompt(
-                                &text,
-                                scrollback_line,
-                                crate::ui::blocks::InputMode::Ai,
-                                vec![rendered_line],
-                            );
-                            parser.process(b"\r\n");
+                match event {
+                    ConversationEvent::UserPrompt { text, .. } => {
+                        let rendered_line = format!("{}{}\x1b[0m", theme.ansi_user_prompt, text);
+                        state.tracker.add_prompt_block(
+                            text,
+                            crate::ui::blocks::InputMode::Ai,
+                            vec![rendered_line],
+                        );
+                    }
+                    ConversationEvent::ShellCommand {
+                        command,
+                        output,
+                        exit_code,
+                        ..
+                    } => {
+                        let mut raw_bytes = Vec::new();
+                        let cmd_display =
+                            format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, command);
+                        raw_bytes.extend_from_slice(cmd_display.as_bytes());
+                        let out_preview = if output.len() > 200 {
+                            format!("{}...", &output[..200])
+                        } else {
+                            output.clone()
+                        };
+                        if !out_preview.is_empty() {
+                            let normalized =
+                                out_preview.replace("\r\n", "\n").replace('\n', "\r\n");
+                            raw_bytes.extend_from_slice(normalized.as_bytes());
+                            if !out_preview.ends_with('\n') {
+                                raw_bytes.extend_from_slice(b"\r\n");
+                            }
                         }
-                        ReplayItem::ShellCommand {
+                        let color = if *exit_code == 0 {
+                            theme.ansi_exit_success
+                        } else {
+                            theme.ansi_exit_failure
+                        };
+                        let exit_line = format!("{}exit {}\x1b[0m\r\n", color, exit_code);
+                        raw_bytes.extend_from_slice(exit_line.as_bytes());
+                        // Compute height by counting \r\n in raw_bytes
+                        let height = raw_bytes
+                            .windows(2)
+                            .filter(|w| w == b"\r\n")
+                            .count() as u16;
+                        state.tracker.add_cmd_response_block(
                             command,
-                            output,
-                            exit_code,
-                        } => {
-                            let scrollback_line = get_scrollback_line(parser);
-                            // Build raw bytes for CmdResponseBlock replay
-                            let mut raw_bytes = Vec::new();
-                            let cmd_display = format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, command);
-                            raw_bytes.extend_from_slice(cmd_display.as_bytes());
-                            parser.process(cmd_display.as_bytes());
-                            // Show truncated output, converting bare \n to \r\n for vt100
-                            let out_preview = if output.len() > 200 {
-                                format!("{}...", &output[..200])
-                            } else {
-                                output.clone()
-                            };
-                            if !out_preview.is_empty() {
-                                let normalized =
-                                    out_preview.replace("\r\n", "\n").replace('\n', "\r\n");
-                                raw_bytes.extend_from_slice(normalized.as_bytes());
-                                parser.process(normalized.as_bytes());
-                                if !out_preview.ends_with('\n') {
-                                    raw_bytes.extend_from_slice(b"\r\n");
-                                    parser.process(b"\r\n");
+                            *exit_code,
+                            raw_bytes,
+                            height,
+                        );
+                    }
+                    ConversationEvent::AssistantReasoning {
+                        text,
+                        duration_secs,
+                        ..
+                    } => {
+                        let rendered_line = format!(
+                            "{}Thought for {:.0}s\x1b[0m",
+                            theme.ansi_thinking, duration_secs
+                        );
+                        state.tracker.add_thinking_block(
+                            text.clone(),
+                            *duration_secs,
+                            rendered_line,
+                        );
+                    }
+                    ConversationEvent::AssistantText { text, .. } => {
+                        // Render markdown through MarkdownStream
+                        replay_md.reset();
+                        let trimmed = text.trim_start();
+                        if !trimmed.is_empty() {
+                            let mut all_ansi = Vec::new();
+                            if let Some(ansi) = replay_md.push(trimmed) {
+                                all_ansi.extend_from_slice(&ansi);
+                            }
+                            let final_bytes = replay_md.finish();
+                            if !final_bytes.is_empty() {
+                                all_ansi.extend_from_slice(&final_bytes);
+                            }
+                            replay_md.reset();
+
+                            if !all_ansi.is_empty() {
+                                let mut lines = Vec::new();
+                                accumulate_ai_lines(&mut lines, &all_ansi);
+                                // Remove trailing empty line from accumulator
+                                if lines.last().is_some_and(|s| s.is_empty()) {
+                                    lines.pop();
+                                }
+                                if !lines.is_empty() {
+                                    state.tracker.add_ai_response_block(lines);
                                 }
                             }
-                            let color = if exit_code == 0 {
-                                theme.ansi_exit_success
-                            } else {
-                                theme.ansi_exit_failure
-                            };
-                            let exit_line = format!("{}exit {}\x1b[0m\r\n", color, exit_code);
-                            raw_bytes.extend_from_slice(exit_line.as_bytes());
-                            parser.process(exit_line.as_bytes());
-                            let end = get_scrollback_line(parser);
-                            let line_count = (end.saturating_sub(scrollback_line)) as u16;
-                            state.tracker.record_cmd_response(
-                                &command,
-                                scrollback_line,
-                                line_count,
-                                exit_code,
-                                raw_bytes,
-                            );
-                            parser.process(b"\r\n");
                         }
-                        ReplayItem::SetAgentStreaming => {
-                            replay_agent_streaming = true;
-                        }
-                        ReplayItem::SetThinkingDuration(d) => {
-                            // Backdate thinking_start so finalize_thinking computes the stored duration
-                            if replay_thinking_start.is_some() {
-                                replay_thinking_start =
-                                    Some(Instant::now() - Duration::from_secs_f32(d));
-                            }
-                        }
-                        ReplayItem::Daemon(daemon_msg) => {
-                            let mut ds = DaemonStreamState {
-                                md_stream: &mut replay_md,
-                                agent_streaming: &mut replay_agent_streaming,
-                                last_daemon_timestamp: &mut replay_timestamp,
-                                model_alias: &mut replay_model,
-                                token_usage: &mut replay_token_usage,
-                                tracker: &mut state.tracker,
-                                ai_start_scrollback: &mut replay_ai_start,
-                                ai_rendered_lines: &mut replay_ai_rendered_lines,
-                                thinking_buffer: &mut replay_thinking_buffer,
-                                thinking_start: &mut replay_thinking_start,
-                                thinking_scrollback: &mut replay_thinking_scrollback,
-                                pending_confirmation: &mut replay_pending_confirmation,
-                                permission_mode: &mut replay_permission_mode,
-                                last_permission_outcome: &mut replay_last_perm,
-                                session_id: &mut replay_session_id,
-                                session_name: &mut replay_session_name,
-                                active_request_id: &mut replay_active_request_id,
-                            };
-                            handle_single_message(daemon_msg, parser, &mut ds, theme);
-                        }
+                    }
+                    ConversationEvent::ToolCall {
+                        tool_name,
+                        arguments,
+                        ..
+                    } => {
+                        state.tracker.record_tool_call(tool_name, arguments);
+                    }
+                    ConversationEvent::ToolResult {
+                        tool_name, result, ..
+                    } => {
+                        let action =
+                            state.tracker.record_tool_result(tool_name, result, 0);
+                        let (header, summary, preview_lines) = match action {
+                            ToolResultAction::Summary {
+                                header,
+                                summary,
+                                preview_lines,
+                            } => (header, summary, preview_lines),
+                            ToolResultAction::Merged {
+                                header,
+                                summary,
+                                preview_lines,
+                                ..
+                            } => (header, summary, preview_lines),
+                        };
+                        let rendered_lines = build_tool_rendered_lines(
+                            tool_name,
+                            &header,
+                            &summary,
+                            &preview_lines,
+                            None,
+                            theme,
+                        );
+                        state.tracker.set_last_tool_rendered_lines(rendered_lines);
+                    }
+                    ConversationEvent::TokenUsage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        ..
+                    } => {
+                        replay_token_usage.record_request(
+                            *input_tokens,
+                            *output_tokens,
+                            *cache_read_tokens,
+                            0,
+                        );
+                    }
+                    ConversationEvent::Error { .. } => {
+                        // Errors are ephemeral, skip during replay
                     }
                 }
             }
+
             state.tracker.set_replay_mode(false);
             state.token_usage = replay_token_usage;
-            // Final separator before returning to normal input
-            parser.process(b"\r\n");
+
+            // Render all blocks at once
+            rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
         }
         ipc_messages::DaemonMessage::ExecuteCommand {
             execution_id,
