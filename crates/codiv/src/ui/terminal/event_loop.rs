@@ -18,7 +18,7 @@ use super::render::{current_hint, render_frame};
 use super::state::TerminalState;
 use crate::ui::theme::Theme;
 
-use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
+use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, rerender_all, reset_screen, NoticeKind};
 use super::{parser_cols_from_term_width, parser_rows_from_term_height};
 
 /// The main event loop. Factored out so cleanup always runs in `run()`.
@@ -132,9 +132,26 @@ pub(crate) fn event_loop(
                             } else {
                                 parser_cols_from_term_width(*cols)
                             };
-                            parser.screen_mut().set_size(parser_rows, parser_cols);
                             bash.resize(parser_rows, parser_cols);
                             state.md_stream.set_width(parser_cols);
+
+                            // Guard: skip rerender if modal or streaming is active
+                            let has_modal = state.pending_confirmation.is_some()
+                                || state.pending_session_picker.is_some();
+                            let is_streaming = state.agent_streaming
+                                || state.tracker.pending_tool().is_some();
+                            if has_modal || is_streaming || state.was_alt_screen {
+                                // Just resize the parser without rerendering
+                                parser.screen_mut().set_size(parser_rows, parser_cols);
+                            } else {
+                                // Recreate parser at new size and rerender all blocks
+                                *parser = vt100::Parser::new(
+                                    parser_rows,
+                                    parser_cols,
+                                    super::state::MAX_SCROLLBACK,
+                                );
+                                rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
+                            }
                         }
                         _ => {}
                     }
