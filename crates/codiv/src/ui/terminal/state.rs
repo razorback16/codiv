@@ -190,6 +190,11 @@ pub(crate) struct TerminalState {
 
     // AI-requested command execution queue
     pub pending_ai_executions: std::collections::VecDeque<PendingAiExecution>,
+
+    // Contextual hint (shown for 5s after trigger)
+    pub hint_shown_at: Option<Instant>,
+    pub last_mouse_drag: Option<Instant>,
+    pub term_supports_option_select: bool,
 }
 
 impl TerminalState {
@@ -260,6 +265,18 @@ impl TerminalState {
 
             // AI-requested command execution queue
             pending_ai_executions: std::collections::VecDeque::new(),
+
+            // Contextual hint (shown for 5s after trigger)
+            hint_shown_at: None,
+            last_mouse_drag: None,
+            term_supports_option_select: {
+                let tp = std::env::var("TERM_PROGRAM").unwrap_or_default();
+                let lc = std::env::var("LC_TERMINAL").unwrap_or_default();
+                matches!(
+                    tp.as_str(),
+                    "iTerm.app" | "Apple_Terminal" | "WezTerm" | "Alacritty" | "kitty"
+                ) || matches!(lc.as_str(), "iTerm2")
+            },
         }
     }
 }

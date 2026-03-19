@@ -600,8 +600,12 @@ where
     if thinking {
         // Anthropic API does not allow setting temperature with extended thinking.
         builder = builder.reasoning_effort(aisdk::core::language_model::ReasoningEffort::Medium);
-    } else if let Some(temp) = config.temperature {
-        builder = builder.temperature(temp as u32);
+    } else {
+        // Explicitly disable thinking so the API doesn't default to enabling it.
+        builder = builder.reasoning_effort(aisdk::core::language_model::ReasoningEffort::None);
+        if let Some(temp) = config.temperature {
+            builder = builder.temperature(temp as u32);
+        }
     }
 
     for tool in tools {
