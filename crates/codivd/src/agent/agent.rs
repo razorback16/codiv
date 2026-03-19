@@ -215,6 +215,9 @@ impl Agent {
                 ConversationEvent::Error { message, .. } => {
                     messages.push(Message::User(UserMessage::new(format!("[Error: {}]", message))));
                 }
+                ConversationEvent::TokenUsage { .. } => {
+                    // Metadata only — not part of the conversation history.
+                }
             }
         }
 
@@ -222,14 +225,14 @@ impl Agent {
     }
 
     /// Run a streaming LLM call, forwarding chunks over IPC via `client_tx`.
-    /// Returns (response_text, input_tokens, output_tokens, collected_events).
+    /// Returns (response_text, input_tokens, output_tokens, cache_read_tokens, collected_events).
     pub async fn run_streaming(
         &self,
         request_id: &str,
         client_tx: &mpsc::Sender<Vec<u8>>,
         thinking: bool,
         permission_ctx: Option<Arc<super::permissions::PermissionContext>>,
-    ) -> Result<(String, usize, usize, Vec<ConversationEvent>), String> {
+    ) -> Result<(String, usize, usize, usize, Vec<ConversationEvent>), String> {
         info!(
             "agent {:?} calling {}/{} ({} events in history)",
             self.role,

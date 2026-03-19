@@ -96,6 +96,29 @@ pub(crate) struct PendingConfirmation {
     pub(crate) option_count: usize,
 }
 
+/// Tracks cumulative token usage across a session.
+#[derive(Default, Clone)]
+pub(crate) struct TokenUsage {
+    /// Latest request's input+output (= used context window).
+    pub context_used: usize,
+    pub context_window: usize,
+    /// Cumulative session totals for cost tracking.
+    pub session_input: usize,
+    pub session_output: usize,
+    pub session_cache_read: usize,
+}
+
+impl TokenUsage {
+    pub fn record_request(&mut self, input: usize, output: usize, cache_read: usize, ctx_win: usize) {
+        self.context_used = input + output;
+        self.context_window = ctx_win;
+        self.session_input += input;
+        self.session_output += output;
+        self.session_cache_read += cache_read;
+    }
+    pub fn reset(&mut self) { *self = Self::default(); }
+}
+
 /// Maximum number of sessions visible at once in the picker.
 pub(crate) const VISIBLE_SESSIONS: usize = 5;
 
@@ -131,7 +154,7 @@ pub(crate) struct TerminalState {
     pub thinking_start: Option<Instant>,
     pub thinking_scrollback: Option<u64>,
     pub model_alias: String,
-    pub context_usage: (usize, usize),
+    pub token_usage: TokenUsage,
     pub md_stream: MarkdownStream,
 
     // Input
@@ -199,7 +222,7 @@ impl TerminalState {
             thinking_start: None,
             thinking_scrollback: None,
             model_alias: String::new(),
-            context_usage: (0, 0),
+            token_usage: TokenUsage::default(),
             md_stream: MarkdownStream::new(md_stream_width, theme),
 
             // Input

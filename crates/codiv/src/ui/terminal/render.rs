@@ -2,7 +2,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use tui_term::widget::{Cursor as PtCursor, PseudoTerminal};
 
-use super::state::TerminalState;
+use super::state::{TerminalState, TokenUsage};
 use super::utils::format_tokens;
 use super::utils::true_scrollback_len;
 use super::{PROMPT_GUTTER_WIDTH, STATUS_BAR_HEIGHT};
@@ -23,7 +23,7 @@ pub(crate) struct StatusBarInfo<'a> {
     pub is_executing: bool,
     pub git_info: Option<&'a GitInfo>,
     pub model_alias: &'a str,
-    pub context_usage: (usize, usize),
+    pub token_usage: &'a TokenUsage,
     pub anim: &'a super::animation::AnimationState,
     pub thinking_enabled: bool,
     pub permission_mode: PermissionMode,
@@ -312,7 +312,7 @@ pub(crate) fn render_frame(
                 is_executing,
                 git_info: state.git_info.as_ref(),
                 model_alias: &state.model_alias,
-                context_usage: state.context_usage,
+                token_usage: &state.token_usage,
                 anim: &state.anim,
                 thinking_enabled: state.thinking_enabled,
                 permission_mode: state.permission_mode,
@@ -459,13 +459,15 @@ pub(crate) fn render_status_bar(
     } else {
         String::new()
     };
-    let model_part = if !info.model_alias.is_empty() {
+    let model_part = if !info.model_alias.is_empty() && info.token_usage.context_window > 0 {
         format!(
             "{} {}/{} | ",
             info.model_alias,
-            format_tokens(info.context_usage.0),
-            format_tokens(info.context_usage.1)
+            format_tokens(info.token_usage.context_used),
+            format_tokens(info.token_usage.context_window)
         )
+    } else if !info.model_alias.is_empty() {
+        format!("{} | ", info.model_alias)
     } else {
         String::new()
     };

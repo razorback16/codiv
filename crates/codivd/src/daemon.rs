@@ -312,14 +312,16 @@ impl Daemon {
                         // Send model alias before streaming starts (tokens unknown yet).
                         let meta_msg = DaemonMessage::AgentMeta {
                             model_alias: agent.model_config.model_alias(),
-                            total_tokens: 0,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cache_read_tokens: 0,
                             context_window: agent.model_config.context_window(),
                         };
                         if let Ok(frame) = codiv_common::messages::frame_message(&meta_msg) {
                             let _ = client_tx.send(frame).await;
                         }
                         match agent.run_streaming(&rid, &client_tx, thinking, permission_ctx).await {
-                            Ok((response, input_tokens, output_tokens, tool_events)) => {
+                            Ok((response, input_tokens, output_tokens, cache_read_tokens, tool_events)) => {
                                 info!("agent completed request {}: {} bytes", rid, response.len());
                                 // Add tool events to agent history
                                 agent.add_tool_events(&tool_events);
@@ -331,10 +333,18 @@ impl Daemon {
                                     request_id: rid.clone(),
                                     text: response.clone(),
                                 });
+                                persist_events.push(ConversationEvent::TokenUsage {
+                                    request_id: rid.clone(),
+                                    input_tokens,
+                                    output_tokens,
+                                    cache_read_tokens,
+                                });
                                 // Send updated token usage after streaming.
                                 let meta_msg = DaemonMessage::AgentMeta {
                                     model_alias: agent.model_config.model_alias(),
-                                    total_tokens: input_tokens + output_tokens,
+                                    input_tokens,
+                                    output_tokens,
+                                    cache_read_tokens,
                                     context_window: agent.model_config.context_window(),
                                 };
                                 if let Ok(frame) = codiv_common::messages::frame_message(&meta_msg) {
