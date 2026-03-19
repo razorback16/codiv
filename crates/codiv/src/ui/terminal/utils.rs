@@ -97,6 +97,14 @@ pub(crate) fn finalize_thinking(
     }
 }
 
+/// Write pre-rendered ANSI lines to the parser, each followed by `\r\n`.
+pub(crate) fn write_block_lines_to_parser(parser: &mut vt100::Parser, lines: &[String]) {
+    for line in lines {
+        parser.process(line.as_bytes());
+        parser.process(b"\r\n");
+    }
+}
+
 /// Get the true scrollback buffer length by probing set_scrollback's clamping behaviour.
 /// set_scrollback(usize::MAX) clamps to the actual VecDeque length, so reading it back
 /// gives us the true number of lines currently in the scrollback buffer.
