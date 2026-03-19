@@ -343,6 +343,94 @@ impl BlockRegistry {
         self.focused_index
     }
 
+    // -- direct block creation (for replay) ----------------------------------
+
+    /// Add a prompt block with pre-computed rendered lines (for replay).
+    pub fn add_prompt_block(&mut self, text: &str, mode: InputMode, rendered_lines: Vec<String>) {
+        let id = self.next_id();
+        let height = rendered_lines.len().max(1) as u16;
+        self.blocks.push(Block::Prompt(PromptBlock {
+            id,
+            text: text.to_string(),
+            start_index: 0,
+            height,
+            mode,
+            rendered_lines,
+        }));
+    }
+
+    /// Add a command response block with pre-computed raw bytes (for replay).
+    pub fn add_cmd_response_block(
+        &mut self,
+        command: &str,
+        exit_code: i32,
+        raw_bytes: Vec<u8>,
+        height: u16,
+    ) {
+        let id = self.next_id();
+        self.blocks.push(Block::CmdResponse(CmdResponseBlock {
+            id,
+            command: command.to_string(),
+            start_index: 0,
+            height,
+            exit_code,
+            raw_bytes,
+        }));
+    }
+
+    /// Add an AI response block with pre-computed rendered lines (for replay).
+    pub fn add_ai_response_block(&mut self, rendered_lines: Vec<String>) {
+        let id = self.next_id();
+        let height = rendered_lines.len() as u16;
+        self.blocks.push(Block::AiResponse(AiResponseBlock {
+            id,
+            start_index: 0,
+            height,
+            rendered_lines,
+        }));
+    }
+
+    /// Add a thinking block with pre-computed rendered line (for replay).
+    pub fn add_thinking_block(&mut self, content: String, duration_secs: f32, rendered_line: String) {
+        let id = self.next_id();
+        self.blocks.push(Block::Thinking(ThinkingBlock {
+            id,
+            content,
+            duration_secs,
+            start_index: 0,
+            height: 1,
+            rendered_lines: vec![rendered_line],
+        }));
+    }
+
+    /// Add a tool block with pre-computed rendered lines (for replay).
+    #[allow(dead_code)]
+    pub fn add_tool_block(
+        &mut self,
+        tool_name: &str,
+        header: String,
+        summary: String,
+        full_content: String,
+        is_diff: bool,
+        rendered_lines: Vec<String>,
+    ) {
+        let id = self.next_id();
+        let height = rendered_lines.len() as u16;
+        self.blocks.push(Block::Tool(ToolBlock {
+            id,
+            tool_name: tool_name.to_string(),
+            header,
+            summary,
+            full_content,
+            is_diff,
+            start_index: 0,
+            height,
+            rendered_lines,
+            edit_file_path: None,
+            edit_original_content: None,
+        }));
+    }
+
     /// Recompute `start_index` on every block as a running sum of heights + separators.
     /// `base` is the absolute line index of the first block (e.g. after the intro line).
     pub fn recompute_positions(&mut self, base: u64) {
