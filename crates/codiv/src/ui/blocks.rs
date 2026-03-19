@@ -71,6 +71,8 @@ pub struct ThinkingBlock {
     pub duration_secs: f32,
     pub start_index: u64,
     pub height: u16, // always 1 (the "Thought for Ns" summary line)
+    /// ANSI-escaped rendered line (the "Thought for Ns" summary).
+    pub rendered_lines: Vec<String>,
 }
 
 pub enum Block {
@@ -252,7 +254,13 @@ impl BlockRegistry {
     }
 
     /// Record a standalone thinking block.
-    pub fn record_thinking_block(&mut self, content: String, duration_secs: f32, scrollback_line: u64) {
+    pub fn record_thinking_block(
+        &mut self,
+        content: String,
+        duration_secs: f32,
+        scrollback_line: u64,
+        rendered_line: String,
+    ) {
         let id = self.next_id();
         self.blocks.push(Block::Thinking(ThinkingBlock {
             id,
@@ -260,6 +268,7 @@ impl BlockRegistry {
             duration_secs,
             start_index: scrollback_line,
             height: 1,
+            rendered_lines: vec![rendered_line],
         }));
     }
 
