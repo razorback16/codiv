@@ -810,13 +810,11 @@ async fn generate_session_name(prompt: &str, models: &crate::agent::config::Mode
 
     info!("generate_session_name: using {}/{}", assignment.provider, assignment.model);
 
-    let user_prompt = format!("First message: {}", &prompt[..prompt.len().min(200)]);
-
     let result = crate::agent::config::simple_text_completion(
         &assignment,
         &provider_config,
-        "Generate a concise 3-5 word title for this conversation. Reply with ONLY the title, no quotes or punctuation.",
-        &user_prompt,
+        "Summarize the following user request in 2-4 words on a single line. Reply with ONLY the summary, no quotes or punctuation.",
+        prompt,
     )
         .await
         .ok();
