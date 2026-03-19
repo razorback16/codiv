@@ -9,7 +9,6 @@ pub mod color_downgrade;
 pub mod completion_popup;
 pub mod diff;
 pub mod input;
-pub mod selection;
 pub mod terminal;
 pub mod theme;
 pub mod tool_modal;

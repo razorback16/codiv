@@ -274,36 +274,6 @@ pub(crate) fn render_frame(
                 }
             }
 
-            // --- Render selection highlight ---
-            if state.selection.is_active() {
-                let ((sc, sr), (ec, er)) = state.selection.normalized_range();
-                let buf = frame.buffer_mut();
-                for row in sr..=er {
-                    if row < term_area.top() || row >= term_area.bottom() {
-                        continue;
-                    }
-                    let col_start = if row == sr { sc } else { content_area.left() };
-                    let col_end = if row == er {
-                        ec
-                    } else {
-                        content_area.right().saturating_sub(1)
-                    };
-                    for col in col_start..=col_end {
-                        if col < content_area.left() {
-                            continue;
-                        }
-                        if col >= content_area.right() {
-                            break;
-                        }
-                        let cell = &mut buf[(col, row)];
-                        let fg = cell.fg;
-                        let bg = cell.bg;
-                        cell.fg = if bg == Color::Reset { theme.selection_fg } else { bg };
-                        cell.bg = if fg == Color::Reset { theme.selection_bg } else { fg };
-                    }
-                }
-            }
-
             // --- Render status bar ---
             let status_info = StatusBarInfo {
                 cwd: state.cwd.as_str(),
