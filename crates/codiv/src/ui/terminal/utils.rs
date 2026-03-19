@@ -105,6 +105,56 @@ pub(crate) fn write_block_lines_to_parser(parser: &mut vt100::Parser, lines: &[S
     }
 }
 
+/// Re-render all blocks from their stored content into a fresh parser.
+/// Resets the parser, writes the intro, then writes each block's rendered content
+/// with separators between them. Updates block positions via `recompute_positions()`.
+pub(crate) fn rerender_all(
+    parser: &mut vt100::Parser,
+    tracker: &mut crate::ui::blocks::BlockRegistry,
+    scroll_offset: &mut usize,
+) {
+    // Reset parser to blank state at current size
+    let screen = parser.screen();
+    let rows = screen.size().0;
+    let cols = screen.size().1;
+    *parser = vt100::Parser::new(rows, cols, super::state::MAX_SCROLLBACK);
+    *scroll_offset = 0;
+
+    // Write intro line
+    push_intro(parser);
+
+    // Compute base position (after intro)
+    let base = get_scrollback_line(parser);
+
+    // Write each block's content to the parser
+    for block in tracker.blocks() {
+        match block {
+            crate::ui::blocks::Block::Prompt(b) => {
+                write_block_lines_to_parser(parser, &b.rendered_lines);
+            }
+            crate::ui::blocks::Block::CmdResponse(b) => {
+                if !b.raw_bytes.is_empty() {
+                    parser.process(&b.raw_bytes);
+                }
+            }
+            crate::ui::blocks::Block::AiResponse(b) => {
+                write_block_lines_to_parser(parser, &b.rendered_lines);
+            }
+            crate::ui::blocks::Block::Tool(b) => {
+                write_block_lines_to_parser(parser, &b.rendered_lines);
+            }
+            crate::ui::blocks::Block::Thinking(b) => {
+                write_block_lines_to_parser(parser, &b.rendered_lines);
+            }
+        }
+        // Separator between blocks
+        parser.process(b"\r\n");
+    }
+
+    // Recompute positions
+    tracker.recompute_positions(base);
+}
+
 /// Get the true scrollback buffer length by probing set_scrollback's clamping behaviour.
 /// set_scrollback(usize::MAX) clamps to the actual VecDeque length, so reading it back
 /// gives us the true number of lines currently in the scrollback buffer.
@@ -178,7 +228,7 @@ pub(crate) fn format_tokens(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parser_push_notice, NoticeKind};
+    use super::{parser_push_notice, rerender_all, NoticeKind};
 
     fn screen_line(parser: &vt100::Parser, row: u16, cols: u16) -> String {
         let mut line = String::new();
@@ -206,5 +256,62 @@ mod tests {
         assert_eq!(screen_line(&parser, 0, 40), "  boom");
         assert_eq!(screen_line(&parser, 1, 40), "");
         assert_eq!(parser.screen().cursor_position(), (2, 0));
+    }
+
+    #[test]
+    fn rerender_all_writes_blocks_and_recomputes_positions() {
+        use crate::ui::blocks::{BlockRegistry, InputMode};
+
+        let mut parser = vt100::Parser::new(40, 80, 1000);
+        let mut tracker = BlockRegistry::new();
+        let mut scroll_offset: usize = 0;
+
+        // Add a prompt block
+        tracker.record_prompt(
+            "hello",
+            0,
+            InputMode::Ai,
+            vec!["\x1b[1mhello\x1b[0m".to_string()],
+        );
+
+        // Add a thinking block
+        tracker.record_thinking_block(
+            "pondering...".to_string(),
+            2.0,
+            0,
+            "\x1b[90mThought for 2s\x1b[0m".to_string(),
+        );
+
+        // Add a tool block with rendered lines
+        tracker.record_tool_result("Read", "content here", 0);
+        tracker.set_last_tool_rendered_lines(vec![
+            "\x1b[32mRead(foo.rs)\x1b[0m".to_string(),
+            "\x1b[90m  └ Read 1 lines\x1b[0m".to_string(),
+        ]);
+
+        // Re-render everything
+        rerender_all(&mut parser, &mut tracker, &mut scroll_offset);
+
+        // Verify intro was written
+        assert_eq!(screen_line(&parser, 0, 80).trim(), format!("codiv v{} — type 'exit' to quit", crate::VERSION));
+
+        // Verify blocks are present in the parser output
+        // (exact content depends on ANSI stripping, but we verify positions are sequential)
+        let blocks = tracker.blocks();
+        assert_eq!(blocks.len(), 3);
+
+        // Positions should be monotonically increasing
+        let positions: Vec<u64> = blocks.iter().map(|b| match b {
+            crate::ui::blocks::Block::Prompt(p) => p.start_index,
+            crate::ui::blocks::Block::Thinking(t) => t.start_index,
+            crate::ui::blocks::Block::Tool(t) => t.start_index,
+            crate::ui::blocks::Block::AiResponse(a) => a.start_index,
+            crate::ui::blocks::Block::CmdResponse(c) => c.start_index,
+        }).collect();
+        for i in 1..positions.len() {
+            assert!(positions[i] > positions[i - 1], "positions should increase: {:?}", positions);
+        }
+
+        assert_eq!(scroll_offset, 0);
     }
 }
