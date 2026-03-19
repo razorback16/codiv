@@ -390,6 +390,23 @@ pub(crate) fn handle_input_keys(
         (KeyCode::Char(ch), modifiers) => {
             if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
                 // Unhandled modifier combo — ignore.
+            } else if ch == '!' && state.input.content().is_empty() && state.input_mode == InputMode::Ai {
+                // Quick switch: '!' on empty input switches to Command mode
+                state.input_mode = InputMode::Command;
+            } else if ch == '?' && state.input.content().is_empty() && state.input_mode == InputMode::Command {
+                // Quick switch: '?' on empty input switches to AI mode
+                if client.is_none() {
+                    let hint = daemon_launcher::daemon_start_hint();
+                    parser_push_notice(
+                        parser,
+                        NoticeKind::Error,
+                        &format!(
+                            "AI mode not available — daemon is not running. {}",
+                            hint
+                        ),
+                    );
+                }
+                state.input_mode = InputMode::Ai;
             } else {
                 state.input.insert(ch);
                 state.scroll_offset = 0;
