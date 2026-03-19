@@ -6,7 +6,6 @@ use crate::shell::completion_engine::CompletionEngine;
 use crate::ui::blocks::{BlockRegistry, InputMode};
 use crate::ui::completion_popup::CompletionPopup;
 use crate::ui::input::InputLine;
-use crate::ui::selection::TextSelection;
 use crate::ui::theme::Theme;
 use crate::ui::tool_modal::ToolResultModal;
 use codiv_common::permissions::PermissionMode;
@@ -167,8 +166,6 @@ pub(crate) struct TerminalState {
     pub scroll_offset: usize,
     pub prompt_is_live: bool,
     pub prompt_anchor_row: Option<u16>,
-    pub selection: TextSelection,
-    pub clipboard: Option<arboard::Clipboard>,
     pub tracker: BlockRegistry,
     pub tool_result_modal: ToolResultModal,
     pub was_alt_screen: bool,
@@ -239,8 +236,6 @@ impl TerminalState {
             scroll_offset: 0,
             prompt_is_live: false,
             prompt_anchor_row: None,
-            selection: TextSelection::new(),
-            clipboard: None,
             tracker: BlockRegistry::new(),
             tool_result_modal: ToolResultModal::new(),
             was_alt_screen: false,

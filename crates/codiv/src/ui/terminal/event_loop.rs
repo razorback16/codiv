@@ -138,9 +138,6 @@ pub(crate) fn event_loop(
                     // Process key events (only if not mouse/resize).
                     if let Event::Key(key) = evt {
                         if key.kind == KeyEventKind::Press {
-                            // Clear text selection on any keypress.
-                            state.selection.clear();
-
                             // --- Modal key interception (highest priority) ---
                             let mut key_handled = false;
                             if state.tool_result_modal.is_visible() {

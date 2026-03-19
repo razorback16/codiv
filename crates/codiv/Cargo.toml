@@ -17,7 +17,6 @@ dirs = "6"
 rand = "0.8"
 tui-term = "0.3"
 vt100 = "0.16"
-arboard = "3"
 human_format = "1"
 clap = { version = "4", features = ["derive"] }
 codiv-tools = { path = "../codiv-tools" }
