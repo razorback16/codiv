@@ -671,12 +671,13 @@ pub(crate) fn handle_daemon_message(
                     match item {
                         ReplayItem::UserPrompt { text } => {
                             let scrollback_line = get_scrollback_line(parser);
-                            let prompt_display = format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, text);
-                            parser.process(prompt_display.as_bytes());
+                            let rendered_line = format!("{}{}\x1b[0m", theme.ansi_user_prompt, text);
+                            parser.process(format!("{}\r\n", rendered_line).as_bytes());
                             state.tracker.record_prompt(
                                 &text,
                                 scrollback_line,
                                 crate::ui::blocks::InputMode::Ai,
+                                vec![rendered_line],
                             );
                             parser.process(b"\r\n");
                         }
@@ -686,7 +687,10 @@ pub(crate) fn handle_daemon_message(
                             exit_code,
                         } => {
                             let scrollback_line = get_scrollback_line(parser);
+                            // Build raw bytes for CmdResponseBlock replay
+                            let mut raw_bytes = Vec::new();
                             let cmd_display = format!("{}{}\x1b[0m\r\n", theme.ansi_user_prompt, command);
+                            raw_bytes.extend_from_slice(cmd_display.as_bytes());
                             parser.process(cmd_display.as_bytes());
                             // Show truncated output, converting bare \n to \r\n for vt100
                             let out_preview = if output.len() > 200 {
@@ -697,8 +701,10 @@ pub(crate) fn handle_daemon_message(
                             if !out_preview.is_empty() {
                                 let normalized =
                                     out_preview.replace("\r\n", "\n").replace('\n', "\r\n");
+                                raw_bytes.extend_from_slice(normalized.as_bytes());
                                 parser.process(normalized.as_bytes());
                                 if !out_preview.ends_with('\n') {
+                                    raw_bytes.extend_from_slice(b"\r\n");
                                     parser.process(b"\r\n");
                                 }
                             }
@@ -707,9 +713,9 @@ pub(crate) fn handle_daemon_message(
                             } else {
                                 theme.ansi_exit_failure
                             };
-                            parser.process(
-                                format!("{}exit {}\x1b[0m\r\n", color, exit_code).as_bytes(),
-                            );
+                            let exit_line = format!("{}exit {}\x1b[0m\r\n", color, exit_code);
+                            raw_bytes.extend_from_slice(exit_line.as_bytes());
+                            parser.process(exit_line.as_bytes());
                             let end = get_scrollback_line(parser);
                             let line_count = (end.saturating_sub(scrollback_line)) as u16;
                             state.tracker.record_cmd_response(
@@ -717,6 +723,7 @@ pub(crate) fn handle_daemon_message(
                                 scrollback_line,
                                 line_count,
                                 exit_code,
+                                raw_bytes,
                             );
                             parser.process(b"\r\n");
                         }

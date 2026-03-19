@@ -105,6 +105,10 @@ pub(crate) fn event_loop(
             recv(pty_rx) -> msg => {
                 if let Ok(bytes) = msg {
                     if let Some(ref mut pending) = state.pending_command {
+                        // Capture PTY bytes for CmdResponseBlock (skip alternate screen)
+                        if pending.ai_execution_id.is_none() && !parser.screen().alternate_screen() {
+                            state.cmd_output_capture.extend_from_slice(&bytes);
+                        }
                         terminal_io::process_pty_bytes(&bytes, pending, parser, bash);
                     }
                     state.needs_render = true;
@@ -297,6 +301,9 @@ pub(crate) fn event_loop(
             };
             for bytes in &drain {
                 if let Some(ref mut pending) = state.pending_command {
+                    if pending.ai_execution_id.is_none() && !parser.screen().alternate_screen() {
+                        state.cmd_output_capture.extend_from_slice(bytes);
+                    }
                     terminal_io::process_pty_bytes(bytes, pending, parser, bash);
                 }
             }
@@ -355,13 +362,19 @@ pub(crate) fn event_loop(
                     if let Some(start) = state.cmd_start_scrollback.take() {
                         let line_count = (cmd_end.saturating_sub(start)) as u16;
                         if line_count > 0 {
+                            let raw_bytes = std::mem::take(&mut state.cmd_output_capture);
                             state.tracker.record_cmd_response(
                                 &pending.command,
                                 start,
                                 line_count,
                                 result.exit_code,
+                                raw_bytes,
                             );
+                        } else {
+                            state.cmd_output_capture.clear();
                         }
+                    } else {
+                        state.cmd_output_capture.clear();
                     }
                     parser.process(b"\r\n");
                 }
@@ -381,7 +394,8 @@ pub(crate) fn event_loop(
                 if let Some(start) = state.cmd_start_scrollback.take() {
                     let line_count = (cmd_end.saturating_sub(start)) as u16;
                     if line_count > 0 {
-                        state.tracker.record_cmd_response(&pending.command, start, line_count, -1);
+                        let raw_bytes = std::mem::take(&mut state.cmd_output_capture);
+                        state.tracker.record_cmd_response(&pending.command, start, line_count, -1, raw_bytes);
                     }
                 }
                 parser.process(b"\r\n");

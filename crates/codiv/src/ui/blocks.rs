@@ -45,6 +45,8 @@ pub struct PromptBlock {
     pub start_index: u64,
     pub height: u16,
     pub mode: InputMode,
+    /// ANSI-escaped rendered prompt line(s).
+    pub rendered_lines: Vec<String>,
 }
 
 pub struct CmdResponseBlock {
@@ -56,6 +58,8 @@ pub struct CmdResponseBlock {
     pub height: u16,
     #[allow(dead_code)]
     pub exit_code: i32,
+    /// Raw VT100 bytes from the PTY, for replay via `parser.process()`.
+    pub raw_bytes: Vec<u8>,
 }
 
 pub struct AiResponseBlock {
@@ -230,19 +234,21 @@ impl BlockRegistry {
     }
 
     /// Record a user prompt.
-    pub fn record_prompt(&mut self, text: &str, start_index: u64, mode: InputMode) {
+    pub fn record_prompt(&mut self, text: &str, start_index: u64, mode: InputMode, rendered_lines: Vec<String>) {
         let id = self.next_id();
+        let height = rendered_lines.len().max(text.split('\n').count().max(1)) as u16;
         self.blocks.push(Block::Prompt(PromptBlock {
             id,
             text: text.to_string(),
             start_index,
-            height: text.split('\n').count().max(1) as u16,
+            height,
             mode,
+            rendered_lines,
         }));
     }
 
     /// Record a shell command response block.
-    pub fn record_cmd_response(&mut self, command: &str, start_index: u64, height: u16, exit_code: i32) {
+    pub fn record_cmd_response(&mut self, command: &str, start_index: u64, height: u16, exit_code: i32, raw_bytes: Vec<u8>) {
         let id = self.next_id();
         self.blocks.push(Block::CmdResponse(CmdResponseBlock {
             id,
@@ -250,6 +256,7 @@ impl BlockRegistry {
             start_index,
             height,
             exit_code,
+            raw_bytes,
         }));
     }
 
