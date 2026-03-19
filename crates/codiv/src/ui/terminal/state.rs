@@ -191,6 +191,9 @@ pub(crate) struct TerminalState {
     // AI-requested command execution queue
     pub pending_ai_executions: std::collections::VecDeque<PendingAiExecution>,
 
+    /// Accumulates PTY bytes during command execution for CmdResponseBlock replay.
+    pub cmd_output_capture: Vec<u8>,
+
     // Contextual hint (shown for 5s after trigger)
     pub hint_shown_at: Option<Instant>,
     pub last_mouse_drag: Option<Instant>,
@@ -265,6 +268,8 @@ impl TerminalState {
 
             // AI-requested command execution queue
             pending_ai_executions: std::collections::VecDeque::new(),
+
+            cmd_output_capture: Vec::new(),
 
             // Contextual hint (shown for 5s after trigger)
             hint_shown_at: None,

@@ -123,7 +123,12 @@ pub(crate) fn handle_input_keys(
                 // One blank line separator after the prompt
                 parser.process(b"\r\n");
 
-                state.tracker.record_prompt(&raw_input, scrollback_line, state.input_mode);
+                // Build rendered lines for the prompt block.
+                let rendered_lines: Vec<String> = raw_input
+                    .split('\n')
+                    .map(|line| format!("\x1b[1m{}\x1b[0m", line))
+                    .collect();
+                state.tracker.record_prompt(&raw_input, scrollback_line, state.input_mode, rendered_lines);
                 state.prompt_is_live = false;
                 state.prompt_anchor_row = None;
                 let action = classify_input(&raw_input);
@@ -199,6 +204,7 @@ pub(crate) fn handle_input_keys(
                                     Some(sentinel) => {
                                         state.cmd_start_scrollback =
                                             Some(get_scrollback_line(parser));
+                                        state.cmd_output_capture.clear();
                                         state.pending_command = Some(PendingCommand {
                                             sentinel,
                                             accumulated: String::new(),
