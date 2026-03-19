@@ -35,9 +35,10 @@ impl AnimationState {
         agent_streaming: bool,
         is_thinking: bool,
         has_pending_tool: bool,
+        has_hint_timeout: bool,
     ) {
         self.has_active_animations =
-            is_executing || agent_streaming || is_thinking || has_pending_tool;
+            is_executing || agent_streaming || is_thinking || has_pending_tool || has_hint_timeout;
     }
 
     pub(crate) fn spinner_char(&self) -> char {
@@ -72,7 +73,7 @@ mod tests {
     #[test]
     fn tick_with_active_animations_returns_true() {
         let mut anim = AnimationState::new();
-        anim.update_active(true, false, false, false);
+        anim.update_active(true, false, false, false, false);
         assert!(anim.tick());
     }
 
@@ -93,13 +94,13 @@ mod tests {
         let mut anim = AnimationState::new();
         assert!(!anim.is_active());
 
-        anim.update_active(true, false, false, false);
+        anim.update_active(true, false, false, false, false);
         assert!(anim.is_active());
 
-        anim.update_active(false, true, false, false);
+        anim.update_active(false, true, false, false, false);
         assert!(anim.is_active());
 
-        anim.update_active(false, false, false, false);
+        anim.update_active(false, false, false, false, false);
         assert!(!anim.is_active());
     }
 

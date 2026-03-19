@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use tui_term::widget::{Cursor as PtCursor, PseudoTerminal};
@@ -43,6 +45,41 @@ fn completion_anchor_x(term_area_left: u16, cursor_col: usize) -> u16 {
         .saturating_add(cursor_col)
 }
 
+/// Returns the contextual hint text based on current UI state, or None if
+/// all hints have expired (each hint is visible for 5 seconds).
+fn current_hint(state: &TerminalState) -> Option<&str> {
+    let timeout = Duration::from_secs(5);
+
+    // 1. Transient drag hint (within 5s, supported terminal)
+    if state.term_supports_option_select {
+        if let Some(t) = state.last_mouse_drag {
+            if t.elapsed() < timeout {
+                return Some("Option+drag: select text");
+            }
+        }
+    }
+
+    // Remaining hints are gated by hint_shown_at
+    let shown_at = state.hint_shown_at?;
+    if shown_at.elapsed() >= timeout {
+        return None;
+    }
+
+    // 2. User has typed enough → thinking hint
+    if state.input.content().len() >= 3 {
+        return if state.thinking_enabled {
+            Some("Ctrl+T: thinking on")
+        } else {
+            Some("Ctrl+T: thinking off")
+        };
+    }
+    // 3. Empty input → mode switch hint
+    Some(match state.input_mode {
+        InputMode::Ai => "Tab or ! to switch to terminal",
+        InputMode::Command => "Tab or ? to switch to AI",
+    })
+}
+
 pub(crate) fn render_frame(
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     parser: &mut vt100::Parser,
@@ -66,7 +103,7 @@ pub(crate) fn render_frame(
         // On subsequent renders, reuse the anchor so the start stays fixed.
         let first_row = if let Some(anchor) = state.prompt_anchor_row {
             // Anchor exists — ensure we have room for all lines below it.
-            let last_row = anchor + line_count; // +1 for bottom ruler
+            let last_row = anchor + line_count + 1; // +1 ruler +1 hint
             if last_row >= screen_rows {
                 // Need to scroll to make room at the bottom
                 let overflow = last_row - screen_rows + 1;
@@ -83,8 +120,8 @@ pub(crate) fn render_frame(
         } else {
             // First render — cursor is at the line where the prompt starts.
             let (cursor_row, _) = parser.screen().cursor_position();
-            // Ensure room for prompt lines + bottom ruler
-            let last_row = cursor_row + line_count; // prompt lines + 1 ruler
+            // Ensure room for prompt lines + bottom ruler + hint
+            let last_row = cursor_row + line_count + 1; // prompt lines + 1 ruler + 1 hint
             let first_row = if last_row >= screen_rows {
                 let overflow = last_row - screen_rows + 1;
                 for _ in 0..overflow {
@@ -115,6 +152,10 @@ pub(crate) fn render_frame(
         let cursor_row_1based = first_row + crow as u16 + 1;
         parser.process(format!("\x1b[{};{}H", cursor_row_1based, ccol + 1).as_bytes());
 
+        if !state.prompt_is_live {
+            // First time prompt goes live — show hint
+            state.hint_shown_at = Some(std::time::Instant::now());
+        }
         state.prompt_is_live = true;
     } else {
         // Not rendering a live prompt — clear the anchor
@@ -383,6 +424,25 @@ pub(crate) fn render_frame(
                                 for col in term_area.left()..term_area.right() {
                                     buf[(col, row)].set_char('\u{2500}').set_fg(theme.separator);
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Render contextual hint below live prompt ---
+            if state.prompt_is_live && state.scroll_offset == 0 {
+                if let (Some(anchor), Some(hint)) = (state.prompt_anchor_row, current_hint(state)) {
+                    let prompt_lines = state.input.line_count() as u16;
+                    let bottom_rule = term_area.top() + anchor + prompt_lines;
+                    let hint_row = bottom_rule + 1;
+                    if hint_row >= term_area.top() && hint_row < term_area.bottom() {
+                        let buf = frame.buffer_mut();
+                        let start_x = term_area.left() + PROMPT_GUTTER_WIDTH;
+                        for (i, ch) in hint.chars().enumerate() {
+                            let x = start_x + i as u16;
+                            if x < term_area.right() {
+                                buf[(x, hint_row)].set_char(ch).set_fg(theme.hint_text);
                             }
                         }
                     }

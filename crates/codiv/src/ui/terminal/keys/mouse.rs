@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 use super::super::state::TerminalState;
@@ -35,6 +37,9 @@ pub(crate) fn handle_mouse(
                     }
                 }
             }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            state.last_mouse_drag = Some(Instant::now());
         }
         _ => {}
     }

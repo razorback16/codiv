@@ -270,11 +270,15 @@ pub(crate) fn event_loop(
                 }
             }
             recv(tick_rx) -> _ => {
+                let hint_timeout = std::time::Duration::from_secs(5);
+                let has_active_hint = state.last_mouse_drag.map_or(false, |t| t.elapsed() < hint_timeout)
+                    || state.hint_shown_at.map_or(false, |t| t.elapsed() < hint_timeout);
                 state.anim.update_active(
                     state.pending_command.is_some(),
                     state.agent_streaming,
                     state.thinking_start.is_some(),
                     state.tracker.pending_tool().is_some(),
+                    has_active_hint,
                 );
                 if state.anim.tick() {
                     state.needs_render = true;

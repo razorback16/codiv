@@ -65,6 +65,7 @@ pub(crate) fn handle_input_keys(
         // --- Ctrl+T: toggle thinking mode ---
         (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
             state.thinking_enabled = !state.thinking_enabled;
+            state.hint_shown_at = Some(Instant::now());
         }
 
         // --- Ctrl+P: cycle permission mode ---
@@ -272,6 +273,7 @@ pub(crate) fn handle_input_keys(
                     }
                     InputMode::Ai => InputMode::Command,
                 };
+                state.hint_shown_at = Some(Instant::now());
             } else if state.input_mode == InputMode::Command {
                 // Existing tab-completion logic
                 let line = state.input.content().to_string();
@@ -393,6 +395,7 @@ pub(crate) fn handle_input_keys(
             } else if ch == '!' && state.input.content().is_empty() && state.input_mode == InputMode::Ai {
                 // Quick switch: '!' on empty input switches to Command mode
                 state.input_mode = InputMode::Command;
+                state.hint_shown_at = Some(Instant::now());
             } else if ch == '?' && state.input.content().is_empty() && state.input_mode == InputMode::Command {
                 // Quick switch: '?' on empty input switches to AI mode
                 if client.is_none() {
@@ -407,8 +410,13 @@ pub(crate) fn handle_input_keys(
                     );
                 }
                 state.input_mode = InputMode::Ai;
+                state.hint_shown_at = Some(Instant::now());
             } else {
+                let was_below = state.input.content().len() < 3;
                 state.input.insert(ch);
+                if was_below && state.input.content().len() >= 3 {
+                    state.hint_shown_at = Some(Instant::now());
+                }
                 state.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
             }
