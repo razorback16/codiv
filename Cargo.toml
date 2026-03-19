@@ -3,7 +3,7 @@ members = ["crates/codiv", "crates/codiv-common", "crates/codivd", "crates/codiv
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 
 [patch.crates-io]
 aisdk = { git = "https://github.com/razorback16/aisdk.git", branch = "main" }
