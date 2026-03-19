@@ -343,6 +343,37 @@ impl BlockRegistry {
         self.focused_index
     }
 
+    /// Recompute `start_index` on every block as a running sum of heights + separators.
+    /// `base` is the absolute line index of the first block (e.g. after the intro line).
+    pub fn recompute_positions(&mut self, base: u64) {
+        let mut pos = base;
+        for block in &mut self.blocks {
+            match block {
+                Block::Prompt(b) => {
+                    b.start_index = pos;
+                    pos += b.rendered_lines.len() as u64;
+                }
+                Block::CmdResponse(b) => {
+                    b.start_index = pos;
+                    pos += b.height as u64;
+                }
+                Block::AiResponse(b) => {
+                    b.start_index = pos;
+                    pos += b.rendered_lines.len() as u64;
+                }
+                Block::Tool(b) => {
+                    b.start_index = pos;
+                    pos += b.rendered_lines.len() as u64;
+                }
+                Block::Thinking(b) => {
+                    b.start_index = pos;
+                    pos += b.rendered_lines.len() as u64;
+                }
+            }
+            pos += 1; // separator line between blocks
+        }
+    }
+
     // -- accessors ----------------------------------------------------------
 
     pub fn clear(&mut self) {
