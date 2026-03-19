@@ -23,6 +23,8 @@ pub struct ToolBlock {
     pub is_diff: bool,
     pub start_index: u64,
     pub height: u16,
+    /// ANSI-escaped lines ready for `parser.process()`, used by `rerender_all()`.
+    pub rendered_lines: Vec<String>,
     /// Stores the file_path for Edit blocks so we can detect consecutive edits.
     edit_file_path: Option<String>,
     /// Original file content before the first edit in a merge chain.
@@ -271,6 +273,13 @@ impl BlockRegistry {
         }));
     }
 
+    /// Store rendered ANSI lines on the most recently added/merged ToolBlock.
+    pub fn set_last_tool_rendered_lines(&mut self, lines: Vec<String>) {
+        if let Some(Block::Tool(tb)) = self.blocks.last_mut() {
+            tb.rendered_lines = lines;
+        }
+    }
+
     // -- accessors ----------------------------------------------------------
 
     pub fn blocks(&self) -> &[Block] {
@@ -358,6 +367,7 @@ impl BlockRegistry {
             is_diff,
             start_index,
             height,
+            rendered_lines: vec![],
 
             edit_file_path: None,
             edit_original_content: None,
@@ -447,6 +457,7 @@ impl BlockRegistry {
                 is_diff: true,
                 start_index,
                 height: 2,
+                rendered_lines: vec![],
                 edit_file_path: Some(file_path),
                 edit_original_content: Some(stashed),
             }));
@@ -483,6 +494,7 @@ impl BlockRegistry {
                 is_diff: true,
                 start_index,
                 height: 2 + diff_preview.len() as u16,
+                rendered_lines: vec![],
                 edit_file_path: Some(file_path),
                 edit_original_content: Some(stashed),
             }));

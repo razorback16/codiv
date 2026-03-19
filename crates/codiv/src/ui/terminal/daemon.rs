@@ -9,7 +9,7 @@ use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 use crate::ui::theme::Theme;
 
 use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState, TokenUsage};
-use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, reset_screen, NoticeKind};
+use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, reset_screen, write_block_lines_to_parser, NoticeKind};
 
 /// Mutable state used by the daemon message handler.
 /// Constructed from `TerminalState` fields for live messages,
@@ -178,6 +178,57 @@ fn convert_event_to_replay_items(event: &ConversationEvent) -> Vec<ReplayItem> {
     }
 }
 
+/// Build the ANSI-formatted rendered lines for a tool block result.
+/// Each line does NOT include trailing `\r\n` — the caller adds that.
+fn build_tool_rendered_lines(
+    tool_name: &str,
+    header: &str,
+    summary: &str,
+    preview_lines: &[String],
+    perm: Option<&(String, bool, String)>,
+    theme: &Theme,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    if let Some((_perm_tool, granted, reason)) = perm {
+        if *granted {
+            lines.push(format!("{}{}\x1b[0m", theme.ansi_tool_done, header));
+            lines.push(format!("{}  \u{2514} {}\x1b[0m", theme.ansi_tool_done_suffix, reason));
+            let is_tool_error = (tool_name.eq_ignore_ascii_case("bash")
+                && !summary.contains("exit 0"))
+                || summary.contains(" failed:");
+            let color = if is_tool_error {
+                theme.ansi_exit_failure
+            } else {
+                theme.ansi_tool_done_suffix
+            };
+            lines.push(format!("{}{}\x1b[0m", color, summary));
+            for pline in preview_lines {
+                lines.push(format!("{}{}\x1b[0m", theme.ansi_thinking, pline));
+            }
+        } else {
+            lines.push(format!("{}{}\x1b[0m", theme.ansi_tool_denied, header));
+            lines.push(format!("{}  \u{2514} {}\x1b[0m", theme.ansi_tool_denied_suffix, reason));
+        }
+    } else {
+        lines.push(format!("{}{}\x1b[0m", theme.ansi_tool_done, header));
+        let is_tool_error = (tool_name.eq_ignore_ascii_case("bash")
+            && !summary.contains("exit 0"))
+            || summary.contains(" failed:");
+        let color = if is_tool_error {
+            theme.ansi_exit_failure
+        } else {
+            theme.ansi_tool_done_suffix
+        };
+        lines.push(format!("{}{}\x1b[0m", color, summary));
+        for pline in preview_lines {
+            lines.push(format!("{}{}\x1b[0m", theme.ansi_thinking, pline));
+        }
+    }
+
+    lines
+}
+
 /// Handle a single `DaemonMessage` — all match arms except `SessionList` and
 /// `SessionReplay`, which are handled in the outer `handle_daemon_message`.
 fn handle_single_message(
@@ -316,21 +367,12 @@ fn handle_single_message(
                                 for _ in 0..lines_to_erase {
                                     parser.process(b"\x1b[A\r\x1b[K");
                                 }
-                                // Redraw: header + summary + preview lines
-                                let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
-                                parser.process(header_line.as_bytes());
-                                let is_tool_error = summary.contains(" failed:");
-                                let color = if is_tool_error {
-                                    theme.ansi_exit_failure
-                                } else {
-                                    theme.ansi_tool_done_suffix
-                                };
-                                let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
-                                parser.process(summary_line.as_bytes());
-                                for pline in &preview_lines {
-                                    let preview_line = format!("{}{}\x1b[0m\r\n", theme.ansi_thinking, pline);
-                                    parser.process(preview_line.as_bytes());
-                                }
+                                // Build rendered lines for the merged block
+                                let rendered_lines = build_tool_rendered_lines(
+                                    &name, &header, &summary, &preview_lines, None, theme,
+                                );
+                                write_block_lines_to_parser(parser, &rendered_lines);
+                                ds.tracker.set_last_tool_rendered_lines(rendered_lines);
                                 parser.process(b"\r\n"); // trailing separator
                             }
                             ToolResultAction::Summary { header, summary, preview_lines } => {
@@ -344,60 +386,11 @@ fn handle_single_message(
                                     None
                                 };
 
-                                if let Some((ref _perm_tool, granted, ref reason)) = perm {
-                                    if granted {
-                                        // Green header + "└ {reason}" + summary + preview
-                                        let header_line =
-                                            format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
-                                        parser.process(header_line.as_bytes());
-                                        let perm_line =
-                                            format!("{}  \u{2514} {}\x1b[0m\r\n", theme.ansi_tool_done_suffix, reason);
-                                        parser.process(perm_line.as_bytes());
-                                        // Summary line before preview
-                                        let is_tool_error = (name.eq_ignore_ascii_case("bash")
-                                            && !summary.contains("exit 0"))
-                                            || summary.contains(" failed:");
-                                        let color = if is_tool_error {
-                                            theme.ansi_exit_failure
-                                        } else {
-                                            theme.ansi_tool_done_suffix
-                                        };
-                                        let summary_line =
-                                            format!("{}{}\x1b[0m\r\n", color, summary);
-                                        parser.process(summary_line.as_bytes());
-                                        for pline in &preview_lines {
-                                            let preview_line = format!("{}{}\x1b[0m\r\n", theme.ansi_thinking, pline);
-                                            parser.process(preview_line.as_bytes());
-                                        }
-                                    } else {
-                                        // Red header + "└ {reason}" (no tool summary since tool wasn't executed)
-                                        let header_line =
-                                            format!("{}{}\x1b[0m\r\n", theme.ansi_tool_denied, header);
-                                        parser.process(header_line.as_bytes());
-                                        let perm_line =
-                                            format!("{}  \u{2514} {}\x1b[0m\r\n", theme.ansi_tool_denied_suffix, reason);
-                                        parser.process(perm_line.as_bytes());
-                                    }
-                                } else {
-                                    // No permission check — render header + summary + preview
-                                    let header_line =
-                                        format!("{}{}\x1b[0m\r\n", theme.ansi_tool_done, header);
-                                    parser.process(header_line.as_bytes());
-                                    let is_tool_error = (name.eq_ignore_ascii_case("bash")
-                                        && !summary.contains("exit 0"))
-                                        || summary.contains(" failed:");
-                                    let color = if is_tool_error {
-                                        theme.ansi_exit_failure
-                                    } else {
-                                        theme.ansi_tool_done_suffix
-                                    };
-                                    let summary_line = format!("{}{}\x1b[0m\r\n", color, summary);
-                                    parser.process(summary_line.as_bytes());
-                                    for pline in &preview_lines {
-                                        let preview_line = format!("{}{}\x1b[0m\r\n", theme.ansi_thinking, pline);
-                                        parser.process(preview_line.as_bytes());
-                                    }
-                                }
+                                let rendered_lines = build_tool_rendered_lines(
+                                    &name, &header, &summary, &preview_lines, perm.as_ref(), theme,
+                                );
+                                write_block_lines_to_parser(parser, &rendered_lines);
+                                ds.tracker.set_last_tool_rendered_lines(rendered_lines);
                                 parser.process(b"\r\n"); // trailing separator
                             }
                         }
