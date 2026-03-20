@@ -410,7 +410,7 @@ fn classify_compound_list(list: &brush_parser::ast::CompoundList) -> RiskLevel {
 
 fn classify_simple_command(simple: &SimpleCommand) -> RiskLevel {
     // Collect all words (arguments) from the suffix
-    let (args, redirects) = collect_suffix_info(simple);
+    let (args, redirects, proc_sub_risk) = collect_suffix_info(simple);
     let prefix_redirects = collect_prefix_redirects(simple);
 
     // Get the command name
@@ -425,12 +425,15 @@ fn classify_simple_command(simple: &SimpleCommand) -> RiskLevel {
             for io in &redirects {
                 risk = max_risk(risk, classify_io_redirect(io));
             }
-            return risk;
+            return max_risk(risk, proc_sub_risk);
         }
     };
 
     // Compute base risk from command name and arguments
     let mut risk = compute_command_risk(cmd_name, &args);
+
+    // Include risk from process substitutions (e.g. diff <(sudo cat /etc/passwd) ...)
+    risk = max_risk(risk, proc_sub_risk);
 
     // Check redirections
     for io in redirects.iter().chain(prefix_redirects.iter()) {
@@ -440,9 +443,11 @@ fn classify_simple_command(simple: &SimpleCommand) -> RiskLevel {
     risk
 }
 
-fn collect_suffix_info(simple: &SimpleCommand) -> (Vec<String>, Vec<IoRedirect>) {
+/// Returns (args, redirects, process_substitution_risk).
+fn collect_suffix_info(simple: &SimpleCommand) -> (Vec<String>, Vec<IoRedirect>, RiskLevel) {
     let mut args = Vec::new();
     let mut redirects = Vec::new();
+    let mut proc_sub_risk = RiskLevel::Low;
 
     if let Some(suffix) = &simple.suffix {
         for item in &suffix.0 {
@@ -455,15 +460,14 @@ fn collect_suffix_info(simple: &SimpleCommand) -> (Vec<String>, Vec<IoRedirect>)
                 }
                 CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
                 CommandPrefixOrSuffixItem::ProcessSubstitution(_, sub) => {
-                    // Walk the subshell for risk — we don't add it as an arg
-                    // but it gets handled by the redirect classification indirectly
-                    let _ = classify_compound_list(&sub.list);
+                    // Process substitutions run commands in subshells — propagate their risk
+                    proc_sub_risk = max_risk(proc_sub_risk, classify_compound_list(&sub.list));
                 }
             }
         }
     }
 
-    (args, redirects)
+    (args, redirects, proc_sub_risk)
 }
 
 fn collect_prefix_redirects(simple: &SimpleCommand) -> Vec<IoRedirect> {
@@ -685,39 +689,53 @@ fn check_subcommand_escalation(
     }
 }
 
-fn args_contain_sensitive_path(args: &[String]) -> bool {
-    for arg in args {
-        if arg.starts_with('-') {
-            continue;
-        }
-        let path = arg.trim_end_matches('/');
-        let path_with_slash = format!("{}/", path);
+/// Check whether a path refers to a standard pseudo-file that is always safe.
+fn is_safe_pseudo_file(path: &str) -> bool {
+    matches!(
+        path,
+        "/dev/null" | "/dev/stdout" | "/dev/stderr" | "/dev/stdin"
+    ) || path.starts_with("/dev/fd/")
+}
 
-        // Direct match
-        if SENSITIVE_PATHS.contains(path) || SENSITIVE_PATHS.contains(path_with_slash.as_str()) {
+/// Check whether a single path string matches a sensitive location.
+fn path_is_sensitive(path: &str) -> bool {
+    let trimmed = path.trim_end_matches('/');
+
+    if is_safe_pseudo_file(trimmed) {
+        return false;
+    }
+
+    // Direct match
+    let trimmed_with_slash = format!("{}/", trimmed);
+    if SENSITIVE_PATHS.contains(trimmed) || SENSITIVE_PATHS.contains(trimmed_with_slash.as_str()) {
+        return true;
+    }
+    if SENSITIVE_PATHS.contains(path) {
+        return true;
+    }
+
+    // Home directory references
+    if path.starts_with("~/") || path == "~" || path.starts_with("$HOME") {
+        return true;
+    }
+
+    // Check if path is under a sensitive directory prefix
+    for sp in SENSITIVE_PATHS.iter() {
+        if !sp.starts_with('.') && !sp.starts_with('$') && !sp.starts_with('~')
+            && sp.len() > 1
+            && path.starts_with(&format!("{}/", sp))
+        {
             return true;
-        }
-        // Also check the raw arg with trailing slash
-        if SENSITIVE_PATHS.contains(arg.as_str()) {
-            return true;
-        }
-        // Check if path starts with a sensitive prefix
-        if arg.starts_with("~/") || arg == "~" {
-            return true;
-        }
-        if arg.starts_with("$HOME") {
-            return true;
-        }
-        // Check for exact sensitive paths
-        for sp in SENSITIVE_PATHS.iter() {
-            if !sp.starts_with('.') && !sp.starts_with('$') && !sp.starts_with('~')
-                && (arg == *sp || (sp.len() > 1 && arg.starts_with(&format!("{}/", sp))))
-            {
-                return true;
-            }
         }
     }
+
     false
+}
+
+fn args_contain_sensitive_path(args: &[String]) -> bool {
+    args.iter()
+        .filter(|a| !a.starts_with('-'))
+        .any(|a| path_is_sensitive(a))
 }
 
 fn classify_io_redirect(io: &IoRedirect) -> RiskLevel {
@@ -758,39 +776,36 @@ fn redirect_target_path(target: &IoFileRedirectTarget) -> Option<String> {
 }
 
 fn is_sensitive_redirect_path(path: &str) -> bool {
-    let trimmed = path.trim_end_matches('/');
-
-    // Direct check
-    if SENSITIVE_PATHS.contains(trimmed) || SENSITIVE_PATHS.contains(path) {
+    if path_is_sensitive(path) {
         return true;
     }
 
-    // Check if under sensitive directory
-    for sp in SENSITIVE_PATHS.iter() {
-        if !sp.starts_with('.') && !sp.starts_with('$') && !sp.starts_with('~') && sp.len() > 1
-            && path.starts_with(&format!("{}/", sp))
-        {
-            return true;
-        }
-    }
-
-    if path.starts_with("~/") || path == "~" {
-        return true;
-    }
-    if path.starts_with("$HOME") {
-        return true;
-    }
-    // Check for sensitive dotfiles/dotdirs anywhere in path
-    for sensitive in &[
+    // Redirects additionally check for sensitive dotfiles/dotdirs anywhere in path,
+    // since writing to these is dangerous regardless of directory prefix.
+    // We check that the sensitive name appears as a complete path component
+    // (preceded by '/' or at start) to avoid false positives like ".env.example".
+    static SENSITIVE_REDIRECT_DOTFILES: &[&str] = &[
         ".ssh", ".gnupg", ".aws", ".kube", ".docker",
         ".env", ".npmrc", ".pypirc", ".netrc", ".pgpass",
         ".bash_history", ".zsh_history",
-    ] {
-        if path.contains(sensitive) {
+    ];
+    for sensitive in SENSITIVE_REDIRECT_DOTFILES {
+        if path_contains_exact_component(path, sensitive) {
             return true;
         }
     }
 
+    false
+}
+
+/// Check if `path` contains `component` as an exact path component or filename.
+/// Matches: ".env", "dir/.env", ".env/foo" but NOT ".env.example", ".envrc".
+fn path_contains_exact_component(path: &str, component: &str) -> bool {
+    for segment in path.split('/') {
+        if segment == component {
+            return true;
+        }
+    }
     false
 }
 
@@ -1219,6 +1234,36 @@ mod tests {
     fn output_redirect_to_sensitive_path() {
         assert_eq!(classify_command("echo foo > /etc/passwd"), RiskLevel::Critical);
         assert_eq!(classify_command("echo foo > output.txt"), RiskLevel::Low);
+    }
+
+    #[test]
+    fn dev_null_redirect_is_not_sensitive() {
+        // Redirecting stderr to /dev/null is a standard idiom and should not escalate
+        assert_eq!(classify_command("ls -la /tmp/haiku 2>/dev/null || echo 'not found'"), RiskLevel::Low);
+        assert_eq!(classify_command("head -50 file.txt 2>/dev/null | head -100"), RiskLevel::Low);
+        assert_eq!(classify_command("cat foo 2>/dev/null"), RiskLevel::Low);
+        assert_eq!(classify_command("grep pattern file > /dev/null"), RiskLevel::Low);
+        // curl -o /dev/null is a common timing/testing pattern
+        assert_eq!(classify_command("curl -o /dev/null https://example.com"), RiskLevel::High);
+        // But writing to other /dev paths should still be sensitive
+        assert_eq!(classify_command("echo foo > /dev/sda"), RiskLevel::Critical);
+    }
+
+    #[test]
+    fn dotfile_redirect_exact_matching() {
+        // Exact .env should be flagged
+        assert_eq!(classify_command("echo key > .env"), RiskLevel::Critical);
+        assert_eq!(classify_command("echo key > dir/.env"), RiskLevel::Critical);
+        // But .env.example, .env.local etc should NOT be critical
+        assert_eq!(classify_command("echo key > .env.example"), RiskLevel::Low);
+        assert_eq!(classify_command("echo key > .env.local"), RiskLevel::Low);
+        assert_eq!(classify_command("echo key > .envrc"), RiskLevel::Low);
+    }
+
+    #[test]
+    fn process_substitution_propagates_risk() {
+        // Process substitutions should propagate their inner risk
+        assert_eq!(classify_command("diff <(sudo cat /etc/passwd) file.txt"), RiskLevel::Critical);
     }
 
     #[test]
