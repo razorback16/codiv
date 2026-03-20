@@ -201,6 +201,8 @@ pub(crate) struct TerminalState {
     pub hint_shown_at: Option<Instant>,
     pub last_mouse_drag: Option<Instant>,
     pub term_supports_option_select: bool,
+    pub hint_seed: u32,
+    pub notice_hint: Option<(String, Instant)>,
 }
 
 impl TerminalState {
@@ -286,6 +288,8 @@ impl TerminalState {
                     "iTerm.app" | "Apple_Terminal" | "WezTerm" | "Alacritty" | "kitty"
                 ) || matches!(lc.as_str(), "iTerm2")
             },
+            hint_seed: 0,
+            notice_hint: None,
         }
     }
 }

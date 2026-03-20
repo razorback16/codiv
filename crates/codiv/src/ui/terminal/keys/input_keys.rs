@@ -67,11 +67,14 @@ pub(crate) fn handle_input_keys(
         (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
             state.thinking_enabled = !state.thinking_enabled;
             state.hint_shown_at = Some(Instant::now());
+            state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
         }
 
-        // --- Ctrl+P: cycle permission mode ---
-        (KeyCode::Char('p'), m) if m.contains(KeyModifiers::CONTROL) => {
+        // --- Shift+Tab (BackTab): cycle permission mode ---
+        (KeyCode::BackTab, _) => {
             state.permission_mode = state.permission_mode.next();
+            state.hint_shown_at = Some(Instant::now());
+            state.hint_seed = std::time::Instant::now().elapsed().subsec_nanos();
             if let Some(ref mut c) = client {
                 if let Some(frame) = ipc_messages::build_set_permission_mode(state.permission_mode) {
                     c.send(&frame);
@@ -281,6 +284,7 @@ pub(crate) fn handle_input_keys(
                     InputMode::Ai => InputMode::Command,
                 };
                 state.hint_shown_at = Some(Instant::now());
+                state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
             } else if state.input_mode == InputMode::Command {
                 // Existing tab-completion logic
                 let line = state.input.content().to_string();
@@ -403,6 +407,7 @@ pub(crate) fn handle_input_keys(
                 // Quick switch: '!' on empty input switches to Command mode
                 state.input_mode = InputMode::Command;
                 state.hint_shown_at = Some(Instant::now());
+                state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
             } else if ch == '?' && state.input.content().is_empty() && state.input_mode == InputMode::Command {
                 // Quick switch: '?' on empty input switches to AI mode
                 if client.is_none() {
@@ -418,11 +423,13 @@ pub(crate) fn handle_input_keys(
                 }
                 state.input_mode = InputMode::Ai;
                 state.hint_shown_at = Some(Instant::now());
+                state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
             } else {
                 let was_below = state.input.content().len() < HINT_INPUT_THRESHOLD;
                 state.input.insert(ch);
                 if was_below && state.input.content().len() >= HINT_INPUT_THRESHOLD {
                     state.hint_shown_at = Some(Instant::now());
+                    state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
                 }
                 state.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);

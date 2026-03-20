@@ -499,9 +499,7 @@ fn handle_single_message(
         } => {
             *ds.session_name = Some(name);
         }
-        ipc_messages::DaemonMessage::Notice { message } => {
-            parser_push_notice(parser, NoticeKind::Notice, &message);
-        }
+        ipc_messages::DaemonMessage::Notice { .. } => {}
         // ExecuteCommand is handled in handle_daemon_message (needs full state)
         ipc_messages::DaemonMessage::ExecuteCommand { .. } => {}
         // SessionList and SessionReplay are handled in handle_daemon_message
@@ -746,6 +744,10 @@ pub(crate) fn handle_daemon_message(
                     _timeout_ms: timeout_ms,
                 },
             );
+        }
+        ipc_messages::DaemonMessage::Notice { message } => {
+            state.notice_hint = Some((message, Instant::now()));
+            state.needs_render = true;
         }
         // All other messages delegate to the core handler
         other => {

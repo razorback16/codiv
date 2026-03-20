@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 use ratatui::prelude::*;
@@ -30,6 +31,7 @@ pub(crate) struct StatusBarInfo<'a> {
     pub thinking_enabled: bool,
     pub permission_mode: PermissionMode,
     pub session_name: Option<&'a str>,
+    pub theme: &'a Theme,
 }
 
 #[cfg(test)]
@@ -51,16 +53,29 @@ pub(super) const HINT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Minimum input length before the "thinking" hint appears.
 pub(super) const HINT_INPUT_THRESHOLD: usize = 3;
 
+/// A contextual hint that can be shown to the user.
+struct HintEntry {
+    text: String,
+    weight: u8,
+}
+
 /// Returns the contextual hint text based on current UI state, or None if
 /// all hints have expired (each hint is visible for `HINT_TIMEOUT`).
-pub(super) fn current_hint(state: &TerminalState) -> Option<&str> {
+pub(super) fn current_hint(state: &TerminalState) -> Option<Cow<'_, str>> {
     let timeout = HINT_TIMEOUT;
 
-    // 1. Transient drag hint (within 5s, supported terminal)
+    // Priority 1: Notice hints (config reload, etc.)
+    if let Some((ref msg, at)) = state.notice_hint {
+        if at.elapsed() < timeout {
+            return Some(Cow::Borrowed(msg.as_str()));
+        }
+    }
+
+    // Priority 2: Transient drag hint (within 5s, supported terminal)
     if state.term_supports_option_select {
         if let Some(t) = state.last_mouse_drag {
             if t.elapsed() < timeout {
-                return Some("Option+drag: select text");
+                return Some(Cow::Borrowed("Option+drag: select text"));
             }
         }
     }
@@ -71,19 +86,62 @@ pub(super) fn current_hint(state: &TerminalState) -> Option<&str> {
         return None;
     }
 
-    // 2. User has typed enough → thinking hint
-    if state.input.content().len() >= HINT_INPUT_THRESHOLD {
-        return if state.thinking_enabled {
-            Some("Ctrl+T: thinking on")
-        } else {
-            Some("Ctrl+T: thinking off")
-        };
+    // Collect eligible hints based on current state
+    let hints = collect_hints(state);
+    if hints.is_empty() {
+        return None;
     }
-    // 3. Empty input → mode switch hint
-    Some(match state.input_mode {
-        InputMode::Ai => "Tab or ! to switch to terminal",
-        InputMode::Command => "Tab or ? to switch to AI",
-    })
+
+    // Pick one deterministically using hint_seed
+    let total_weight: u16 = hints.iter().map(|h| h.weight as u16).sum();
+    if total_weight == 0 {
+        return None;
+    }
+    let pick = (state.hint_seed % total_weight as u32) as u16;
+    let mut acc = 0u16;
+    for hint in &hints {
+        acc += hint.weight as u16;
+        if pick < acc {
+            return Some(Cow::Owned(hint.text.clone()));
+        }
+    }
+    Some(Cow::Owned(hints.last().unwrap().text.clone()))
+}
+
+/// Collect all eligible hints for the current input state.
+fn collect_hints(state: &TerminalState) -> Vec<HintEntry> {
+    let mut hints = Vec::new();
+
+    if state.input.content().len() >= HINT_INPUT_THRESHOLD {
+        // Typing trigger: thinking + permission hints
+        hints.push(HintEntry {
+            text: if state.thinking_enabled {
+                "Ctrl+T: thinking on".into()
+            } else {
+                "Ctrl+T: thinking off".into()
+            },
+            weight: 50,
+        });
+        hints.push(HintEntry {
+            text: match state.permission_mode {
+                PermissionMode::Auto => "\u{21E7}Tab: Auto",
+                PermissionMode::Manual => "\u{21E7}Tab: Manual",
+                PermissionMode::Bypass => "\u{21E7}Tab: Bypass",
+            }.into(),
+            weight: 50,
+        });
+    } else {
+        // Empty input trigger: mode switch hint
+        hints.push(HintEntry {
+            text: match state.input_mode {
+                InputMode::Ai => "Tab or ! to switch to terminal",
+                InputMode::Command => "Tab or ? to switch to AI",
+            }.into(),
+            weight: 100,
+        });
+    }
+
+    hints
 }
 
 pub(crate) fn render_frame(
@@ -219,6 +277,7 @@ pub(crate) fn render_frame(
                 thinking_enabled: state.thinking_enabled,
                 permission_mode: state.permission_mode,
                 session_name: state.session_name.as_deref(),
+                theme,
             };
             render_status_bar(frame, status_area, &status_info);
 
@@ -508,32 +567,8 @@ pub(crate) fn render_status_bar(
     } else {
         String::new()
     };
-    let model_part = if !info.model_alias.is_empty() && info.token_usage.context_window > 0 {
-        format!(
-            "{} {}/{} | ",
-            info.model_alias,
-            format_tokens(info.token_usage.context_used),
-            format_tokens(info.token_usage.context_window)
-        )
-    } else if !info.model_alias.is_empty() {
-        format!("{} | ", info.model_alias)
-    } else {
-        String::new()
-    };
-    let thinking_part = if info.thinking_enabled { "thinking | " } else { "" };
-    let mode_part = match info.permission_mode {
-        PermissionMode::Auto => "AUTO | ",
-        PermissionMode::Manual => "MANUAL | ",
-        PermissionMode::Bypass => "BYPASS | ",
-    };
-    let session_part = match info.session_name {
-        Some(name) => format!("{} | ", name),
-        None => String::new(),
-    };
-    let right = format!(
-        " {}{}{}{}{} | v{} ",
-        session_part, model_part, thinking_part, mode_part, daemon_status, VERSION
-    );
+
+    // Build left side as plain string for length calculation
     let left = match info.git_info {
         Some(git) => {
             let branch_part = format!("({})", git.branch);
@@ -553,15 +588,54 @@ pub(crate) fn render_status_bar(
         None => format!(" {}{} ", info.cwd, running_indicator),
     };
 
-    // Pad the middle so right-side text is right-aligned.
-    let pad = width.saturating_sub(left.len() + right.len());
-    let bar = format!("{}{}{}", left, " ".repeat(pad), right);
+    // Build right side in 3 parts: before mode, colored mode, after mode.
+    let base_style = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let thinking_sym = if info.thinking_enabled { "\u{25C9}" } else { "\u{25CB}" };
+    let (mode_text, mode_color) = match info.permission_mode {
+        PermissionMode::Auto =>   ("  Auto  ", info.theme.status_perm_auto),
+        PermissionMode::Manual => (" Manual ", info.theme.status_perm_manual),
+        PermissionMode::Bypass => (" Bypass ", info.theme.status_perm_bypass),
+    };
+    let session_part = match info.session_name {
+        Some(name) => format!("{} | ", name),
+        None => String::new(),
+    };
+    let model_part = if !info.model_alias.is_empty() && info.token_usage.context_window > 0 {
+        format!(
+            "{} {}/{} | ",
+            info.model_alias,
+            format_tokens(info.token_usage.context_used),
+            format_tokens(info.token_usage.context_window)
+        )
+    } else if !info.model_alias.is_empty() {
+        format!("{} | ", info.model_alias)
+    } else {
+        String::new()
+    };
 
-    let paragraph = Paragraph::new(Line::from(Span::styled(
-        bar,
-        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
-    )));
+    // Text before and after the colored mode segment
+    let before_mode = format!(
+        " {}{}{} | ",
+        session_part, model_part, thinking_sym
+    );
+    let after_mode = format!(
+        " | {} | v{} ",
+        daemon_status, VERSION
+    );
 
+    // Total right-side length for padding calculation
+    let right_len = before_mode.len() + mode_text.len() + after_mode.len();
+    let pad = width.saturating_sub(left.len() + right_len);
+
+    let spans = vec![
+        Span::styled(left, base_style),
+        Span::styled(" ".repeat(pad), base_style),
+        Span::styled(before_mode, base_style),
+        Span::styled(mode_text, base_style.fg(mode_color)),
+        Span::styled(after_mode, base_style),
+    ];
+
+    let paragraph = Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
 }
 
