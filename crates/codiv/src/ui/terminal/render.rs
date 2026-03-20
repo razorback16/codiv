@@ -397,8 +397,14 @@ fn render_block_selection_overlay(
             let bottom_rule = screen_row + height;
             let buf = frame.buffer_mut();
             render_horizontal_rules(buf, &[top_rule, bottom_rule], term_area, theme);
-            // Show "(press Enter to expand)" hint for ToolBlocks and thinking
-            if matches!(focused, Block::Tool(_) | Block::Thinking(_)) {
+            // Show "(press Enter to expand)" hint for ToolBlocks (with content) and thinking
+            let has_expandable_content = match focused {
+                Block::Tool(tb) => tb.rendered_lines.last()
+                    .is_some_and(|l| l.contains("more lines")),
+                Block::Thinking(_) => true,
+                _ => false,
+            };
+            if has_expandable_content {
                 let hint = " (press Enter to expand)";
                 let hint_row = if matches!(focused, Block::Thinking(_)) {
                     screen_row
