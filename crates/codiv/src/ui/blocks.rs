@@ -302,6 +302,7 @@ impl BlockRegistry {
     /// Store rendered ANSI lines on the most recently added/merged ToolBlock.
     pub fn set_last_tool_rendered_lines(&mut self, lines: Vec<String>) {
         if let Some(Block::Tool(tb)) = self.blocks.last_mut() {
+            tb.height = lines.len() as u16;
             tb.rendered_lines = lines;
         }
     }

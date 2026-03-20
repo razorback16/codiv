@@ -264,10 +264,14 @@ fn handle_single_message(
                 }
                 ipc_messages::StreamChunk::ToolResult { name, result } => {
                     {
-                        let had_pending = ds.tracker.pending_tool().is_some();
-                        if had_pending {
-                            // Move up to overwrite the yellow header line
-                            parser.process(b"\x1b[A\r\x1b[K");
+                        // Move up to overwrite the placeholder header only
+                        // if the cursor is still past the tool's start line.
+                        // When a confirmation dialog was cleared, the cursor is
+                        // already at the start — moving up would eat the spacer.
+                        if let Some(start) = ds.tracker.pending_tool_start_index() {
+                            if get_scrollback_line(parser) > start {
+                                parser.process(b"\x1b[A\r\x1b[K");
+                            }
                         }
                         let scrollback_line = get_scrollback_line(parser);
                         match ds.tracker.record_tool_result(&name, &result, scrollback_line) {
