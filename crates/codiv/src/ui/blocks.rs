@@ -4,6 +4,8 @@
 //! [`BlockRegistry`]. Tool calls render as 2-line summaries (header + summary)
 //! that can be expanded via a modal overlay.
 
+use std::collections::{HashMap, VecDeque};
+
 use serde_json::Value;
 
 use super::diff::generate_unified_diff;
@@ -110,6 +112,8 @@ pub enum ToolResultAction {
 // ---------------------------------------------------------------------------
 
 struct PendingToolCall {
+    #[allow(dead_code)]
+    name: String,
     arguments: String,
 }
 
@@ -121,10 +125,10 @@ pub struct BlockRegistry {
     blocks: Vec<Block>,
     focused_index: Option<usize>,
     next_id: usize,
-    pending_tool_call: Option<PendingToolCall>,
+    pending_tool_calls: VecDeque<PendingToolCall>,
     pending_tool_name: Option<String>,
     pending_tool_start_index: Option<u64>,
-    pending_edit_old_content: Option<String>,
+    pending_edit_old_contents: HashMap<String, String>,
     replay_mode: bool,
 }
 
@@ -134,10 +138,10 @@ impl BlockRegistry {
             blocks: Vec::new(),
             focused_index: None,
             next_id: 0,
-            pending_tool_call: None,
+            pending_tool_calls: VecDeque::new(),
             pending_tool_name: None,
             pending_tool_start_index: None,
-            pending_edit_old_content: None,
+            pending_edit_old_contents: HashMap::new(),
             replay_mode: false,
         }
     }
@@ -164,14 +168,17 @@ impl BlockRegistry {
             if !self.replay_mode {
                 if let Ok(args) = serde_json::from_str::<Value>(arguments) {
                     if let Some(path) = json_str(&args, "file_path") {
-                        self.pending_edit_old_content = std::fs::read_to_string(&path).ok();
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            self.pending_edit_old_contents.insert(path, content);
+                        }
                     }
                 }
             }
         }
         // Do NOT set pending_tool_name here — only record_tool_call_delta does that,
         // because only that path writes a spinner placeholder to overwrite.
-        self.pending_tool_call = Some(PendingToolCall {
+        self.pending_tool_calls.push_back(PendingToolCall {
+            name: name.to_string(),
             arguments: arguments.to_string(),
         });
     }
@@ -198,8 +205,8 @@ impl BlockRegistry {
         self.pending_tool_name = None;
         self.pending_tool_start_index = None;
         let args_json = self
-            .pending_tool_call
-            .take()
+            .pending_tool_calls
+            .pop_front()
             .map(|p| p.arguments)
             .unwrap_or_default();
         let args: Value = serde_json::from_str(&args_json).unwrap_or(Value::Null);
@@ -468,10 +475,10 @@ impl BlockRegistry {
         self.blocks.clear();
         self.focused_index = None;
         self.next_id = 0;
-        self.pending_tool_call = None;
+        self.pending_tool_calls.clear();
         self.pending_tool_name = None;
         self.pending_tool_start_index = None;
-        self.pending_edit_old_content = None;
+        self.pending_edit_old_contents.clear();
         self.replay_mode = false;
     }
 
@@ -524,7 +531,9 @@ impl BlockRegistry {
         if result.starts_with("Error:") {
             let header = build_tool_header("Edit", args);
             let summary = format!("  \u{2514} Edit failed: {}", result);
-            self.pending_edit_old_content.take(); // consume stashed content
+            if let Some(path) = json_str(args, "file_path") {
+                self.pending_edit_old_contents.remove(&path);
+            }
             return self.push_tool_block("Edit", header, summary, result.to_string(), false, start_index, vec![]);
         }
         // In replay mode, skip file I/O — files have stale content.
@@ -536,7 +545,7 @@ impl BlockRegistry {
             return self.push_tool_block("Edit", header, summary, String::new(), true, start_index, vec![]);
         }
         let file_path = json_str(args, "file_path").unwrap_or_default();
-        let stashed = self.pending_edit_old_content.take().unwrap_or_default();
+        let stashed = self.pending_edit_old_contents.remove(&file_path).unwrap_or_default();
         let new_content = std::fs::read_to_string(&file_path).unwrap_or_default();
 
         // Merging? Use the original baseline. Otherwise use the stashed pre-edit content.
