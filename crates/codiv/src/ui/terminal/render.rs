@@ -590,7 +590,11 @@ pub(crate) fn render_status_bar(
 
     // Build right side in 3 parts: before mode, colored mode, after mode.
     let base_style = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
-    let thinking_sym = if info.thinking_enabled { "\u{25C9}" } else { "\u{25CB}" };
+    // Thinking indicator: fixed-width slot rendered as spaces for layout,
+    // then the ⚡ character is stamped directly into the buffer afterwards
+    // to avoid unicode width ambiguity in padding calculations.
+    const THINKING_SLOT_WIDTH: usize = 3;
+    let thinking_sym = " ".repeat(THINKING_SLOT_WIDTH);
     let (mode_text, mode_color) = match info.permission_mode {
         PermissionMode::Auto =>   ("  Auto  ", info.theme.status_perm_auto),
         PermissionMode::Manual => (" Manual ", info.theme.status_perm_manual),
@@ -623,20 +627,41 @@ pub(crate) fn render_status_bar(
         daemon_status, VERSION
     );
 
-    // Total right-side length for padding calculation
+    // All strings are pure ASCII now, so .len() == display width.
     let right_len = before_mode.len() + mode_text.len() + after_mode.len();
     let pad = width.saturating_sub(left.len() + right_len);
 
     let spans = vec![
         Span::styled(left, base_style),
         Span::styled(" ".repeat(pad), base_style),
-        Span::styled(before_mode, base_style),
+        Span::styled(before_mode.clone(), base_style),
         Span::styled(mode_text, base_style.fg(mode_color)),
         Span::styled(after_mode, base_style),
     ];
 
     let paragraph = Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
+
+    // Stamp thinking indicator directly into the buffer.
+    // ⚡ when thinking is enabled, ○ (hollow circle) when disabled.
+    // The slot is THINKING_SLOT_WIDTH spaces inside `before_mode`, so we
+    // locate it by working backwards from the mode_text position.
+    {
+        let right_start = area.right().saturating_sub(right_len as u16);
+        // before_mode ends with " | ", and the slot is just before that separator.
+        // Slot starts at: right_start + before_mode.len() - " | ".len() - THINKING_SLOT_WIDTH
+        let slot_start = right_start + (before_mode.len() - 3 - THINKING_SLOT_WIDTH) as u16;
+        let center = slot_start + (THINKING_SLOT_WIDTH as u16) / 2;
+        let row = area.top();
+        if center < area.right() {
+            let cell = &mut frame.buffer_mut()[(center, row)];
+            if info.thinking_enabled {
+                cell.set_char('\u{26A1}'); // ⚡
+            } else {
+                cell.set_char('\u{25CB}'); // ○
+            }
+        }
+    }
 }
 
 #[cfg(test)]
