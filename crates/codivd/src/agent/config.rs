@@ -60,23 +60,18 @@ const DEFAULT_CONFIG_TOML: &str = include_str!("../../config.default.toml");
 // ---------------------------------------------------------------------------
 
 fn default_threshold_percent() -> u8 { 75 }
-fn default_preserve_count() -> usize { 10 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CompactionConfig {
     /// Trigger auto-compaction when input_tokens exceed this % of context_window.
     #[serde(default = "default_threshold_percent")]
     pub threshold_percent: u8,
-    /// Number of recent events to preserve (not summarized).
-    #[serde(default = "default_preserve_count")]
-    pub preserve_count: usize,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             threshold_percent: default_threshold_percent(),
-            preserve_count: default_preserve_count(),
         }
     }
 }
@@ -372,6 +367,50 @@ pub async fn simple_text_completion(
             }
         }
         Ok(text)
+    })
+}
+
+/// Like `simple_text_completion` but streams each text chunk to the client
+/// via IPC as `AgentStreamChunk::Text`. Returns (full_text, input_tokens,
+/// output_tokens, cache_read_tokens).
+pub async fn streaming_text_completion(
+    assignment: &ModelAssignment,
+    provider_config: &ProviderConfig,
+    system: &str,
+    prompt: &str,
+    request_id: &str,
+    tx: &mpsc::Sender<Vec<u8>>,
+) -> Result<(String, usize, usize, usize), DynError> {
+    use aisdk::core::messages::Message;
+    let messages = vec![Message::User(prompt.to_string().into()).into()];
+    with_provider_model!(assignment, provider_config, |model, _is_openai_compat| {
+        let mut response = LanguageModelRequest::builder()
+            .model(model)
+            .system(system)
+            .messages(messages)
+            .reasoning_effort(aisdk::core::language_model::ReasoningEffort::None)
+            .build()
+            .stream_text()
+            .await?;
+        let mut text = String::new();
+        while let Some(chunk) = response.stream.next().await {
+            if let LanguageModelStreamChunkType::TextDelta(t) = chunk {
+                text.push_str(&t);
+                let _ = send_ipc(
+                    tx,
+                    &DaemonMessage::AgentStreamChunk {
+                        request_id: request_id.to_string(),
+                        chunk: StreamChunk::Text(t),
+                    },
+                )
+                .await;
+            }
+        }
+        let usage = response.usage().await;
+        let input_tokens = usage.input_tokens.unwrap_or(0);
+        let output_tokens = usage.output_tokens.unwrap_or(0);
+        let cache_read_tokens = usage.cached_tokens.unwrap_or(0);
+        Ok((text, input_tokens, output_tokens, cache_read_tokens))
     })
 }
 

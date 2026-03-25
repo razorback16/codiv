@@ -146,9 +146,6 @@ pub(crate) fn rerender_all(
             crate::ui::blocks::Block::Thinking(b) => {
                 write_block_lines_to_parser(parser, &b.rendered_lines);
             }
-            crate::ui::blocks::Block::Summary(b) => {
-                write_block_lines_to_parser(parser, &b.rendered_lines);
-            }
         }
         // Separator between blocks
         parser.process(b"\r\n");
@@ -195,7 +192,6 @@ pub(crate) fn scroll_to_focused(
         crate::ui::blocks::Block::CmdResponse(cb) => cb.start_index,
         crate::ui::blocks::Block::AiResponse(ab) => ab.start_index,
         crate::ui::blocks::Block::Thinking(tk) => tk.start_index,
-        crate::ui::blocks::Block::Summary(sb) => sb.start_index,
     };
     let sb_len = true_scrollback_len(parser) as u64;
     let screen_rows = parser.screen().size().0 as u64;
@@ -311,7 +307,6 @@ mod tests {
             crate::ui::blocks::Block::Tool(t) => t.start_index,
             crate::ui::blocks::Block::AiResponse(a) => a.start_index,
             crate::ui::blocks::Block::CmdResponse(c) => c.start_index,
-            crate::ui::blocks::Block::Summary(s) => s.start_index,
         }).collect();
         for i in 1..positions.len() {
             assert!(positions[i] > positions[i - 1], "positions should increase: {:?}", positions);

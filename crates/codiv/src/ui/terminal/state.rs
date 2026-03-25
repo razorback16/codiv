@@ -197,6 +197,9 @@ pub(crate) struct TerminalState {
     /// Accumulates ANSI-rendered lines during AI streaming for AiResponseBlock.
     pub ai_rendered_lines: Vec<String>,
 
+    /// When set, a compaction is in progress; holds the compacted event count.
+    pub pending_compaction_count: Option<usize>,
+
     // Contextual hint (shown for 5s after trigger)
     pub hint_shown_at: Option<Instant>,
     pub last_mouse_drag: Option<Instant>,
@@ -276,6 +279,7 @@ impl TerminalState {
 
             cmd_output_capture: Vec::new(),
             ai_rendered_lines: Vec::new(),
+            pending_compaction_count: None,
 
             // Contextual hint (shown for 5s after trigger)
             hint_shown_at: None,

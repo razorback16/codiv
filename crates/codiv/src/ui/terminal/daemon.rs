@@ -9,7 +9,7 @@ use crate::ui::blocks::{canonical_tool_name, BlockRegistry, ToolResultAction};
 use crate::ui::theme::Theme;
 
 use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState, TokenUsage};
-use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, rerender_all, NoticeKind, write_block_lines_to_parser};
+use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, rerender_all, reset_screen, NoticeKind, write_block_lines_to_parser};
 
 /// Mutable state used by the daemon message handler.
 /// Constructed from `TerminalState` fields for live messages,
@@ -32,6 +32,7 @@ pub(super) struct DaemonStreamState<'a> {
     pub session_id: &'a mut Option<String>,
     pub session_name: &'a mut Option<String>,
     pub active_request_id: &'a mut Option<String>,
+    pub pending_compaction_count: &'a mut Option<usize>,
 }
 
 /// Finalize an in-progress thinking block via the shared utility.
@@ -324,6 +325,11 @@ fn handle_single_message(
             request_id: _,
             summary: _,
         } => {
+            // During compaction, skip AgentComplete finalization —
+            // CompactionComplete will handle everything.
+            if ds.pending_compaction_count.is_some() {
+                return;
+            }
             let finalized = finalize_thinking_ds(parser, ds, theme);
             if *ds.agent_streaming {
                 let final_bytes = ds.md_stream.finish();
@@ -502,7 +508,8 @@ fn handle_single_message(
         ipc_messages::DaemonMessage::Notice { .. } => {}
         // ExecuteCommand is handled in handle_daemon_message (needs full state)
         ipc_messages::DaemonMessage::ExecuteCommand { .. } => {}
-        // CompactionComplete is handled in handle_daemon_message (needs full state)
+        // CompactionStarted/Complete are handled in handle_daemon_message (needs full state)
+        ipc_messages::DaemonMessage::CompactionStarted { .. } => {}
         ipc_messages::DaemonMessage::CompactionComplete { .. } => {}
         // SessionList and SessionReplay are handled in handle_daemon_message
         ipc_messages::DaemonMessage::SessionList { .. }
@@ -728,20 +735,39 @@ pub(crate) fn handle_daemon_message(
                         text,
                         compacted_event_count,
                     } => {
-                        let header = format!(
-                            "\x1b[36m\x1b[1m--- Conversation compacted ({} events summarized) ---\x1b[0m",
-                            compacted_event_count
-                        );
-                        let mut rendered_lines = vec![header];
-                        for line in text.lines() {
-                            rendered_lines.push(format!("\x1b[36m{}\x1b[0m", line));
+                        // Render summary text through markdown to get ANSI lines
+                        let mut preview: Vec<String> = Vec::new();
+                        replay_md.reset();
+                        let trimmed = text.trim_start();
+                        if !trimmed.is_empty() {
+                            let mut all_ansi = Vec::new();
+                            if let Some(ansi) = replay_md.push(trimmed) {
+                                all_ansi.extend_from_slice(&ansi);
+                            }
+                            let final_bytes = replay_md.finish();
+                            if !final_bytes.is_empty() {
+                                all_ansi.extend_from_slice(&final_bytes);
+                            }
+                            replay_md.reset();
+
+                            if !all_ansi.is_empty() {
+                                let mut lines = Vec::new();
+                                accumulate_ai_lines(&mut lines, &all_ansi);
+                                if lines.last().is_some_and(|s| s.is_empty()) {
+                                    lines.pop();
+                                }
+                                preview = lines.into_iter().take(100).collect();
+                            }
                         }
-                        rendered_lines
-                            .push("\x1b[36m--- End of summary ---\x1b[0m".to_string());
-                        state.tracker.add_summary_block(
-                            text.clone(),
-                            *compacted_event_count,
-                            rendered_lines,
+
+                        // One tool block with markdown preview (no separate AI response block)
+                        let header = "Compact".to_string();
+                        let summary_line = format!("  \u{2514} {} events summarized", compacted_event_count);
+                        let tool_rendered = build_tool_rendered_lines(
+                            "Compact", &header, &summary_line, &preview, None, theme,
+                        );
+                        state.tracker.add_tool_block(
+                            "Compact", header, summary_line, text.clone(), false, tool_rendered,
                         );
                     }
                 }
@@ -771,32 +797,69 @@ pub(crate) fn handle_daemon_message(
             state.notice_hint = Some((message, Instant::now()));
             state.needs_render = true;
         }
+        ipc_messages::DaemonMessage::CompactionStarted {
+            request_id,
+            compacted_event_count,
+        } => {
+            state.prompt_is_live = false;
+            state.prompt_anchor_row = None;
+            reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
+
+            // Show pending yellow header + placeholder summary (2-line tool block pattern)
+            let scrollback_line = get_scrollback_line(parser);
+            state.tracker.record_tool_call_delta("Compact", scrollback_line);
+            let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, "Compact");
+            parser.process(header_line.as_bytes());
+            let summary_placeholder = format!("{}  compacting...\x1b[0m\r\n", theme.ansi_tool_pending);
+            parser.process(summary_placeholder.as_bytes());
+
+            // Store compacted event count for CompactionComplete
+            state.pending_compaction_count = Some(compacted_event_count);
+
+            // Enter streaming mode for the incoming summary text
+            state.agent_streaming = true;
+            state.active_request_id = Some(request_id);
+            state.md_stream.reset();
+            state.ai_start_scrollback = None;
+            state.ai_rendered_lines.clear();
+            state.needs_render = true;
+        }
         ipc_messages::DaemonMessage::CompactionComplete {
             summary,
             compacted_event_count,
         } => {
-            // Clear all existing blocks and rebuild with summary
-            state.tracker.clear();
-
-            // Build rendered lines for the summary block
-            let header = format!(
-                "\x1b[36m\x1b[1m--- Conversation compacted ({} events summarized) ---\x1b[0m",
-                compacted_event_count
-            );
-            let mut rendered_lines = vec![header];
-            for line in summary.lines() {
-                rendered_lines.push(format!("\x1b[36m{}\x1b[0m", line));
+            let final_bytes = state.md_stream.finish();
+            if !final_bytes.is_empty() {
+                accumulate_ai_lines(&mut state.ai_rendered_lines, &final_bytes);
             }
-            rendered_lines.push("\x1b[36m--- End of summary ---\x1b[0m".to_string());
+            let mut ai_lines = std::mem::take(&mut state.ai_rendered_lines);
+            if ai_lines.last().is_some_and(|s| s.is_empty()) {
+                ai_lines.pop();
+            }
+            let preview: Vec<String> = ai_lines.into_iter().take(100).collect();
 
-            state.tracker.record_summary(
-                &summary,
-                compacted_event_count,
-                0,
+            let summary_line = format!("  \u{2514} {} events summarized", compacted_event_count);
+            let rendered_lines = build_tool_rendered_lines(
+                "Compact", "Compact", &summary_line, &preview, None, theme,
+            );
+
+            state.tracker.clear();
+            state.tracker.add_tool_block(
+                "Compact",
+                "Compact".to_string(),
+                summary_line,
+                summary,
+                false,
                 rendered_lines,
             );
+            rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
 
-            super::utils::rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
+            state.agent_streaming = false;
+            state.active_request_id = None;
+            state.ai_start_scrollback = None;
+            state.pending_compaction_count = None;
+            state.prompt_anchor_row = None;
+            state.md_stream.reset();
             state.needs_render = true;
         }
         // All other messages delegate to the core handler
@@ -819,6 +882,7 @@ pub(crate) fn handle_daemon_message(
                 session_id: &mut state.session_id,
                 session_name: &mut state.session_name,
                 active_request_id: &mut state.active_request_id,
+                pending_compaction_count: &mut state.pending_compaction_count,
             };
             handle_single_message(other, parser, &mut ds, theme);
         }

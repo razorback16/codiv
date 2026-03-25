@@ -128,24 +128,23 @@ impl Agent {
         lines.join("\n")
     }
 
-    /// Compact old conversation history into a summary, preserving the
-    /// most recent `preserve_count` events. Uses the `compactor` role
-    /// from config for the summarization LLM call.
+    /// Compact the entire conversation history into a summary, streaming
+    /// the result via IPC. Returns (summary, compacted_count, input_tokens,
+    /// output_tokens, cache_read_tokens).
     pub async fn compact(
         &mut self,
-        preserve_count: usize,
         models: &ModelCatalog,
-    ) -> Result<(String, usize), String> {
-        let split = self.history.len().saturating_sub(preserve_count);
-        if split == 0 {
-            return Err("not enough events to compact".to_string());
+        client_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+        request_id: &str,
+    ) -> Result<(String, usize, usize, usize, usize), String> {
+        if self.history.is_empty() {
+            return Err("no events to compact".to_string());
         }
-        let old_events = &self.history[..split];
-        let compacted_count = old_events.len();
+        let compacted_count = self.history.len();
 
-        // Build text representation of old events
+        // Build text representation of all events
         let mut context = String::new();
-        for event in old_events {
+        for event in &self.history {
             match event {
                 ConversationEvent::UserPrompt { text, .. } => {
                     context.push_str(&format!("User: {}\n", text));
@@ -194,25 +193,26 @@ impl Agent {
             what the current state of the task is, and any important decisions made. \
             Keep it under 500 words. Do not include pleasantries or meta-commentary.";
 
-        let summary = config::simple_text_completion(
-            &assignment,
-            &provider_config,
-            system,
-            &context,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let (summary, input_tokens, output_tokens, cache_read_tokens) =
+            config::streaming_text_completion(
+                &assignment,
+                &provider_config,
+                system,
+                &context,
+                request_id,
+                client_tx,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
 
-        // Replace old events with summary + recent events
-        let recent_events: Vec<ConversationEvent> = self.history[split..].to_vec();
+        // Replace entire history with summary
         self.history.clear();
         self.history.push(ConversationEvent::Summary {
             text: summary.clone(),
             compacted_event_count: compacted_count,
         });
-        self.history.extend(recent_events);
 
-        Ok((summary, compacted_count))
+        Ok((summary, compacted_count, input_tokens, output_tokens, cache_read_tokens))
     }
 
     /// Build aisdk Messages from the session timeline.
