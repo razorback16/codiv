@@ -157,7 +157,8 @@ pub(crate) fn render_frame(
     let is_executing = state.pending_command.is_some();
     let is_thinking = state.thinking_start.is_some();
     let has_inline_picker = state.pending_session_picker.is_some() || state.pending_confirmation.is_some();
-    if state.scroll_offset == 0 && !is_executing && !state.agent_streaming && !in_alt_screen && !has_inline_picker {
+    let has_focused_block = state.tracker.focused().is_some();
+    if state.scroll_offset == 0 && !is_executing && !state.agent_streaming && !in_alt_screen && !has_inline_picker && !has_focused_block {
         let lines: Vec<&str> = state.input.lines().collect();
         let line_count = lines.len() as u16;
         let screen_rows = parser.screen().size().0;
@@ -337,7 +338,6 @@ fn render_prompt_gutter(
             Block::Thinking(tk) => (tk.start_index, '\u{25CB}', theme.thinking_text),
             Block::Tool(tb) => (tb.start_index, '\u{25CF}', theme.tool_bullet),
             Block::CmdResponse(cb) => (cb.start_index, '$', theme.gutter_cmd),
-            Block::Summary(sb) => (sb.start_index, '\u{2261}', theme.thinking_text), // ≡
         };
         if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
             let screen_row = (scrollback_line - abs_top) as u16;
@@ -444,7 +444,6 @@ fn render_block_selection_overlay(
             Block::CmdResponse(cb) => (cb.start_index, cb.height),
             Block::AiResponse(ab) => (ab.start_index, ab.height),
             Block::Thinking(tk) => (tk.start_index, tk.height),
-            Block::Summary(sb) => (sb.start_index, sb.height),
         };
         let sb_len = true_scrollback_len(parser) as u64;
         let screen_rows = parser.screen().size().0 as u64;

@@ -141,7 +141,12 @@ pub enum DaemonMessage {
     Notice {
         message: String,
     },
-    /// Compaction completed — client should update UI.
+    /// Compaction is starting — client should clear blocks and show tool header.
+    CompactionStarted {
+        request_id: String,
+        compacted_event_count: usize,
+    },
+    /// Compaction completed — client should finalize.
     CompactionComplete {
         summary: String,
         compacted_event_count: usize,

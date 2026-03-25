@@ -52,7 +52,6 @@ mode = "auto"  # "auto" | "manual" | "bypass"
 # Auto-compact conversations when context usage exceeds threshold.
 # [compaction]
 # threshold_percent = 75    # trigger at 75% of context window
-# preserve_count = 10       # keep last 10 events intact
 
 # ── Per-role overrides ───────────────────────────────────────────────
 # Assign a specific provider/model to each agent role.
