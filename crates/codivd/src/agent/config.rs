@@ -59,10 +59,34 @@ const DEFAULT_CONFIG_TOML: &str = include_str!("../../config.default.toml");
 // AppConfig — unified configuration (permissions + model catalog)
 // ---------------------------------------------------------------------------
 
+fn default_threshold_percent() -> u8 { 75 }
+fn default_preserve_count() -> usize { 10 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompactionConfig {
+    /// Trigger auto-compaction when input_tokens exceed this % of context_window.
+    #[serde(default = "default_threshold_percent")]
+    pub threshold_percent: u8,
+    /// Number of recent events to preserve (not summarized).
+    #[serde(default = "default_preserve_count")]
+    pub preserve_count: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            threshold_percent: default_threshold_percent(),
+            preserve_count: default_preserve_count(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub permissions: PermissionsConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
     #[serde(flatten)]
     pub models: ModelCatalog,
 }
@@ -343,7 +367,7 @@ pub async fn simple_text_completion(
             .await?;
         let mut text = String::new();
         while let Some(chunk) = response.stream.next().await {
-            if let LanguageModelStreamChunkType::Text(t) = chunk {
+            if let LanguageModelStreamChunkType::TextDelta(t) = chunk {
                 text.push_str(&t);
             }
         }
@@ -422,6 +446,9 @@ fn build_anthropic_model(
     model_name: &str,
     provider_config: &ProviderConfig,
 ) -> Result<aisdk::providers::Anthropic<aisdk::core::DynamicModel>, DynError> {
+    let ua_headers = std::collections::HashMap::from([
+        ("user-agent".to_string(), "Claude Code".to_string()),
+    ]);
     if provider_config.api_key.is_some() || provider_config.base_url.is_some() {
         let mut builder = Anthropic::builder().model_name(model_name);
         if let Some(ref key) = provider_config.api_key {
@@ -434,9 +461,15 @@ fn build_anthropic_model(
         if let Some(ref url) = provider_config.base_url {
             builder = builder.base_url(ensure_v1_suffix(url));
         }
+        builder = builder.headers(ua_headers);
         Ok(builder.build()?)
     } else {
-        Ok(Anthropic::model_name(model_name))
+        let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+        Ok(Anthropic::builder()
+            .model_name(model_name)
+            .api_key(key)
+            .headers(ua_headers)
+            .build()?)
     }
 }
 
@@ -617,6 +650,7 @@ where
     let mut collected_events: Vec<ConversationEvent> = Vec::new();
     let mut reasoning_buffer = String::new();
     let mut reasoning_start: Option<Instant> = None;
+    let mut tool_call_names: HashMap<String, String> = HashMap::new();
 
     tracing::debug!("stream started for request {}", request_id);
 
@@ -624,7 +658,7 @@ where
         chunk_count += 1;
 
         match chunk {
-            LanguageModelStreamChunkType::Text(text) => {
+            LanguageModelStreamChunkType::TextDelta(text) => {
                 full_text.push_str(&text);
                 send_ipc(
                     tx,
@@ -635,7 +669,7 @@ where
                 )
                 .await?;
             }
-            LanguageModelStreamChunkType::Reasoning(text) => {
+            LanguageModelStreamChunkType::ReasoningDelta(text) => {
                 reasoning_start.get_or_insert(Instant::now());
                 reasoning_buffer.push_str(&text);
                 send_ipc(
@@ -647,12 +681,13 @@ where
                 )
                 .await?;
             }
-            LanguageModelStreamChunkType::ToolCallDelta { tool_call_id, tool_name, delta } => {
+            LanguageModelStreamChunkType::ToolCallDelta { id, delta } => {
+                let tool_name = tool_call_names.get(&id).cloned().unwrap_or_default();
                 send_ipc(
                     tx,
                     &DaemonMessage::AgentStreamChunk {
                         request_id: request_id.to_string(),
-                        chunk: StreamChunk::ToolCallDelta { tool_call_id, tool_name, delta },
+                        chunk: StreamChunk::ToolCallDelta { tool_call_id: id, tool_name, delta },
                     },
                 )
                 .await?;
@@ -668,11 +703,15 @@ where
                     });
                     reasoning_start = None;
                 }
-                let args = serde_json::to_string(&info.input).unwrap_or_default();
+                // Register name so ToolCallDelta can include it in IPC
+                tool_call_names.insert(info.id.clone(), info.name.clone());
+            }
+            LanguageModelStreamChunkType::ToolCallAvailable(info) => {
+                let arguments = serde_json::to_string(&info.input).unwrap_or_default();
                 collected_events.push(ConversationEvent::ToolCall {
                     request_id: request_id.to_string(),
                     tool_name: info.tool.name.clone(),
-                    arguments: args.clone(),
+                    arguments: arguments.clone(),
                 });
                 send_ipc(
                     tx,
@@ -680,17 +719,17 @@ where
                         request_id: request_id.to_string(),
                         chunk: StreamChunk::ToolCall {
                             name: info.tool.name,
-                            arguments: args,
+                            arguments,
                         },
                     },
                 )
                 .await?;
             }
-            LanguageModelStreamChunkType::ToolResult(info) => {
+            LanguageModelStreamChunkType::ToolCallEnd(info) => {
                 let output = match &info.output {
                     Ok(v) => match v {
                         serde_json::Value::String(s) => s.clone(),
-                        other => serde_json::to_string(other).unwrap_or_default(),
+                        other => serde_json::to_string(&other).unwrap_or_default(),
                     },
                     Err(e) => format!("Error: {e}"),
                 };
