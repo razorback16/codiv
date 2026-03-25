@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use crate::agent::config::{self, ModelAssignment, ProviderConfig};
+use crate::agent::config::{self, ModelAssignment, ModelCatalog, ProviderConfig};
 use aisdk::core::messages::{AssistantMessage, Message, Messages};
 use aisdk::core::language_model::LanguageModelResponseContentType;
 use aisdk::core::tools::{ToolCallInfo, ToolDetails, ToolResultInfo};
@@ -128,6 +128,93 @@ impl Agent {
         lines.join("\n")
     }
 
+    /// Compact old conversation history into a summary, preserving the
+    /// most recent `preserve_count` events. Uses the `compactor` role
+    /// from config for the summarization LLM call.
+    pub async fn compact(
+        &mut self,
+        preserve_count: usize,
+        models: &ModelCatalog,
+    ) -> Result<(String, usize), String> {
+        let split = self.history.len().saturating_sub(preserve_count);
+        if split == 0 {
+            return Err("not enough events to compact".to_string());
+        }
+        let old_events = &self.history[..split];
+        let compacted_count = old_events.len();
+
+        // Build text representation of old events
+        let mut context = String::new();
+        for event in old_events {
+            match event {
+                ConversationEvent::UserPrompt { text, .. } => {
+                    context.push_str(&format!("User: {}\n", text));
+                }
+                ConversationEvent::AssistantText { text, .. } => {
+                    context.push_str(&format!("Assistant: {}\n", text));
+                }
+                ConversationEvent::ToolCall { tool_name, arguments, .. } => {
+                    context.push_str(&format!(
+                        "Tool call: {} {}\n",
+                        tool_name,
+                        truncate_str(arguments, 200)
+                    ));
+                }
+                ConversationEvent::ToolResult { tool_name, result, .. } => {
+                    context.push_str(&format!(
+                        "Tool result ({}): {}\n",
+                        tool_name,
+                        truncate_str(result, 500)
+                    ));
+                }
+                ConversationEvent::ShellCommand { command, output, exit_code, .. } => {
+                    context.push_str(&format!(
+                        "Shell: {} (exit {}) -> {}\n",
+                        command,
+                        exit_code,
+                        truncate_str(output, 200)
+                    ));
+                }
+                ConversationEvent::Summary { text, .. } => {
+                    context.push_str(&format!("Previous summary: {}\n", text));
+                }
+                _ => {}
+            }
+        }
+
+        let assignment = models
+            .roles
+            .get("compactor")
+            .cloned()
+            .ok_or("no compactor role configured in config.toml")?;
+        let provider_config = models.resolve_provider_config(&assignment);
+
+        let system = "You are a conversation summarizer. Produce a concise summary of the conversation below. \
+            Focus on: what the user asked for, what actions were taken (files edited, commands run), \
+            what the current state of the task is, and any important decisions made. \
+            Keep it under 500 words. Do not include pleasantries or meta-commentary.";
+
+        let summary = config::simple_text_completion(
+            &assignment,
+            &provider_config,
+            system,
+            &context,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        // Replace old events with summary + recent events
+        let recent_events: Vec<ConversationEvent> = self.history[split..].to_vec();
+        self.history.clear();
+        self.history.push(ConversationEvent::Summary {
+            text: summary.clone(),
+            compacted_event_count: compacted_count,
+        });
+        self.history.extend(recent_events);
+
+        Ok((summary, compacted_count))
+    }
+
     /// Build aisdk Messages from the session timeline.
     ///
     /// ShellCommands become assistant + user message pairs representing
@@ -217,6 +304,12 @@ impl Agent {
                 }
                 ConversationEvent::TokenUsage { .. } => {
                     // Metadata only — not part of the conversation history.
+                }
+                ConversationEvent::Summary { text, .. } => {
+                    messages.push(Message::User(UserMessage::new(format!(
+                        "[Conversation summary — earlier messages were compacted]:\n{}",
+                        text
+                    ))));
                 }
             }
         }

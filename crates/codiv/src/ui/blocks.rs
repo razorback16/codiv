@@ -83,12 +83,25 @@ pub struct ThinkingBlock {
     pub rendered_lines: Vec<String>,
 }
 
+pub struct SummaryBlock {
+    #[allow(dead_code)]
+    pub id: usize,
+    #[allow(dead_code)]
+    pub text: String,
+    #[allow(dead_code)]
+    pub compacted_event_count: usize,
+    pub start_index: u64,
+    pub height: u16,
+    pub rendered_lines: Vec<String>,
+}
+
 pub enum Block {
     Prompt(PromptBlock),
     CmdResponse(CmdResponseBlock),
     AiResponse(AiResponseBlock),
     Tool(ToolBlock),
     Thinking(ThinkingBlock),
+    Summary(SummaryBlock),
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +329,7 @@ impl BlockRegistry {
     // -- focus / navigation -------------------------------------------------
 
     fn is_navigable(block: &Block) -> bool {
-        matches!(block, Block::Prompt(_) | Block::Tool(_) | Block::AiResponse(_) | Block::Thinking(_))
+        matches!(block, Block::Prompt(_) | Block::Tool(_) | Block::AiResponse(_) | Block::Thinking(_) | Block::Summary(_))
     }
 
     pub fn focus_last(&mut self) {
@@ -411,6 +424,45 @@ impl BlockRegistry {
         }));
     }
 
+    /// Record a summary block during live compaction.
+    pub fn record_summary(
+        &mut self,
+        text: &str,
+        compacted_event_count: usize,
+        start_index: u64,
+        rendered_lines: Vec<String>,
+    ) {
+        let id = self.next_id();
+        let height = rendered_lines.len() as u16;
+        self.blocks.push(Block::Summary(SummaryBlock {
+            id,
+            text: text.to_string(),
+            compacted_event_count,
+            start_index,
+            height,
+            rendered_lines,
+        }));
+    }
+
+    /// Add a summary block with pre-computed rendered lines (for replay).
+    pub fn add_summary_block(
+        &mut self,
+        text: String,
+        compacted_event_count: usize,
+        rendered_lines: Vec<String>,
+    ) {
+        let id = self.next_id();
+        let height = rendered_lines.len() as u16;
+        self.blocks.push(Block::Summary(SummaryBlock {
+            id,
+            text,
+            compacted_event_count,
+            start_index: 0,
+            height,
+            rendered_lines,
+        }));
+    }
+
     /// Add a tool block with pre-computed rendered lines (for replay).
     #[allow(dead_code)]
     pub fn add_tool_block(
@@ -462,6 +514,10 @@ impl BlockRegistry {
                     pos += b.rendered_lines.len() as u64;
                 }
                 Block::Thinking(b) => {
+                    b.start_index = pos;
+                    pos += b.rendered_lines.len() as u64;
+                }
+                Block::Summary(b) => {
                     b.start_index = pos;
                     pos += b.rendered_lines.len() as u64;
                 }

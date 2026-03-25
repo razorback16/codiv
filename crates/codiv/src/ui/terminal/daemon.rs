@@ -502,6 +502,8 @@ fn handle_single_message(
         ipc_messages::DaemonMessage::Notice { .. } => {}
         // ExecuteCommand is handled in handle_daemon_message (needs full state)
         ipc_messages::DaemonMessage::ExecuteCommand { .. } => {}
+        // CompactionComplete is handled in handle_daemon_message (needs full state)
+        ipc_messages::DaemonMessage::CompactionComplete { .. } => {}
         // SessionList and SessionReplay are handled in handle_daemon_message
         ipc_messages::DaemonMessage::SessionList { .. }
         | ipc_messages::DaemonMessage::SessionReplay { .. } => {}
@@ -722,6 +724,26 @@ pub(crate) fn handle_daemon_message(
                     ConversationEvent::Error { .. } => {
                         // Errors are ephemeral, skip during replay
                     }
+                    ConversationEvent::Summary {
+                        text,
+                        compacted_event_count,
+                    } => {
+                        let header = format!(
+                            "\x1b[36m\x1b[1m--- Conversation compacted ({} events summarized) ---\x1b[0m",
+                            compacted_event_count
+                        );
+                        let mut rendered_lines = vec![header];
+                        for line in text.lines() {
+                            rendered_lines.push(format!("\x1b[36m{}\x1b[0m", line));
+                        }
+                        rendered_lines
+                            .push("\x1b[36m--- End of summary ---\x1b[0m".to_string());
+                        state.tracker.add_summary_block(
+                            text.clone(),
+                            *compacted_event_count,
+                            rendered_lines,
+                        );
+                    }
                 }
             }
 
@@ -747,6 +769,34 @@ pub(crate) fn handle_daemon_message(
         }
         ipc_messages::DaemonMessage::Notice { message } => {
             state.notice_hint = Some((message, Instant::now()));
+            state.needs_render = true;
+        }
+        ipc_messages::DaemonMessage::CompactionComplete {
+            summary,
+            compacted_event_count,
+        } => {
+            // Clear all existing blocks and rebuild with summary
+            state.tracker.clear();
+
+            // Build rendered lines for the summary block
+            let header = format!(
+                "\x1b[36m\x1b[1m--- Conversation compacted ({} events summarized) ---\x1b[0m",
+                compacted_event_count
+            );
+            let mut rendered_lines = vec![header];
+            for line in summary.lines() {
+                rendered_lines.push(format!("\x1b[36m{}\x1b[0m", line));
+            }
+            rendered_lines.push("\x1b[36m--- End of summary ---\x1b[0m".to_string());
+
+            state.tracker.record_summary(
+                &summary,
+                compacted_event_count,
+                0,
+                rendered_lines,
+            );
+
+            super::utils::rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
             state.needs_render = true;
         }
         // All other messages delegate to the core handler

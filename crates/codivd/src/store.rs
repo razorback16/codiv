@@ -225,6 +225,7 @@ fn event_discriminant(event: &ConversationEvent) -> &'static str {
         ConversationEvent::ToolResult { .. } => "tool_result",
         ConversationEvent::Error { .. } => "error",
         ConversationEvent::TokenUsage { .. } => "token_usage",
+        ConversationEvent::Summary { .. } => "summary",
     }
 }
 

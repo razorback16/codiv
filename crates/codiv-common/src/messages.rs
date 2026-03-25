@@ -75,6 +75,8 @@ pub enum ClientMessage {
         exit_code: i32,
         cwd: String,
     },
+    /// Request manual compaction of the current conversation.
+    CompactRequest,
 }
 
 /// Messages sent from the codivd daemon to the codiv client.
@@ -138,6 +140,11 @@ pub enum DaemonMessage {
     /// Generic notice pushed to the client (e.g. config reloaded).
     Notice {
         message: String,
+    },
+    /// Compaction completed — client should update UI.
+    CompactionComplete {
+        summary: String,
+        compacted_event_count: usize,
     },
     /// Request from the daemon for the client to execute a command in its shell.
     ExecuteCommand {

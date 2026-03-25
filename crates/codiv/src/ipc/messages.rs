@@ -122,6 +122,12 @@ pub fn build_command_execution_result(
     frame_message(&msg).ok()
 }
 
+/// Build a framed CompactRequest message.
+pub fn build_compact_request() -> Option<Vec<u8>> {
+    let msg = ClientMessage::CompactRequest;
+    frame_message(&msg).ok()
+}
+
 /// Build a framed CancelRequest message.
 pub fn build_cancel_request(request_id: &str) -> Option<Vec<u8>> {
     let msg = ClientMessage::CancelRequest {
