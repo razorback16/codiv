@@ -57,6 +57,11 @@ pub enum ConversationEvent {
         output_tokens: usize,
         cache_read_tokens: usize,
     },
+    /// Compacted summary replacing older conversation history.
+    Summary {
+        text: String,
+        compacted_event_count: usize,
+    },
 }
 
 /// Metadata for a stored session (one row in the `sessions` table).

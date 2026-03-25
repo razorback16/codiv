@@ -337,6 +337,7 @@ fn render_prompt_gutter(
             Block::Thinking(tk) => (tk.start_index, '\u{25CB}', theme.thinking_text),
             Block::Tool(tb) => (tb.start_index, '\u{25CF}', theme.tool_bullet),
             Block::CmdResponse(cb) => (cb.start_index, '$', theme.gutter_cmd),
+            Block::Summary(sb) => (sb.start_index, '\u{2261}', theme.thinking_text), // ≡
         };
         if scrollback_line >= abs_top && scrollback_line < abs_view_bottom {
             let screen_row = (scrollback_line - abs_top) as u16;
@@ -443,6 +444,7 @@ fn render_block_selection_overlay(
             Block::CmdResponse(cb) => (cb.start_index, cb.height),
             Block::AiResponse(ab) => (ab.start_index, ab.height),
             Block::Thinking(tk) => (tk.start_index, tk.height),
+            Block::Summary(sb) => (sb.start_index, sb.height),
         };
         let sb_len = true_scrollback_len(parser) as u64;
         let screen_rows = parser.screen().size().0 as u64;

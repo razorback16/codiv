@@ -18,6 +18,8 @@ pub enum InputAction {
     Empty,
     /// List and select saved sessions.
     Sessions,
+    /// Manually compact the conversation history.
+    Compact,
     /// Unknown slash command (e.g. "/foo").
     UnknownCommand(String),
 }
@@ -33,6 +35,7 @@ pub fn classify_input(input: &str) -> InputAction {
         return match cmd {
             "exit" | "quit" => InputAction::Exit,
             "clear" => InputAction::Clear,
+            "compact" => InputAction::Compact,
             "reset" => InputAction::Reset,
             "sessions" => InputAction::Sessions,
             _ => InputAction::UnknownCommand(trimmed.to_string()),
@@ -47,7 +50,7 @@ pub fn classify_input(input: &str) -> InputAction {
 
 /// Returns slash commands matching the given prefix (e.g. "/cl" → ["/clear"]).
 pub fn complete_slash_command(prefix: &str) -> Vec<String> {
-    const COMMANDS: &[&str] = &["/clear", "/exit", "/quit", "/reset", "/sessions"];
+    const COMMANDS: &[&str] = &["/clear", "/compact", "/exit", "/quit", "/reset", "/sessions"];
     COMMANDS
         .iter()
         .filter(|cmd| cmd.starts_with(prefix))
@@ -80,6 +83,7 @@ mod tests {
     #[test]
     fn classify_slash_commands() {
         assert_eq!(classify_input("/clear"), InputAction::Clear);
+        assert_eq!(classify_input("/compact"), InputAction::Compact);
         assert_eq!(classify_input("/reset"), InputAction::Reset);
         assert_eq!(classify_input("/sessions"), InputAction::Sessions);
     }
@@ -117,7 +121,7 @@ mod tests {
     #[test]
     fn complete_slash_multiple() {
         let results = complete_slash_command("/");
-        assert_eq!(results.len(), 5);
+        assert_eq!(results.len(), 6);
     }
 
     #[test]

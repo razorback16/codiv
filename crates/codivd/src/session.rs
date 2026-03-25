@@ -25,6 +25,10 @@ pub struct ClientSession {
     pub pending_name_gen: Option<String>,
     /// Pending command executions relayed to the client, keyed by execution_id.
     pub pending_executions: Option<Arc<Mutex<HashMap<String, oneshot::Sender<RelayResult>>>>>,
+    /// Set after an LLM call if input_tokens exceeds compaction threshold.
+    pub needs_compaction: bool,
+    /// Last known input_tokens from the most recent LLM call.
+    pub last_input_tokens: usize,
 }
 
 impl ClientSession {
@@ -42,6 +46,8 @@ impl ClientSession {
             event_seq: 0,
             pending_name_gen: None,
             pending_executions: None,
+            needs_compaction: false,
+            last_input_tokens: 0,
         }
     }
 

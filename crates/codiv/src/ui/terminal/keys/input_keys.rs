@@ -192,6 +192,20 @@ pub(crate) fn handle_input_keys(
                         }
                     }
 
+                    InputAction::Compact => {
+                        if let Some(ref mut c) = client {
+                            if let Some(frame) = ipc_messages::build_compact_request() {
+                                c.send(&frame);
+                            }
+                        } else {
+                            parser_push_notice(
+                                parser,
+                                NoticeKind::Warning,
+                                "Compact not available (daemon not connected)",
+                            );
+                        }
+                    }
+
                     InputAction::UnknownCommand(ref cmd) => {
                         parser_push_notice(
                             parser,

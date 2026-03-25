@@ -28,7 +28,7 @@ fn make_tool_with_permissions<T: schemars::JsonSchema>(
         name: name.to_string(),
         description: description.to_string(),
         input_schema: schemars::schema_for!(T),
-        execute: ToolExecute::new(final_execute),
+        execute: ToolExecute::from_sync(move |_ctx, input| (final_execute)(input)),
     }
 }
 

@@ -202,6 +202,14 @@ impl Daemon {
                 context: _,
                 thinking,
             } => {
+                // Auto-compaction check: compact before spawning agent if threshold exceeded
+                let should_compact = self.sessions.get(&client_id)
+                    .map(|s| s.needs_compaction)
+                    .unwrap_or(false);
+                if should_compact {
+                    self.run_compaction(client_id).await;
+                }
+
                 if let Some(client_tx) = self.ipc.client_sender(client_id) {
                     let rid = request_id.clone();
 
@@ -665,6 +673,10 @@ impl Daemon {
                 }
             }
 
+            ClientMessage::CompactRequest => {
+                self.run_compaction(client_id).await;
+            }
+
             ClientMessage::CancelRequest { request_id } => {
                 info!("cancel request: {}", request_id);
                 if let Some(session) = self.sessions.get_mut(&client_id) {
@@ -692,6 +704,83 @@ impl Daemon {
                     };
                     if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
                         let _ = client_tx.send(frame).await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn run_compaction(&mut self, client_id: ClientId) {
+        let cfg = self.config.read().unwrap();
+        let preserve_count = cfg.compaction.preserve_count;
+        let models = cfg.models.clone();
+        drop(cfg);
+
+        let session = match self.sessions.get_mut(&client_id) {
+            Some(s) => s,
+            None => return,
+        };
+        session.needs_compaction = false;
+
+        let agent = match session.agent.as_mut() {
+            Some(a) => a,
+            None => return,
+        };
+
+        // Send notice to TUI that compaction is starting
+        if let Some(tx) = self.ipc.client_sender(client_id) {
+            let msg = DaemonMessage::Notice {
+                message: "Compacting conversation...".to_string(),
+            };
+            if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                let _ = tx.send(frame).await;
+            }
+        }
+
+        match tokio::time::timeout(
+            Duration::from_secs(15),
+            agent.compact(preserve_count, &models),
+        )
+        .await
+        {
+            Ok(Ok((summary, count))) => {
+                info!("compaction completed: {} events summarized", count);
+                // Persist the Summary event
+                let event = ConversationEvent::Summary {
+                    text: summary.clone(),
+                    compacted_event_count: count,
+                };
+                self.persist_event(client_id, &event);
+
+                if let Some(tx) = self.ipc.client_sender(client_id) {
+                    let msg = DaemonMessage::CompactionComplete {
+                        summary,
+                        compacted_event_count: count,
+                    };
+                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                        let _ = tx.send(frame).await;
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::error!("compaction failed: {}", e);
+                if let Some(tx) = self.ipc.client_sender(client_id) {
+                    let msg = DaemonMessage::Notice {
+                        message: format!("Compaction failed: {}", e),
+                    };
+                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                        let _ = tx.send(frame).await;
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::error!("compaction timed out after 15s");
+                if let Some(tx) = self.ipc.client_sender(client_id) {
+                    let msg = DaemonMessage::Notice {
+                        message: "Compaction timed out".to_string(),
+                    };
+                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
+                        let _ = tx.send(frame).await;
                     }
                 }
             }
@@ -734,8 +823,30 @@ impl Daemon {
             }
         }
 
-        // Now persist collected events
+        // Now persist collected events and check compaction threshold
         for (cid, events) in to_persist {
+            // Check for token usage to determine if compaction is needed
+            if let Some(input_tokens) = events.iter().find_map(|e| match e {
+                ConversationEvent::TokenUsage { input_tokens, .. } => Some(*input_tokens),
+                _ => None,
+            }) {
+                if let Some(session) = self.sessions.get_mut(&cid) {
+                    session.last_input_tokens = input_tokens;
+                    let cfg = self.config.read().unwrap();
+                    if let Some(ref agent) = session.agent {
+                        let threshold = agent.model_config.context_window()
+                            * cfg.compaction.threshold_percent as usize
+                            / 100;
+                        if input_tokens > threshold {
+                            session.needs_compaction = true;
+                            info!(
+                                "compaction needed: {} tokens > {} threshold ({}%)",
+                                input_tokens, threshold, cfg.compaction.threshold_percent
+                            );
+                        }
+                    }
+                }
+            }
             self.persist_events(cid, &events);
         }
 
