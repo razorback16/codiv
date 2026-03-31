@@ -159,7 +159,11 @@ pub(crate) fn render_frame(
     let has_inline_picker = state.pending_session_picker.is_some() || state.pending_confirmation.is_some();
     let has_focused_block = state.tracker.focused().is_some();
     if state.scroll_offset == 0 && !is_executing && !state.agent_streaming && !in_alt_screen && !has_inline_picker && !has_focused_block {
-        let lines: Vec<&str> = state.input.lines().collect();
+        let lines: Vec<String> = if state.input.has_paste_blocks() {
+            state.input.display_lines()
+        } else {
+            state.input.lines().map(|s| s.to_string()).collect()
+        };
         let line_count = lines.len() as u16;
         let screen_rows = parser.screen().size().0;
 
@@ -212,8 +216,14 @@ pub(crate) fn render_frame(
             parser.process(format!("\x1b[{};1H\x1b[K", after_last + 1).as_bytes());
         }
 
-        // Position cursor at the correct (row, col)
-        let (crow, ccol) = state.input.cursor_row_col();
+        // Position cursor at the correct (row, col).
+        // When paste blocks are present, use display coordinates so the cursor
+        // accounts for the expanded marker text width.
+        let (crow, ccol) = if state.input.has_paste_blocks() {
+            state.input.display_cursor_row_col()
+        } else {
+            state.input.cursor_row_col()
+        };
         let cursor_row_1based = first_row + crow as u16 + 1;
         parser.process(format!("\x1b[{};{}H", cursor_row_1based, ccol + 1).as_bytes());
 

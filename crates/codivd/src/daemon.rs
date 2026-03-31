@@ -142,11 +142,17 @@ impl Daemon {
                             message: "Configuration reloaded".to_string(),
                         }).await;
                     }
-                    // Sync permission mode on existing sessions
+                    // Sync permission mode and invalidate cached agents so the
+                    // next request picks up the new provider/model config.
                     if let Ok(cfg) = self.config.read() {
                         for (_, session) in self.sessions.iter_mut() {
                             if let Some(ref pctx) = session.permission_ctx {
                                 pctx.set_mode(cfg.permissions.mode);
+                            }
+                            // Drop the cached agent so a fresh one is created
+                            // with the updated config on the next request.
+                            if session.agent_task.is_none() {
+                                session.agent = None;
                             }
                         }
                     }

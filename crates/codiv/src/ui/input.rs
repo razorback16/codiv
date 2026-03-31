@@ -3,6 +3,34 @@
 //! Handles character insertion, cursor movement, backspace/delete,
 //! history navigation (up/down), and basic tab-completion.
 
+/// Unicode Object Replacement Character — used as a single-char placeholder
+/// for collapsed paste blocks (>3 lines) in the input buffer.
+pub const PASTE_MARKER: char = '\u{FFFC}';
+
+/// Maximum characters shown in the paste snippet preview.
+const PASTE_SNIPPET_MAX: usize = 30;
+
+/// Minimum line count to trigger paste collapsing. Pastes with this many
+/// lines or fewer are inserted as regular text.
+const PASTE_COLLAPSE_THRESHOLD: usize = 3;
+
+/// An opaque block of pasted text that was collapsed into a single marker.
+pub struct PasteBlock {
+    /// The full original pasted text.
+    pub text: String,
+    /// Number of lines in the pasted text.
+    pub line_count: usize,
+    /// Truncated first-line snippet for display.
+    pub snippet: String,
+}
+
+impl PasteBlock {
+    /// Plain-text display label (no ANSI styling).
+    fn display_text(&self) -> String {
+        format!("[Pasted text \"{}\" + {} lines] ", self.snippet, self.line_count)
+    }
+}
+
 /// A single-line input editor with command history.
 pub struct InputLine {
     /// The current input buffer.
@@ -17,6 +45,8 @@ pub struct InputLine {
     /// The user's in-progress input saved when they start browsing history,
     /// so it can be restored when they press Down past the newest entry.
     saved_input: String,
+    /// Collapsed paste blocks, one per PASTE_MARKER in the buffer (in order).
+    paste_blocks: Vec<PasteBlock>,
 }
 
 impl InputLine {
@@ -27,6 +57,7 @@ impl InputLine {
             history: Vec::new(),
             history_index: None,
             saved_input: String::new(),
+            paste_blocks: Vec::new(),
         }
     }
 
@@ -41,8 +72,12 @@ impl InputLine {
         if self.cursor == 0 {
             return;
         }
-        // Find the previous character boundary.
         let prev = self.prev_char_boundary();
+        let removed_char = self.buffer[prev..self.cursor].chars().next();
+        if removed_char == Some(PASTE_MARKER) {
+            let idx = self.paste_block_index_at(prev);
+            self.paste_blocks.remove(idx);
+        }
         self.buffer.drain(prev..self.cursor);
         self.cursor = prev;
     }
@@ -53,6 +88,11 @@ impl InputLine {
             return;
         }
         let next = self.next_char_boundary();
+        let removed_char = self.buffer[self.cursor..next].chars().next();
+        if removed_char == Some(PASTE_MARKER) {
+            let idx = self.paste_block_index_at(self.cursor);
+            self.paste_blocks.remove(idx);
+        }
         self.buffer.drain(self.cursor..next);
     }
 
@@ -88,10 +128,11 @@ impl InputLine {
         };
     }
 
-    /// Clear the buffer and reset cursor to 0.
+    /// Clear the buffer, cursor, and any paste blocks.
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.cursor = 0;
+        self.paste_blocks.clear();
     }
 
     /// Navigate to an older history entry (Up arrow).
@@ -145,13 +186,30 @@ impl InputLine {
         }
     }
 
-    /// Submit the current input: take the buffer, add it to history (if
-    /// non-empty), clear the editor, and return the submitted string.
+    /// Submit the current input: take the buffer, expand any paste markers
+    /// back to full text, add it to history (if non-empty), clear the editor,
+    /// and return the submitted string.
     pub fn submit(&mut self) -> String {
-        let input = std::mem::take(&mut self.buffer);
+        let mut input = std::mem::take(&mut self.buffer);
         self.cursor = 0;
         self.history_index = None;
         self.saved_input.clear();
+
+        // Expand paste markers to full text in a single pass.
+        if !self.paste_blocks.is_empty() {
+            let mut expanded = String::with_capacity(input.len());
+            let mut block_idx = 0;
+            for ch in input.chars() {
+                if ch == PASTE_MARKER && block_idx < self.paste_blocks.len() {
+                    expanded.push_str(&self.paste_blocks[block_idx].text);
+                    block_idx += 1;
+                } else {
+                    expanded.push(ch);
+                }
+            }
+            input = expanded;
+            self.paste_blocks.clear();
+        }
 
         let trimmed = input.trim();
         if !trimmed.is_empty() {
@@ -261,6 +319,125 @@ impl InputLine {
         // Advance by clamped_col characters worth of bytes.
         let col_bytes: usize = target_line.chars().take(clamped_col).map(|c| c.len_utf8()).sum();
         self.cursor = byte_offset + col_bytes;
+    }
+
+    // --- Paste support ---
+
+    /// Insert pasted text at the current cursor position.
+    ///
+    /// If the text has more than [`PASTE_COLLAPSE_THRESHOLD`] lines it is
+    /// collapsed into a single [`PASTE_MARKER`] character and the full text
+    /// is stored in [`paste_blocks`].  Otherwise the text is bulk-inserted
+    /// directly into the buffer.
+    pub fn insert_paste(&mut self, text: String) {
+        // Normalize line endings: \r\n → \n, then lone \r → \n.
+        // Terminals commonly send \r as the line separator in paste events.
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        // Strip a single trailing newline (terminals often append one).
+        let text = if text.ends_with('\n') {
+            text[..text.len() - 1].to_string()
+        } else {
+            text
+        };
+        let line_count = text.lines().count().max(1);
+        if line_count <= PASTE_COLLAPSE_THRESHOLD {
+            self.buffer.insert_str(self.cursor, &text);
+            self.cursor += text.len();
+        } else {
+            let first_line = text.lines().next().unwrap_or("");
+            let snippet = if first_line.chars().count() > PASTE_SNIPPET_MAX {
+                let truncated: String = first_line.chars().take(PASTE_SNIPPET_MAX).collect();
+                format!("{}...", truncated)
+            } else {
+                first_line.to_string()
+            };
+            self.paste_blocks.push(PasteBlock {
+                text,
+                line_count,
+                snippet,
+            });
+            self.buffer.insert(self.cursor, PASTE_MARKER);
+            self.cursor += PASTE_MARKER.len_utf8();
+        }
+    }
+
+    /// Return display lines for rendering. Paste markers are replaced with
+    /// a human-readable collapsed representation.
+    pub fn display_lines(&self) -> Vec<String> {
+        let mut block_idx = 0;
+        self.buffer
+            .split('\n')
+            .map(|line| {
+                if line.contains(PASTE_MARKER) {
+                    // Replace each marker in this line with its display form.
+                    let mut result = String::new();
+                    for ch in line.chars() {
+                        if ch == PASTE_MARKER {
+                            if block_idx < self.paste_blocks.len() {
+                                let pb = &self.paste_blocks[block_idx];
+                                let label = pb.display_text();
+                                result.push_str(&format!("\x1b[2;3m{}\x1b[0m", label));
+                                block_idx += 1;
+                            }
+                        } else {
+                            result.push(ch);
+                        }
+                    }
+                    result
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect()
+    }
+
+    /// Returns `true` if there are any collapsed paste blocks.
+    pub fn has_paste_blocks(&self) -> bool {
+        !self.paste_blocks.is_empty()
+    }
+
+    /// Compute the cursor (row, col) in display coordinates.
+    ///
+    /// Same as `cursor_row_col()` except that each PASTE_MARKER is expanded
+    /// to its display-text width instead of counting as 1 character.
+    pub fn display_cursor_row_col(&self) -> (usize, usize) {
+        let before_cursor = &self.buffer[..self.cursor];
+        let row = before_cursor.matches('\n').count();
+        // Get the text on the current line (after the last \n before cursor).
+        let current_line_start = match before_cursor.rfind('\n') {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
+        let line_before_cursor = &self.buffer[current_line_start..self.cursor];
+
+        // Count PASTE_MARKERs before this line to know which block index we're at.
+        let blocks_before_line = self.buffer[..current_line_start]
+            .chars()
+            .filter(|c| *c == PASTE_MARKER)
+            .count();
+
+        // Walk the current line up to cursor, expanding markers to display widths.
+        let mut col = 0;
+        let mut block_idx = blocks_before_line;
+        for ch in line_before_cursor.chars() {
+            if ch == PASTE_MARKER {
+                if block_idx < self.paste_blocks.len() {
+                    col += self.paste_blocks[block_idx].display_text().chars().count();
+                    block_idx += 1;
+                }
+            } else {
+                col += 1;
+            }
+        }
+        (row, col)
+    }
+
+    /// Find the index into `paste_blocks` for the marker at `byte_pos`.
+    fn paste_block_index_at(&self, byte_pos: usize) -> usize {
+        self.buffer[..byte_pos]
+            .chars()
+            .filter(|c| *c == PASTE_MARKER)
+            .count()
     }
 
     // --- Private helpers ---

@@ -83,9 +83,19 @@ pub(crate) fn handle_input_keys(
         }
 
         // --- Shift+Enter: insert newline (AI mode) ---
-        // Terminals send Shift+Enter as Ctrl+J (linefeed).
+        // With keyboard enhancement (CSI u), Shift+Enter reports as Enter+SHIFT.
+        // Without it, terminals typically send Ctrl+J (linefeed). Handle both.
         (KeyCode::Char('j'), m)
             if m.contains(KeyModifiers::CONTROL)
+                && state.input_mode == InputMode::Ai
+                && state.pending_command.is_none() =>
+        {
+            state.input.insert_newline();
+            state.scroll_offset = 0;
+            parser.screen_mut().set_scrollback(0);
+        }
+        (KeyCode::Enter, m)
+            if m.contains(KeyModifiers::SHIFT)
                 && state.input_mode == InputMode::Ai
                 && state.pending_command.is_none() =>
         {
@@ -96,6 +106,8 @@ pub(crate) fn handle_input_keys(
 
         // --- Enter: submit input ---
         (KeyCode::Enter, _) if state.pending_command.is_none() => {
+            // Capture the visual line count BEFORE submit expands paste markers.
+            let visual_line_count = state.input.line_count();
             let raw_input = state.input.submit();
 
             // Empty input — spring back, don't create a prompt block
@@ -105,7 +117,8 @@ pub(crate) fn handle_input_keys(
             } else {
                 // Prompt text already on screen from last render_frame.
                 // Use the anchor row to compute the correct start position.
-                let line_count = raw_input.split('\n').count().max(1);
+                // Use visual_line_count (pre-expansion) since that's what was rendered.
+                let line_count = visual_line_count;
 
                 // Compute scrollback_line from the anchor (first row of prompt).
                 let scrollback_line = if let Some(anchor) = state.prompt_anchor_row {
@@ -115,10 +128,27 @@ pub(crate) fn handle_input_keys(
                     get_scrollback_line(parser)
                 };
 
-                // Move VT100 cursor to just past the last prompt line, then advance.
+                // Build rendered lines for the prompt block (full expanded text).
+                let rendered_lines: Vec<String> = raw_input
+                    .split('\n')
+                    .map(|line| format!("\x1b[1m{}\x1b[0m", line))
+                    .collect();
+                let full_line_count = rendered_lines.len();
+
+                // Rewrite the prompt area: position at anchor, clear the old
+                // (possibly collapsed) display, and write the full expanded text.
                 if let Some(anchor) = state.prompt_anchor_row {
-                    let last_prompt_row = anchor as u16 + line_count as u16;
-                    // Position cursor at the row after the last prompt line
+                    // Write expanded lines (with erase-to-EOL to clear old content).
+                    for (i, rline) in rendered_lines.iter().enumerate() {
+                        let row = anchor as u16 + i as u16 + 1;
+                        parser.process(format!("\x1b[{};1H{}\x1b[K", row, rline).as_bytes());
+                    }
+                    // Clear any leftover old lines if the collapsed view was taller.
+                    for i in full_line_count..line_count {
+                        let row = anchor + i as u16 + 1;
+                        parser.process(format!("\x1b[{};1H\x1b[K", row).as_bytes());
+                    }
+                    let last_prompt_row = anchor as u16 + full_line_count as u16;
                     parser.process(
                         format!("\x1b[{};1H", last_prompt_row + 1).as_bytes(),
                     );
@@ -126,11 +156,6 @@ pub(crate) fn handle_input_keys(
                 // One blank line separator after the prompt
                 parser.process(b"\r\n");
 
-                // Build rendered lines for the prompt block.
-                let rendered_lines: Vec<String> = raw_input
-                    .split('\n')
-                    .map(|line| format!("\x1b[1m{}\x1b[0m", line))
-                    .collect();
                 state.tracker.record_prompt(&raw_input, scrollback_line, state.input_mode, rendered_lines);
                 state.prompt_is_live = false;
                 state.prompt_anchor_row = None;
