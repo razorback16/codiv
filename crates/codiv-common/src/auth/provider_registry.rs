@@ -19,7 +19,70 @@ pub struct ProviderEntry {
 ///
 /// Providers: Anthropic, OpenAI, Claude Code, Codex.
 pub fn provider_registry() -> Vec<ProviderEntry> {
-    vec![]
+    vec![
+        ProviderEntry {
+            id: "anthropic",
+            display_name: "Anthropic",
+            auth_methods: vec![AuthMethod::ApiKey],
+        },
+        ProviderEntry {
+            id: "openai",
+            display_name: "OpenAI",
+            auth_methods: vec![AuthMethod::ApiKey],
+        },
+        ProviderEntry {
+            id: "claude_code",
+            display_name: "Claude Code",
+            auth_methods: vec![AuthMethod::OAuthCode(OAuthConfig {
+                auth_url: Url::parse("https://claude.ai/oauth/authorize")
+                    .expect("hardcoded URL must parse"),
+                token_url: Url::parse("https://console.anthropic.com/v1/oauth/token")
+                    .expect("hardcoded URL must parse"),
+                client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string(),
+                scopes: vec![
+                    "org:create_api_key".to_string(),
+                    "user:profile".to_string(),
+                    "user:inference".to_string(),
+                    "user:sessions:claude_code".to_string(),
+                ],
+                redirect_uri: Some(
+                    "https://console.anthropic.com/oauth/code/callback".to_string(),
+                ),
+                use_pkce: true,
+                token_refresh_url: None,
+                custom_headers: None,
+                extra_auth_params: Some({
+                    let mut m = HashMap::new();
+                    m.insert("code".to_string(), "true".to_string());
+                    m
+                }),
+            })],
+        },
+        ProviderEntry {
+            id: "codex",
+            display_name: "Codex",
+            auth_methods: vec![AuthMethod::OAuthCode(OAuthConfig {
+                auth_url: Url::parse(
+                    "https://auth.openai.com/api/accounts/deviceauth/usercode",
+                )
+                .expect("hardcoded URL must parse"),
+                token_url: Url::parse("https://auth.openai.com/oauth/token")
+                    .expect("hardcoded URL must parse"),
+                client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
+                scopes: vec![
+                    "openid".to_string(),
+                    "profile".to_string(),
+                    "email".to_string(),
+                    "offline_access".to_string(),
+                ],
+                redirect_uri: None,
+                use_pkce: false,
+                token_refresh_url: None,
+                custom_headers: None,
+                extra_auth_params: None,
+            })],
+        },
+    ]
 }
 
 /// Look up a provider entry by its stable ID.
