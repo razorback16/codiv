@@ -153,6 +153,16 @@ pub(crate) fn event_loop(
                                 rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
                             }
                         }
+                        Event::Paste(ref text) => {
+                            if state.pending_command.is_some() {
+                                // Forward paste text to the running command's PTY.
+                                bash.send_bytes(text.as_bytes());
+                            } else if !state.agent_streaming {
+                                state.input.insert_paste(text.clone());
+                                state.scroll_offset = 0;
+                                parser.screen_mut().set_scrollback(0);
+                            }
+                        }
                         _ => {}
                     }
 
