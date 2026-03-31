@@ -24,7 +24,7 @@
 - [ ] **PROV-02**: OpenAI provider with API key auth
 - [ ] **PROV-03**: Claude Code provider with OAuth code flow
 - [ ] **PROV-04**: Codex provider with OAuth code flow
-- [ ] **PROV-05**: Provider registry with auth method metadata (ported from forgecode)
+- [x] **PROV-05**: Provider registry with auth method metadata (ported from forgecode)
 
 ### Storage & Refresh
 
@@ -73,7 +73,7 @@
 | PROV-02 | Phase 2 | Pending |
 | PROV-03 | Phase 2 | Pending |
 | PROV-04 | Phase 2 | Pending |
-| PROV-05 | Phase 1 | Pending |
+| PROV-05 | Phase 1 | Complete |
 | STOR-01 | Phase 2 | Pending |
 | STOR-02 | Phase 3 | Pending |
 | STOR-03 | Phase 3 | Pending |

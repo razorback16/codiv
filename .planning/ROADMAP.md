@@ -12,7 +12,7 @@ Three phases take the project from a ported auth domain layer to a working `codi
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Auth Foundation** - Provider registry, auth domain types, and OAuth token model ported from forgecode
+- [x] **Phase 1: Auth Foundation** - Provider registry, auth domain types, and OAuth token model ported from forgecode (completed 2026-03-31)
 - [ ] **Phase 2: Auth Flows & Storage** - API key and OAuth code flow implementations with config.toml credential storage
 - [ ] **Phase 3: CLI Wizard & Daemon Refresh** - Interactive `codiv login` wizard, env var migration, and daemon-side token refresh
 
@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — Auth domain types (OAuthTokens, OAuthConfig, AuthMethod, newtypes) in codiv-common
-- [ ] 01-02-PLAN.md — Provider registry (Anthropic, OpenAI, Claude Code, Codex) in codiv-common
+- [x] 01-02-PLAN.md — Provider registry (Anthropic, OpenAI, Claude Code, Codex) in codiv-common
 
 ### Phase 2: Auth Flows & Storage
 **Goal**: Users can authenticate with any supported provider and have credentials persisted to config.toml
@@ -63,6 +63,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Auth Foundation | 0/2 | Not started | - |
+| 1. Auth Foundation | 2/2 | Complete   | 2026-03-31 |
 | 2. Auth Flows & Storage | 0/TBD | Not started | - |
 | 3. CLI Wizard & Daemon Refresh | 0/TBD | Not started | - |
