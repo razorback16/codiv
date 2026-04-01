@@ -613,6 +613,7 @@ dependencies = [
  "termwright",
  "tokio",
  "tui-term",
+ "url",
  "vt100 0.16.2",
 ]
 
@@ -624,6 +625,7 @@ dependencies = [
  "bincode",
  "chrono",
  "crossbeam-channel",
+ "hex",
  "libc",
  "oauth2",
  "open",

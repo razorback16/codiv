@@ -61,11 +61,9 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
         ProviderEntry {
             id: "codex",
             display_name: "Codex",
-            auth_methods: vec![AuthMethod::DeviceCode(OAuthConfig {
-                auth_url: Url::parse(
-                    "https://auth.openai.com/api/accounts/deviceauth/usercode",
-                )
-                .expect("hardcoded URL must parse"),
+            auth_methods: vec![AuthMethod::OAuthCode(OAuthConfig {
+                auth_url: Url::parse("https://auth.openai.com/oauth/authorize")
+                    .expect("hardcoded URL must parse"),
                 token_url: Url::parse("https://auth.openai.com/oauth/token")
                     .expect("hardcoded URL must parse"),
                 client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
@@ -75,15 +73,23 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
                     "email".to_string(),
                     "offline_access".to_string(),
                 ],
-                redirect_uri: None,
-                use_pkce: false,
+                redirect_uri: Some("http://localhost:1455/auth/callback".to_string()),
+                use_pkce: true,
                 token_refresh_url: None,
-                custom_headers: Some({
-                    let mut m = HashMap::new();
-                    m.insert("originator".to_string(), "codiv".to_string());
+                custom_headers: None,
+                extra_auth_params: Some({
+                    let mut m = std::collections::HashMap::new();
+                    m.insert(
+                        "id_token_add_organizations".to_string(),
+                        "true".to_string(),
+                    );
+                    m.insert(
+                        "codex_cli_simplified_flow".to_string(),
+                        "true".to_string(),
+                    );
+                    m.insert("originator".to_string(), "codex_cli_rs".to_string());
                     m
                 }),
-                extra_auth_params: None,
             })],
         },
     ]
@@ -151,15 +157,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_uses_device_code_with_correct_client_id() {
+    fn codex_uses_oauth_code_with_correct_client_id() {
         let entry = provider_by_id("codex").expect("codex must exist");
         assert_eq!(entry.auth_methods.len(), 1);
-        assert!(matches!(entry.auth_methods[0], AuthMethod::DeviceCode(_)));
         let config = entry.auth_methods[0]
             .oauth_config()
             .expect("codex must have oauth config");
         assert_eq!(config.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
-        assert!(!config.use_pkce);
+        assert!(config.use_pkce);
     }
 
     #[test]

@@ -55,7 +55,6 @@ fn run(args: LoginArgs) -> Result<()> {
     match method {
         AuthMethod::ApiKey => run_api_key_flow(&provider_id, entry.display_name),
         AuthMethod::OAuthCode(config) => run_oauth_flow(config, &provider_id, entry.display_name),
-        AuthMethod::DeviceCode(config) => run_device_flow(config, &provider_id, entry.display_name),
     }
 }
 
@@ -80,45 +79,24 @@ fn run_api_key_flow(provider_id: &str, display_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_device_flow(
-    config: codiv_common::auth::OAuthConfig,
-    provider_id: &str,
-    display_name: &str,
-) -> Result<()> {
-    use codiv_common::auth::{codex_request_device_code, codex_poll_and_exchange};
+/// Detect if this provider uses a localhost callback (e.g. Codex on port 1455)
+/// vs manual code paste (e.g. Anthropic/Claude Code).
+fn uses_localhost_callback(config: &codiv_common::auth::OAuthConfig) -> bool {
+    config
+        .redirect_uri
+        .as_ref()
+        .map(|uri| uri.starts_with("http://localhost:") || uri.starts_with("http://127.0.0.1:"))
+        .unwrap_or(false)
+}
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("Failed to create async runtime")?;
-
-    // Step 1: Request device code
-    let device_resp = rt
-        .block_on(codex_request_device_code(&config))
-        .with_context(|| format!("Failed to request device code for {}", display_name))?;
-
-    // Step 2: Show code and verification URL
-    println!("Your user code: {}", device_resp.user_code);
-    println!();
-    println!("Visit https://auth.openai.com/codex/device and enter the code above.");
-    let _ = open::that("https://auth.openai.com/codex/device");
-    println!();
-    println!("Waiting for authorization (this will timeout after 5 minutes)...");
-
-    let interval: u64 = device_resp.interval.parse().unwrap_or(5);
-
-    // Step 3: Poll until authorized, then exchange for tokens
-    rt.block_on(codex_poll_and_exchange(
-        &config,
-        &device_resp.device_auth_id,
-        &device_resp.user_code,
-        interval,
-        provider_id,
-    ))
-    .with_context(|| format!("Device authorization failed for {}", display_name))?;
-
-    println!("Authentication successful for {}.", display_name);
-    Ok(())
+/// Determine if this is an Anthropic-style OAuth (state=verifier, JSON exchange)
+/// vs standard OAuth (random state, form-encoded exchange).
+fn is_anthropic_style(config: &codiv_common::auth::OAuthConfig) -> bool {
+    config
+        .auth_url
+        .host_str()
+        .map(|h| h.contains("claude.ai") || h.contains("anthropic.com"))
+        .unwrap_or(false)
 }
 
 fn run_oauth_flow(
@@ -130,27 +108,60 @@ fn run_oauth_flow(
         build_anthropic_auth_url, build_standard_auth_url, exchange_anthropic_code,
         exchange_standard_code, token_response_to_oauth_tokens, write_oauth_tokens_to_config,
     };
-    use dialoguer::Input;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("Failed to create async runtime")?;
 
-    // Step 1: Build auth URL (sync — no runtime needed)
-    let params = if config.use_pkce {
+    let anthropic_style = is_anthropic_style(&config);
+    let localhost_callback = uses_localhost_callback(&config);
+
+    // Step 1: Build auth URL
+    let params = if anthropic_style {
         build_anthropic_auth_url(&config)?
     } else {
         build_standard_auth_url(&config)?
     };
 
-    // Step 2: Open browser and show URL
+    // Step 2: Get the authorization code
+    let auth_code = if localhost_callback {
+        // Localhost callback flow (Codex): start server, open browser, wait for redirect
+        run_localhost_callback_flow(&params.auth_url, &params.state, display_name)?
+    } else {
+        // Manual paste flow (Anthropic): open browser, user pastes code
+        run_manual_paste_flow(&params.auth_url, display_name)?
+    };
+
+    // Step 3: Exchange code for tokens
+    let token_resp = rt
+        .block_on(async {
+            if anthropic_style {
+                exchange_anthropic_code(&config, &auth_code, params.code_verifier.as_deref()).await
+            } else {
+                exchange_standard_code(&config, &auth_code, params.code_verifier.as_deref()).await
+            }
+        })
+        .with_context(|| format!("Token exchange failed for {}", display_name))?;
+
+    // Step 4: Store tokens
+    let tokens = token_response_to_oauth_tokens(token_resp);
+    write_oauth_tokens_to_config(provider_id, &tokens)
+        .with_context(|| format!("Failed to save tokens for {}", display_name))?;
+
+    println!("Authentication successful for {}.", display_name);
+    Ok(())
+}
+
+/// Manual paste flow: open browser, user copies code from redirect page and pastes it.
+fn run_manual_paste_flow(auth_url: &str, display_name: &str) -> Result<String> {
+    use dialoguer::Input;
+
     println!("Opening browser for {} authentication...", display_name);
     println!("If the browser did not open, visit:");
-    println!("  {}", params.auth_url);
-    let _ = open::that(&params.auth_url);
+    println!("  {}", auth_url);
+    let _ = open::that(auth_url);
 
-    // Step 3: Prompt for authorization code (outside runtime — dialoguer uses blocking I/O)
     let auth_code = Input::<String>::new()
         .with_prompt("Paste the authorization code from the browser")
         .interact_text()
@@ -160,23 +171,76 @@ fn run_oauth_flow(
     if auth_code.is_empty() {
         anyhow::bail!("Authorization code cannot be empty");
     }
+    Ok(auth_code)
+}
 
-    // Step 4: Exchange code for tokens
-    let token_resp = rt
-        .block_on(async {
-            if config.use_pkce {
-                exchange_anthropic_code(&config, &auth_code, params.code_verifier.as_deref()).await
-            } else {
-                exchange_standard_code(&config, &auth_code, None).await
-            }
-        })
-        .with_context(|| format!("Token exchange failed for {}", display_name))?;
+/// Localhost callback flow: start a local HTTP server, open browser, wait for
+/// the OAuth redirect to deliver the authorization code automatically.
+fn run_localhost_callback_flow(
+    auth_url: &str,
+    expected_state: &str,
+    display_name: &str,
+) -> Result<String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
 
-    // Step 5: Store tokens
-    let tokens = token_response_to_oauth_tokens(token_resp);
-    write_oauth_tokens_to_config(provider_id, &tokens)
-        .with_context(|| format!("Failed to save tokens for {}", display_name))?;
+    // Bind to localhost:1455 (Codex callback port)
+    let listener = TcpListener::bind("127.0.0.1:1455")
+        .context("Failed to bind localhost:1455 for OAuth callback. Is another process using it?")?;
 
-    println!("Authentication successful for {}.", display_name);
-    Ok(())
+    println!("Opening browser for {} authentication...", display_name);
+    println!("Waiting for authorization callback on http://localhost:1455 ...");
+    println!("If the browser did not open, visit:");
+    println!("  {}", auth_url);
+    let _ = open::that(auth_url);
+
+    // Wait for the callback request
+    let (mut stream, _) = listener
+        .accept()
+        .context("Failed to accept OAuth callback connection")?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .context("Failed to read callback request")?;
+
+    // Parse GET /auth/callback?code=...&state=... HTTP/1.1
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("Invalid callback request"))?;
+
+    let url = url::Url::parse(&format!("http://localhost{}", path))
+        .context("Failed to parse callback URL")?;
+
+    let code = url
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.to_string())
+        .ok_or_else(|| anyhow::anyhow!("No 'code' parameter in callback"))?;
+
+    let state = url
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string());
+
+    // Validate state if present
+    if let Some(ref s) = state {
+        if s != expected_state {
+            anyhow::bail!("State mismatch in OAuth callback — possible CSRF attack");
+        }
+    }
+
+    // Send success response to browser
+    let response_body = "<html><body><h2>Authentication successful!</h2><p>You can close this tab and return to the terminal.</p></body></html>";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+    let _ = stream.write_all(response.as_bytes());
+
+    println!("Authorization code received.");
+    Ok(code)
 }
