@@ -129,6 +129,20 @@ pub struct OAuthConfig {
     pub extra_auth_params: Option<HashMap<String, String>>,
 }
 
+/// Token response from an OAuth token exchange endpoint.
+/// Used internally by auth flows before constructing OAuthTokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthTokenResponse {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    /// Seconds until expiry (from token endpoint, may be absent).
+    pub expires_in: Option<u64>,
+    /// Absolute expiry (computed or from endpoint).
+    pub expires_at: Option<DateTime<Utc>>,
+    pub token_type: String,
+    pub scope: Option<String>,
+}
+
 /// The authentication method a provider supports.
 ///
 /// Only ApiKey and OAuthCode are needed for v1 providers
