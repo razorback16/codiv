@@ -26,6 +26,8 @@ env_logger = "0.11"
 streamdown-parser = { git = "https://github.com/razorback16/streamdown-rs" }
 streamdown-render = { git = "https://github.com/razorback16/streamdown-rs" }
 similar = "2"
+dialoguer = { version = "0.12.0", features = ["password"] }
+anyhow = "1"
 
 [dev-dependencies]
 termwright = "0.2"
