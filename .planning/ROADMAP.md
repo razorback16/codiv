@@ -41,7 +41,12 @@ Plans:
   2. User can complete an OAuth code flow for Claude Code or Codex (browser redirect, code exchange) and receive a stored token
   3. Credentials written to config.toml are merged with existing config without overwriting unrelated settings
   4. codiv reads the stored credentials and uses them for API calls without requiring env vars
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [x] 02-01-PLAN.md — Storage layer: OAuthTokenResponse type, credential write/read functions, Cargo deps
+- [ ] 02-02-PLAN.md — OAuth HTTP adapters: Anthropic (PKCE + JSON exchange) and Standard (Codex) flows
+- [ ] 02-03-PLAN.md — Login CLI subcommand: interactive API key and OAuth code flows wired end-to-end
 
 ### Phase 3: CLI Wizard & Daemon Refresh
 **Goal**: Users can run `codiv login` from the terminal and interact with a polished provider selection wizard; daemon refreshes tokens without user action
