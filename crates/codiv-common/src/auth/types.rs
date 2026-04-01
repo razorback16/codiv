@@ -150,16 +150,13 @@ pub enum AuthMethod {
     ApiKey,
     #[serde(rename = "oauth_code")]
     OAuthCode(OAuthConfig),
-    /// Codex-style device flow: POST for user_code, user visits URL, poll for tokens.
-    #[serde(rename = "device_code")]
-    DeviceCode(OAuthConfig),
 }
 
 impl AuthMethod {
     /// Returns the OAuth config if this method is an OAuth code or device flow.
     pub fn oauth_config(&self) -> Option<&OAuthConfig> {
         match self {
-            Self::OAuthCode(config) | Self::DeviceCode(config) => Some(config),
+            Self::OAuthCode(config) => Some(config),
             Self::ApiKey => None,
         }
     }
