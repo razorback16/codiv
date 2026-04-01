@@ -111,9 +111,21 @@ pub async fn exchange_anthropic_code(
     let verifier = verifier
         .ok_or_else(|| anyhow::anyhow!("PKCE verifier required for Anthropic token exchange"))?;
 
+    // Anthropic callback appends state after '#' in the pasted code: "code#state"
+    // Split and use the embedded state if present, otherwise fall back to verifier.
+    let (actual_code, state) = if code.contains('#') {
+        let parts: Vec<&str> = code.split('#').collect();
+        (
+            parts[0].to_string(),
+            parts.get(1).map(|s| s.to_string()),
+        )
+    } else {
+        (code.to_string(), None)
+    };
+
     let body = AnthropicTokenRequest {
-        code: code.to_string(),
-        state: verifier.to_string(), // state must equal verifier
+        code: actual_code,
+        state: state.unwrap_or_else(|| verifier.to_string()),
         grant_type: "authorization_code".to_string(),
         client_id: config.client_id.clone(),
         redirect_uri: config.redirect_uri.clone(),
