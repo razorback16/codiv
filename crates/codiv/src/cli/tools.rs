@@ -297,5 +297,8 @@ pub fn handle(cmd: Commands) {
                 args.json_out,
             );
         }
+        Commands::Login(args) => {
+            super::login::handle_login(args);
+        }
     }
 }

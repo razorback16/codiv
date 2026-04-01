@@ -1,4 +1,5 @@
 mod tools;
+pub mod login;
 
 use clap::Subcommand;
 
@@ -16,8 +17,13 @@ pub enum Commands {
     Grep(tools::GrepArgs),
     /// Execute a bash command
     Bash(tools::BashArgs),
+    /// Authenticate with an AI provider
+    Login(login::LoginArgs),
 }
 
 pub fn dispatch(cmd: Commands) {
-    tools::handle(cmd);
+    match cmd {
+        Commands::Login(args) => login::handle_login(args),
+        other => tools::handle(other),
+    }
 }
