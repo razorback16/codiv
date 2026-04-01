@@ -1,5 +1,6 @@
 mod tools;
 pub mod login;
+pub mod migrate;
 
 use clap::Subcommand;
 
@@ -19,11 +20,14 @@ pub enum Commands {
     Bash(tools::BashArgs),
     /// Authenticate with an AI provider
     Login(login::LoginArgs),
+    /// Migrate env var API keys (ANTHROPIC_API_KEY etc.) into config.toml
+    MigrateEnv(migrate::MigrateEnvArgs),
 }
 
 pub fn dispatch(cmd: Commands) {
     match cmd {
         Commands::Login(args) => login::handle_login(args),
+        Commands::MigrateEnv(args) => migrate::handle_migrate_env(args),
         other => tools::handle(other),
     }
 }
