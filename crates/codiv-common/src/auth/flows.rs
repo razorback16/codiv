@@ -275,7 +275,7 @@ pub async fn maybe_refresh_stored_token(provider_id: &str, config: &OAuthConfig)
         _ => return None,
     };
 
-    if !tokens.needs_refresh(chrono::Duration::minutes(5)) {
+    if !tokens.needs_refresh(chrono::Duration::minutes(1)) {
         return None;
     }
 

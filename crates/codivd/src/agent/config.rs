@@ -611,7 +611,7 @@ pub fn spawn_token_refresh_task() -> tokio::task::JoinHandle<()> {
                     }
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_secs(240)).await; // 4 minutes
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await; // check every 30s, only refresh within 1 min of expiry
         }
     })
 }
