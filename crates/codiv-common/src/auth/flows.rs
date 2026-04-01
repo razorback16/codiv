@@ -64,27 +64,45 @@ pub fn build_anthropic_auth_url(config: &OAuthConfig) -> Result<AuthParams> {
     })
 }
 
-/// Build a standard OAuth authorization URL (Codex — no PKCE).
+/// Build a standard OAuth authorization URL with PKCE (Codex).
+///
+/// Unlike Anthropic, state is a random CSRF token (standard behavior).
+/// PKCE verifier is generated and returned for the token exchange step.
 pub fn build_standard_auth_url(config: &OAuthConfig) -> Result<AuthParams> {
-    use oauth2::{AuthUrl, ClientId, CsrfToken, basic::BasicClient};
-    let client = BasicClient::new(ClientId::new(config.client_id.clone()))
-        .set_auth_uri(AuthUrl::new(config.auth_url.to_string())?);
+    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+    let verifier_secret = verifier.secret().to_string();
 
-    let mut request = client.authorize_url(CsrfToken::new_random);
-    for scope in &config.scopes {
-        request = request.add_scope(oauth2::Scope::new(scope.clone()));
+    let state = {
+        use rand::Rng;
+        let bytes: [u8; 16] = rand::thread_rng().gen();
+        hex::encode(bytes)
+    };
+
+    let mut url = config.auth_url.clone();
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &config.client_id)
+            .append_pair("scope", &config.scopes.join(" "))
+            .append_pair("code_challenge", challenge.as_str())
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", &state);
+
+        if let Some(redirect_uri) = &config.redirect_uri {
+            pairs.append_pair("redirect_uri", redirect_uri);
+        }
+        if let Some(extra) = &config.extra_auth_params {
+            for (k, v) in extra {
+                pairs.append_pair(k, v);
+            }
+        }
     }
-    if let Some(redirect_uri) = &config.redirect_uri {
-        request = request.set_redirect_uri(
-            std::borrow::Cow::Owned(oauth2::RedirectUrl::new(redirect_uri.clone())?)
-        );
-    }
-    let (auth_url, csrf_state) = request.url();
 
     Ok(AuthParams {
-        auth_url: auth_url.to_string(),
-        state: csrf_state.secret().to_string(),
-        code_verifier: None,
+        auth_url: url.to_string(),
+        state,
+        code_verifier: Some(verifier_secret),
     })
 }
 
@@ -150,32 +168,41 @@ pub async fn exchange_anthropic_code(
 }
 
 /// Exchange an authorization code using the standard OAuth2 form-encoded flow (Codex).
+///
+/// Sends form-encoded body with PKCE code_verifier and redirect_uri.
 pub async fn exchange_standard_code(
     config: &OAuthConfig,
     code: &str,
-    _verifier: Option<&str>, // Codex: no PKCE
+    verifier: Option<&str>,
 ) -> Result<OAuthTokenResponse> {
-    use oauth2::{AuthorizationCode, AuthUrl, ClientId, TokenResponse, TokenUrl, basic::BasicClient};
+    let client = reqwest::Client::new();
 
-    let client = BasicClient::new(ClientId::new(config.client_id.clone()))
-        .set_auth_uri(AuthUrl::new(config.auth_url.to_string())?)
-        .set_token_uri(TokenUrl::new(config.token_url.to_string())?);
+    let mut form = vec![
+        ("grant_type", "authorization_code".to_string()),
+        ("client_id", config.client_id.clone()),
+        ("code", code.to_string()),
+    ];
 
-    let http_client = reqwest::Client::new();
-    let token = client
-        .exchange_code(AuthorizationCode::new(code.to_string()))
-        .request_async(&http_client)
-        .await
-        .map_err(|e| anyhow::anyhow!("Token exchange failed: {e}"))?;
+    if let Some(v) = verifier {
+        form.push(("code_verifier", v.to_string()));
+    }
+    if let Some(redirect_uri) = &config.redirect_uri {
+        form.push(("redirect_uri", redirect_uri.clone()));
+    }
 
-    Ok(OAuthTokenResponse {
-        access_token: token.access_token().secret().clone(),
-        refresh_token: token.refresh_token().map(|t| t.secret().clone()),
-        expires_in: token.expires_in().map(|d| d.as_secs()),
-        expires_at: None,
-        token_type: "Bearer".to_string(),
-        scope: None,
-    })
+    let resp = client
+        .post(config.token_url.as_str())
+        .form(&form)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Token exchange failed {status}: {text}");
+    }
+
+    Ok(resp.json::<OAuthTokenResponse>().await?)
 }
 
 /// Convert an OAuthTokenResponse into OAuthTokens, computing expiry.
@@ -232,164 +259,6 @@ pub async fn run_oauth_code_flow(
     Ok(tokens)
 }
 
-// ── Codex Device Flow ──────────────────────────────────────────────────
-
-/// Response from the OpenAI device auth usercode endpoint.
-#[derive(Debug, serde::Deserialize)]
-pub struct DeviceAuthResponse {
-    pub device_auth_id: String,
-    pub user_code: String,
-    pub interval: String,
-}
-
-/// Response from the OpenAI device auth token polling endpoint.
-#[derive(Debug, serde::Deserialize)]
-struct CodexDeviceTokenResponse {
-    authorization_code: String,
-    code_verifier: String,
-}
-
-/// Step 1 of Codex device flow: request a device authorization code.
-///
-/// Returns user_code for display and device_auth_id for polling.
-pub async fn codex_request_device_code(config: &OAuthConfig) -> Result<DeviceAuthResponse> {
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none());
-
-    if let Some(headers) = &config.custom_headers {
-        let mut header_map = reqwest::header::HeaderMap::new();
-        for (k, v) in headers {
-            header_map.insert(
-                reqwest::header::HeaderName::from_bytes(k.as_bytes())?,
-                reqwest::header::HeaderValue::from_str(v)?,
-            );
-        }
-        builder = builder.default_headers(header_map);
-    }
-
-    let client = builder.build()?;
-
-    let resp = client
-        .post(config.auth_url.as_str())
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "client_id": config.client_id
-        }))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Device authorization failed {status}: {text}");
-    }
-
-    Ok(resp.json::<DeviceAuthResponse>().await?)
-}
-
-/// Step 2 of Codex device flow: poll until user approves, then exchange for tokens.
-///
-/// Polls the device auth token endpoint until authorization is granted,
-/// then exchanges the received authorization_code + code_verifier for OAuth tokens.
-pub async fn codex_poll_and_exchange(
-    config: &OAuthConfig,
-    device_auth_id: &str,
-    user_code: &str,
-    poll_interval_secs: u64,
-    provider_id: &str,
-) -> Result<OAuthTokens> {
-    let poll_url = config.auth_url.as_str().replace("/usercode", "/token");
-    let interval = std::time::Duration::from_secs(poll_interval_secs.max(1) + 3);
-    let timeout = std::time::Duration::from_secs(300); // 5 min timeout
-    let start = tokio::time::Instant::now();
-
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none());
-
-    if let Some(headers) = &config.custom_headers {
-        let mut header_map = reqwest::header::HeaderMap::new();
-        for (k, v) in headers {
-            header_map.insert(
-                reqwest::header::HeaderName::from_bytes(k.as_bytes())?,
-                reqwest::header::HeaderValue::from_str(v)?,
-            );
-        }
-        builder = builder.default_headers(header_map);
-    }
-
-    let client = builder.build()?;
-
-    loop {
-        if start.elapsed() >= timeout {
-            anyhow::bail!("Device authorization timed out after 5 minutes");
-        }
-
-        tokio::time::sleep(interval).await;
-
-        let resp = client
-            .post(&poll_url)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "device_auth_id": device_auth_id,
-                "user_code": user_code,
-            }))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            let device_token: CodexDeviceTokenResponse = resp.json().await?;
-
-            // Exchange authorization_code for OAuth tokens via standard endpoint.
-            // Use a clean client without custom headers.
-            let clean_client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?;
-
-            let token_resp = clean_client
-                .post(config.token_url.as_str())
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .body(serde_urlencoded::to_string([
-                    ("grant_type", "authorization_code"),
-                    ("code", &device_token.authorization_code),
-                    ("redirect_uri", "https://auth.openai.com/deviceauth/callback"),
-                    ("client_id", &config.client_id),
-                    ("code_verifier", &device_token.code_verifier),
-                ])?)
-                .send()
-                .await?;
-
-            if !token_resp.status().is_success() {
-                let status = token_resp.status();
-                let text = token_resp.text().await.unwrap_or_default();
-                anyhow::bail!("Codex token exchange failed {status}: {text}");
-            }
-
-            let oauth_resp: OAuthTokenResponse = token_resp.json().await?;
-            let tokens = token_response_to_oauth_tokens(oauth_resp);
-            write_oauth_tokens_to_config(provider_id, &tokens)?;
-            return Ok(tokens);
-        }
-
-        // Non-success: either pending or error. Check for retryable errors.
-        let status = resp.status();
-        if status.as_u16() == 400 || status.as_u16() == 428 {
-            // authorization_pending or slow_down — keep polling
-            continue;
-        }
-
-        let text = resp.text().await.unwrap_or_default();
-        // Check for JSON error body
-        if let Ok(err) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(error) = err["error"].as_str() {
-                if error == "authorization_pending" || error == "slow_down" {
-                    continue;
-                }
-            }
-        }
-        anyhow::bail!("Device auth polling failed {status}: {text}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,13 +285,17 @@ mod tests {
 
     fn codex_config() -> OAuthConfig {
         OAuthConfig {
-            auth_url: Url::parse("https://auth.openai.com/api/accounts/deviceauth/usercode")
-                .unwrap(),
+            auth_url: Url::parse("https://auth.openai.com/oauth/authorize").unwrap(),
             token_url: Url::parse("https://auth.openai.com/oauth/token").unwrap(),
             client_id: "app_EMoamEEZ73f0CkXaXp7hrann".to_string(),
-            scopes: vec!["openid".to_string()],
-            redirect_uri: None,
-            use_pkce: false,
+            scopes: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+                "offline_access".to_string(),
+            ],
+            redirect_uri: Some("http://localhost:1455/auth/callback".to_string()),
+            use_pkce: true,
             token_refresh_url: None,
             custom_headers: None,
             extra_auth_params: None,
@@ -475,12 +348,34 @@ mod tests {
     }
 
     #[test]
-    fn standard_auth_url_has_no_code_verifier() {
+    fn standard_auth_url_has_pkce_verifier() {
         let config = codex_config();
         let params = build_standard_auth_url(&config).unwrap();
         assert!(
-            params.code_verifier.is_none(),
-            "Codex should not have PKCE verifier"
+            params.code_verifier.is_some(),
+            "Codex should have PKCE verifier"
+        );
+        // State should NOT equal verifier (unlike Anthropic)
+        assert_ne!(
+            params.state,
+            params.code_verifier.as_deref().unwrap(),
+            "Standard OAuth state should be random, not equal to verifier"
+        );
+    }
+
+    #[test]
+    fn standard_auth_url_includes_extra_params() {
+        use std::collections::HashMap;
+        let mut config = codex_config();
+        config.extra_auth_params = Some({
+            let mut m = HashMap::new();
+            m.insert("originator".to_string(), "codex_cli_rs".to_string());
+            m
+        });
+        let params = build_standard_auth_url(&config).unwrap();
+        assert!(
+            params.auth_url.contains("originator=codex_cli_rs"),
+            "Missing extra auth params in URL"
         );
     }
 
