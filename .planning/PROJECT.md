@@ -15,13 +15,14 @@ Users can authenticate with any supported AI provider through a single `codiv lo
 - Existing multi-provider support (Anthropic, OpenAI, Google, OpenAI-compatible) via config.toml and env vars
 - Daemon-based architecture with codivd handling API calls
 - aisdk library for unified LLM interface
+- ✓ Provider registry with auth method metadata (Anthropic, OpenAI, Claude Code OAuth, Codex OAuth) — Phase 1
+- ✓ OAuth token types with refresh token and expiry tracking — Phase 1
 
 ### Active
 
 - [ ] `codiv login` CLI command with interactive provider wizard
 - [ ] API key auth method (paste key, validate, store)
 - [ ] OAuth code flow auth method (browser redirect, code exchange)
-- [ ] Provider registry with auth method metadata (Anthropic, OpenAI, Claude Code OAuth, Codex OAuth)
 - [ ] Credential storage merged into `~/.codiv/config.toml`
 - [ ] Token refresh handled automatically by codivd daemon
 - [ ] Interactive prompts for provider/method selection (dialoguer style)
@@ -88,4 +89,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-31 after initialization*
+*Last updated: 2026-03-31 after Phase 1 completion*

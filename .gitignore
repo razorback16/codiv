@@ -8,3 +8,4 @@ codivd/.cache/
 references/
 !.claude/skills/*/references/
 !.claude/skills/*/references/**
+.planning/
