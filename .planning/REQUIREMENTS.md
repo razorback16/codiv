@@ -7,23 +7,23 @@
 
 ### CLI & Wizard
 
-- [ ] **CLI-01**: User can run `codiv login` to start interactive provider wizard
-- [ ] **CLI-02**: User can run `codiv login <provider>` to skip provider selection
-- [ ] **CLI-03**: Wizard shows numbered provider list with arrow key selection (dialoguer)
-- [ ] **CLI-04**: Wizard shows available auth methods for selected provider
+- [x] **CLI-01**: User can run `codiv login` to start interactive provider wizard
+- [x] **CLI-02**: User can run `codiv login <provider>` to skip provider selection
+- [x] **CLI-03**: Wizard shows numbered provider list with arrow key selection (dialoguer)
+- [x] **CLI-04**: Wizard shows available auth methods for selected provider
 
 ### Authentication
 
 - [ ] **AUTH-01**: User can authenticate via API key (paste, validate, store)
-- [ ] **AUTH-02**: User can authenticate via OAuth code flow (browser redirect, code exchange)
+- [x] **AUTH-02**: User can authenticate via OAuth code flow (browser redirect, code exchange)
 - [x] **AUTH-03**: OAuth tokens include refresh tokens with expiration tracking
 
 ### Providers
 
 - [ ] **PROV-01**: Anthropic provider with API key auth
 - [ ] **PROV-02**: OpenAI provider with API key auth
-- [ ] **PROV-03**: Claude Code provider with OAuth code flow
-- [ ] **PROV-04**: Codex provider with OAuth code flow
+- [x] **PROV-03**: Claude Code provider with OAuth code flow
+- [x] **PROV-04**: Codex provider with OAuth code flow
 - [x] **PROV-05**: Provider registry with auth method metadata (ported from forgecode)
 
 ### Storage & Refresh
@@ -62,17 +62,17 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLI-01 | Phase 3 | Pending |
-| CLI-02 | Phase 3 | Pending |
-| CLI-03 | Phase 3 | Pending |
-| CLI-04 | Phase 3 | Pending |
+| CLI-01 | Phase 3 | Complete |
+| CLI-02 | Phase 3 | Complete |
+| CLI-03 | Phase 3 | Complete |
+| CLI-04 | Phase 3 | Complete |
 | AUTH-01 | Phase 2 | Pending |
-| AUTH-02 | Phase 2 | Pending |
+| AUTH-02 | Phase 2 | Complete |
 | AUTH-03 | Phase 1 | Complete |
 | PROV-01 | Phase 2 | Pending |
 | PROV-02 | Phase 2 | Pending |
-| PROV-03 | Phase 2 | Pending |
-| PROV-04 | Phase 2 | Pending |
+| PROV-03 | Phase 2 | Complete |
+| PROV-04 | Phase 2 | Complete |
 | PROV-05 | Phase 1 | Complete |
 | STOR-01 | Phase 2 | Complete |
 | STOR-02 | Phase 3 | Pending |
