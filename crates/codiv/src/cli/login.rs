@@ -55,6 +55,7 @@ fn run(args: LoginArgs) -> Result<()> {
     match method {
         AuthMethod::ApiKey => run_api_key_flow(&provider_id, entry.display_name),
         AuthMethod::OAuthCode(config) => run_oauth_flow(config, &provider_id, entry.display_name),
+        AuthMethod::DeviceCode(config) => run_device_flow(config, &provider_id, entry.display_name),
     }
 }
 
@@ -76,6 +77,47 @@ fn run_api_key_flow(provider_id: &str, display_name: &str) -> Result<()> {
         .with_context(|| format!("Failed to save API key for {}", display_name))?;
 
     println!("API key saved for {}.", display_name);
+    Ok(())
+}
+
+fn run_device_flow(
+    config: codiv_common::auth::OAuthConfig,
+    provider_id: &str,
+    display_name: &str,
+) -> Result<()> {
+    use codiv_common::auth::{codex_request_device_code, codex_poll_and_exchange};
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create async runtime")?;
+
+    // Step 1: Request device code
+    let device_resp = rt
+        .block_on(codex_request_device_code(&config))
+        .with_context(|| format!("Failed to request device code for {}", display_name))?;
+
+    // Step 2: Show code and verification URL
+    println!("Your user code: {}", device_resp.user_code);
+    println!();
+    println!("Visit https://auth.openai.com/codex/device and enter the code above.");
+    let _ = open::that("https://auth.openai.com/codex/device");
+    println!();
+    println!("Waiting for authorization (this will timeout after 5 minutes)...");
+
+    let interval: u64 = device_resp.interval.parse().unwrap_or(5);
+
+    // Step 3: Poll until authorized, then exchange for tokens
+    rt.block_on(codex_poll_and_exchange(
+        &config,
+        &device_resp.device_auth_id,
+        &device_resp.user_code,
+        interval,
+        provider_id,
+    ))
+    .with_context(|| format!("Device authorization failed for {}", display_name))?;
+
+    println!("Authentication successful for {}.", display_name);
     Ok(())
 }
 

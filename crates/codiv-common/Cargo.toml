@@ -20,6 +20,7 @@ anyhow = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
 toml_edit = "0.22"
 toml = "0.8"
+serde_urlencoded = "0.7.1"
 
 [dev-dependencies]
 tempfile = "3"
