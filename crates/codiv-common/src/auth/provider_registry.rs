@@ -61,7 +61,7 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
         ProviderEntry {
             id: "codex",
             display_name: "Codex",
-            auth_methods: vec![AuthMethod::OAuthCode(OAuthConfig {
+            auth_methods: vec![AuthMethod::DeviceCode(OAuthConfig {
                 auth_url: Url::parse(
                     "https://auth.openai.com/api/accounts/deviceauth/usercode",
                 )
@@ -78,7 +78,11 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
                 redirect_uri: None,
                 use_pkce: false,
                 token_refresh_url: None,
-                custom_headers: None,
+                custom_headers: Some({
+                    let mut m = HashMap::new();
+                    m.insert("originator".to_string(), "codiv".to_string());
+                    m
+                }),
                 extra_auth_params: None,
             })],
         },
@@ -147,9 +151,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_uses_oauth_code_with_correct_client_id() {
+    fn codex_uses_device_code_with_correct_client_id() {
         let entry = provider_by_id("codex").expect("codex must exist");
         assert_eq!(entry.auth_methods.len(), 1);
+        assert!(matches!(entry.auth_methods[0], AuthMethod::DeviceCode(_)));
         let config = entry.auth_methods[0]
             .oauth_config()
             .expect("codex must have oauth config");

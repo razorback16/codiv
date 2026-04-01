@@ -232,6 +232,164 @@ pub async fn run_oauth_code_flow(
     Ok(tokens)
 }
 
+// ── Codex Device Flow ──────────────────────────────────────────────────
+
+/// Response from the OpenAI device auth usercode endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct DeviceAuthResponse {
+    pub device_auth_id: String,
+    pub user_code: String,
+    pub interval: String,
+}
+
+/// Response from the OpenAI device auth token polling endpoint.
+#[derive(Debug, serde::Deserialize)]
+struct CodexDeviceTokenResponse {
+    authorization_code: String,
+    code_verifier: String,
+}
+
+/// Step 1 of Codex device flow: request a device authorization code.
+///
+/// Returns user_code for display and device_auth_id for polling.
+pub async fn codex_request_device_code(config: &OAuthConfig) -> Result<DeviceAuthResponse> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none());
+
+    if let Some(headers) = &config.custom_headers {
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (k, v) in headers {
+            header_map.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes())?,
+                reqwest::header::HeaderValue::from_str(v)?,
+            );
+        }
+        builder = builder.default_headers(header_map);
+    }
+
+    let client = builder.build()?;
+
+    let resp = client
+        .post(config.auth_url.as_str())
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "client_id": config.client_id
+        }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Device authorization failed {status}: {text}");
+    }
+
+    Ok(resp.json::<DeviceAuthResponse>().await?)
+}
+
+/// Step 2 of Codex device flow: poll until user approves, then exchange for tokens.
+///
+/// Polls the device auth token endpoint until authorization is granted,
+/// then exchanges the received authorization_code + code_verifier for OAuth tokens.
+pub async fn codex_poll_and_exchange(
+    config: &OAuthConfig,
+    device_auth_id: &str,
+    user_code: &str,
+    poll_interval_secs: u64,
+    provider_id: &str,
+) -> Result<OAuthTokens> {
+    let poll_url = config.auth_url.as_str().replace("/usercode", "/token");
+    let interval = std::time::Duration::from_secs(poll_interval_secs.max(1) + 3);
+    let timeout = std::time::Duration::from_secs(300); // 5 min timeout
+    let start = tokio::time::Instant::now();
+
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none());
+
+    if let Some(headers) = &config.custom_headers {
+        let mut header_map = reqwest::header::HeaderMap::new();
+        for (k, v) in headers {
+            header_map.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes())?,
+                reqwest::header::HeaderValue::from_str(v)?,
+            );
+        }
+        builder = builder.default_headers(header_map);
+    }
+
+    let client = builder.build()?;
+
+    loop {
+        if start.elapsed() >= timeout {
+            anyhow::bail!("Device authorization timed out after 5 minutes");
+        }
+
+        tokio::time::sleep(interval).await;
+
+        let resp = client
+            .post(&poll_url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "device_auth_id": device_auth_id,
+                "user_code": user_code,
+            }))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let device_token: CodexDeviceTokenResponse = resp.json().await?;
+
+            // Exchange authorization_code for OAuth tokens via standard endpoint.
+            // Use a clean client without custom headers.
+            let clean_client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?;
+
+            let token_resp = clean_client
+                .post(config.token_url.as_str())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(serde_urlencoded::to_string([
+                    ("grant_type", "authorization_code"),
+                    ("code", &device_token.authorization_code),
+                    ("redirect_uri", "https://auth.openai.com/deviceauth/callback"),
+                    ("client_id", &config.client_id),
+                    ("code_verifier", &device_token.code_verifier),
+                ])?)
+                .send()
+                .await?;
+
+            if !token_resp.status().is_success() {
+                let status = token_resp.status();
+                let text = token_resp.text().await.unwrap_or_default();
+                anyhow::bail!("Codex token exchange failed {status}: {text}");
+            }
+
+            let oauth_resp: OAuthTokenResponse = token_resp.json().await?;
+            let tokens = token_response_to_oauth_tokens(oauth_resp);
+            write_oauth_tokens_to_config(provider_id, &tokens)?;
+            return Ok(tokens);
+        }
+
+        // Non-success: either pending or error. Check for retryable errors.
+        let status = resp.status();
+        if status.as_u16() == 400 || status.as_u16() == 428 {
+            // authorization_pending or slow_down — keep polling
+            continue;
+        }
+
+        let text = resp.text().await.unwrap_or_default();
+        // Check for JSON error body
+        if let Ok(err) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(error) = err["error"].as_str() {
+                if error == "authorization_pending" || error == "slow_down" {
+                    continue;
+                }
+            }
+        }
+        anyhow::bail!("Device auth polling failed {status}: {text}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
