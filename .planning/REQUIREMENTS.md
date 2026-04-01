@@ -30,7 +30,7 @@
 
 - [x] **STOR-01**: Credentials stored in `~/.codiv/config.toml` (merged with existing config)
 - [ ] **STOR-02**: codivd daemon refreshes OAuth tokens automatically before expiry
-- [ ] **STOR-03**: Migration utility to move env var credentials into config.toml
+- [x] **STOR-03**: Migration utility to move env var credentials into config.toml
 
 ## v2 Requirements
 
@@ -76,7 +76,7 @@
 | PROV-05 | Phase 1 | Complete |
 | STOR-01 | Phase 2 | Complete |
 | STOR-02 | Phase 3 | Pending |
-| STOR-03 | Phase 3 | Pending |
+| STOR-03 | Phase 3 | Complete |
 
 **Coverage:**
 - v1 requirements: 15 total
