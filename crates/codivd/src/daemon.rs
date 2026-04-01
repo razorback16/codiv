@@ -61,6 +61,7 @@ pub struct Daemon {
     config: Arc<RwLock<crate::agent::config::AppConfig>>,
     _config_watcher: crate::agent::config::ConfigWatcherGuard,
     config_change_rx: tokio::sync::mpsc::Receiver<()>,
+    _token_refresh_task: tokio::task::JoinHandle<()>,
 }
 
 impl Daemon {
@@ -88,6 +89,7 @@ impl Daemon {
             config,
             _config_watcher,
             config_change_rx,
+            _token_refresh_task: crate::agent::config::spawn_token_refresh_task(),
         })
     }
 
