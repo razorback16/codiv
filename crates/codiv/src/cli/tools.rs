@@ -300,5 +300,8 @@ pub fn handle(cmd: Commands) {
         Commands::Login(args) => {
             super::login::handle_login(args);
         }
+        Commands::MigrateEnv(args) => {
+            super::migrate::handle_migrate_env(args);
+        }
     }
 }
