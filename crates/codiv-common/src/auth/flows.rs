@@ -224,6 +224,81 @@ pub fn token_response_to_oauth_tokens(resp: OAuthTokenResponse) -> OAuthTokens {
     )
 }
 
+/// Refresh an OAuth token using the refresh_token grant.
+///
+/// Tries token_refresh_url first; falls back to token_url (same endpoint for Anthropic and Codex).
+/// Uses form-encoded body (standard) — Anthropic's refresh endpoint accepts form-encoded unlike
+/// the authorization code exchange endpoint which requires JSON.
+///
+/// Returns Ok(new_tokens) on success, Err on network or parse failure.
+/// The caller is responsible for writing the new tokens to storage.
+pub async fn refresh_oauth_token(
+    config: &OAuthConfig,
+    refresh_token: &str,
+) -> Result<OAuthTokens> {
+    let endpoint = config
+        .token_refresh_url
+        .as_ref()
+        .unwrap_or(&config.token_url);
+
+    let client = reqwest::Client::new();
+    let form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_string()),
+        ("client_id", config.client_id.clone()),
+    ];
+
+    let resp = client
+        .post(endpoint.as_str())
+        .form(&form)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Token refresh failed {status}: {text}");
+    }
+
+    let token_resp = resp.json::<OAuthTokenResponse>().await?;
+    Ok(token_response_to_oauth_tokens(token_resp))
+}
+
+/// Check stored OAuth tokens for `provider_id`. If they will expire within 5 minutes,
+/// refresh them using the stored refresh_token and write the new tokens to config.toml.
+///
+/// Returns Ok(Some(new_access_token)) if refresh happened, Ok(None) if not needed or not possible.
+/// Never propagates errors — logs warnings instead so callers can fall through gracefully.
+pub async fn maybe_refresh_stored_token(provider_id: &str, config: &OAuthConfig) -> Option<String> {
+    let tokens = match super::storage::read_oauth_tokens_from_config(provider_id) {
+        Ok(Some(t)) => t,
+        _ => return None,
+    };
+
+    if !tokens.needs_refresh(chrono::Duration::minutes(5)) {
+        return None;
+    }
+
+    let refresh_token = match &tokens.refresh_token {
+        Some(rt) => rt.as_str().to_string(),
+        None => return None,
+    };
+
+    match refresh_oauth_token(config, &refresh_token).await {
+        Ok(new_tokens) => {
+            let new_access = new_tokens.access_token.as_str().to_string();
+            if let Err(e) = super::storage::write_oauth_tokens_to_config(provider_id, &new_tokens) {
+                eprintln!("warning: failed to write refreshed tokens for {provider_id}: {e}");
+            }
+            Some(new_access)
+        }
+        Err(e) => {
+            eprintln!("warning: token refresh failed for {provider_id}: {e}");
+            None
+        }
+    }
+}
+
 /// Run the full OAuth code flow for a provider.
 ///
 /// This function handles only the HTTP/PKCE layer — NOT interactive prompts.
