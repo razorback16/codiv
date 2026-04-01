@@ -45,7 +45,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md — Storage layer: OAuthTokenResponse type, credential write/read functions, Cargo deps
-- [ ] 02-02-PLAN.md — OAuth HTTP adapters: Anthropic (PKCE + JSON exchange) and Standard (Codex) flows
+- [x] 02-02-PLAN.md — OAuth HTTP adapters: Anthropic (PKCE + JSON exchange) and Standard (Codex) flows
 - [ ] 02-03-PLAN.md — Login CLI subcommand: interactive API key and OAuth code flows wired end-to-end
 
 ### Phase 3: CLI Wizard & Daemon Refresh
@@ -69,5 +69,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Auth Foundation | 2/2 | Complete   | 2026-03-31 |
-| 2. Auth Flows & Storage | 0/TBD | Not started | - |
+| 2. Auth Flows & Storage | 2/3 | In Progress|  |
 | 3. CLI Wizard & Daemon Refresh | 0/TBD | Not started | - |
