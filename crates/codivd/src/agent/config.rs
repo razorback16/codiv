@@ -588,6 +588,34 @@ fn build_openai_compatible_model(
     Ok(model)
 }
 
+/// Spawn a background task that refreshes expiring OAuth tokens every 4 minutes.
+///
+/// Checks providers: claude_code, codex.
+/// Errors are logged as warnings and do not propagate.
+pub fn spawn_token_refresh_task() -> tokio::task::JoinHandle<()> {
+    use codiv_common::auth::{provider_by_id, maybe_refresh_stored_token, AuthMethod};
+
+    tokio::spawn(async move {
+        let oauth_providers = ["claude_code", "codex"];
+        loop {
+            for provider_id in &oauth_providers {
+                let entry = provider_by_id(provider_id);
+                if let Some(entry) = entry {
+                    let config = entry.auth_methods.into_iter().find_map(|m| {
+                        if let AuthMethod::OAuthCode(c) = m { Some(c) } else { None }
+                    });
+                    if let Some(config) = config {
+                        if maybe_refresh_stored_token(provider_id, &config).await.is_some() {
+                            tracing::info!("refreshed OAuth token for {}", provider_id);
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(240)).await; // 4 minutes
+        }
+    })
+}
+
 const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF_MS: u64 = 1000;
 
