@@ -63,7 +63,7 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — CLI wizard: dialoguer Select for provider choice + auth method display (CLI-01, CLI-02, CLI-03, CLI-04)
 - [ ] 03-02-PLAN.md — Daemon token refresh: refresh_oauth_token() in codiv-common + background task in codivd (STOR-02)
-- [ ] 03-03-PLAN.md — Env var migration: `codiv migrate-env` subcommand for ANTHROPIC/OPENAI/GOOGLE keys (STOR-03)
+- [x] 03-03-PLAN.md — Env var migration: `codiv migrate-env` subcommand for ANTHROPIC/OPENAI/GOOGLE keys (STOR-03)
 
 ## Progress
 
