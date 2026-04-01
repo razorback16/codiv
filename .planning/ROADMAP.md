@@ -58,8 +58,12 @@ Plans:
   3. Wizard shows only the auth methods relevant to the selected provider
   4. codivd automatically refreshes an expiring OAuth token before it causes a failed API call
   5. Running the migration utility moves existing env var credentials into config.toml
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — CLI wizard: dialoguer Select for provider choice + auth method display (CLI-01, CLI-02, CLI-03, CLI-04)
+- [ ] 03-02-PLAN.md — Daemon token refresh: refresh_oauth_token() in codiv-common + background task in codivd (STOR-02)
+- [ ] 03-03-PLAN.md — Env var migration: `codiv migrate-env` subcommand for ANTHROPIC/OPENAI/GOOGLE keys (STOR-03)
 
 ## Progress
 
@@ -70,4 +74,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Auth Foundation | 2/2 | Complete   | 2026-03-31 |
 | 2. Auth Flows & Storage | 2/3 | In Progress|  |
-| 3. CLI Wizard & Daemon Refresh | 0/TBD | Not started | - |
+| 3. CLI Wizard & Daemon Refresh | 0/3 | Not started | - |

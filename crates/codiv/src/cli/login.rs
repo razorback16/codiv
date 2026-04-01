@@ -8,6 +8,7 @@ use clap::Args;
 use codiv_common::auth::{
     provider_by_id, provider_registry, write_api_key_to_config, AuthMethod,
 };
+use dialoguer::Select;
 
 #[derive(Args)]
 pub struct LoginArgs {
@@ -24,26 +25,36 @@ pub fn handle_login(args: LoginArgs) {
 }
 
 fn run(args: LoginArgs) -> Result<()> {
-    let provider_id = match args.provider {
-        Some(id) => id,
+    let registry = provider_registry();
+
+    let entry = match args.provider {
+        Some(id) => provider_by_id(&id).with_context(|| {
+            format!(
+                "Unknown provider '{}'. Run `codiv login` to see available providers.",
+                id
+            )
+        })?,
         None => {
-            // No provider given — print usage with available providers
-            println!("Usage: codiv login <provider>");
-            println!();
-            println!("Available providers:");
-            for p in provider_registry() {
-                println!("  {:<14}  {}", p.id, p.display_name);
-            }
-            return Ok(());
+            // No provider given — show interactive selection wizard
+            let display_items: Vec<&str> =
+                registry.iter().map(|p| p.display_name).collect();
+
+            let selection = Select::new()
+                .with_prompt("Select a provider")
+                .items(&display_items)
+                .default(0)
+                .interact()
+                .context("Provider selection cancelled")?;
+
+            registry
+                .into_iter()
+                .nth(selection)
+                .expect("selection index must be in range")
         }
     };
 
-    let entry = provider_by_id(&provider_id).with_context(|| {
-        format!(
-            "Unknown provider '{}'. Run `codiv login` to see available providers.",
-            provider_id
-        )
-    })?;
+    let provider_id = entry.id.to_string();
+    let display_name = entry.display_name;
 
     // Use first supported auth method for the provider.
     let method = entry
@@ -52,9 +63,15 @@ fn run(args: LoginArgs) -> Result<()> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("Provider '{}' has no auth methods", provider_id))?;
 
+    // Display the auth method that will be used before executing the flow.
+    match &method {
+        AuthMethod::ApiKey => println!("Auth method: API key"),
+        AuthMethod::OAuthCode(_) => println!("Auth method: OAuth (browser redirect)"),
+    }
+
     match method {
-        AuthMethod::ApiKey => run_api_key_flow(&provider_id, entry.display_name),
-        AuthMethod::OAuthCode(config) => run_oauth_flow(config, &provider_id, entry.display_name),
+        AuthMethod::ApiKey => run_api_key_flow(&provider_id, display_name),
+        AuthMethod::OAuthCode(config) => run_oauth_flow(config, &provider_id, display_name),
     }
 }
 
