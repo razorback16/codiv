@@ -9,3 +9,4 @@ references/
 !.claude/skills/*/references/
 !.claude/skills/*/references/**
 .planning/
+crates/codiv/tests/screenshots/
