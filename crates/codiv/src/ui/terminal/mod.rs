@@ -83,8 +83,8 @@ pub fn run(
 
     let md_stream_width = parser_cols;
     let mut state = TerminalState::new(initial_cwd, client.is_some(), md_stream_width, theme);
-    state.git_info = bash.capture_git_info();
-    state.cached_env_vars = bash.capture_env();
+    state.shell.git_info = bash.capture_git_info();
+    state.shell.cached_env_vars = bash.capture_env();
 
     // Welcome message.
     push_intro(&mut parser);

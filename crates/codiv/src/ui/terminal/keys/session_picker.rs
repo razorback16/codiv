@@ -48,7 +48,7 @@ pub(crate) fn handle_session_picker(
 ) -> bool {
     match key_code {
         KeyCode::Up => {
-            if let Some(ref mut picker) = state.pending_session_picker {
+            if let Some(ref mut picker) = state.modal.pending_session_picker {
                 if picker.selected_index > 0 {
                     picker.selected_index -= 1;
                     // Scroll viewport up if selection went above visible window
@@ -61,7 +61,7 @@ pub(crate) fn handle_session_picker(
             true
         }
         KeyCode::Down => {
-            if let Some(ref mut picker) = state.pending_session_picker {
+            if let Some(ref mut picker) = state.modal.pending_session_picker {
                 if picker.selected_index < picker.sessions.len() - 1 {
                     picker.selected_index += 1;
                     // Scroll viewport down if selection went below visible window
@@ -75,7 +75,7 @@ pub(crate) fn handle_session_picker(
             true
         }
         KeyCode::Enter => {
-            if let Some(picker) = state.pending_session_picker.take() {
+            if let Some(picker) = state.modal.pending_session_picker.take() {
                 let sid = &picker.sessions[picker.selected_index].id;
                 if let Some(ref mut c) = client {
                     if let Some(frame) = ipc_messages::build_load_session(sid) {
@@ -88,7 +88,7 @@ pub(crate) fn handle_session_picker(
             true
         }
         KeyCode::Esc => {
-            if let Some(picker) = state.pending_session_picker.take() {
+            if let Some(picker) = state.modal.pending_session_picker.take() {
                 super::clear_modal_lines(parser, picker.prompt_lines as usize);
                 parser_push_notice(parser, NoticeKind::Notice, "Cancelled.");
             }

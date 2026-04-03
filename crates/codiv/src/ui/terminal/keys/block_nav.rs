@@ -18,18 +18,18 @@ pub(crate) fn handle_block_nav(
             } else {
                 state.tracker.focus_last();
             }
-            scroll_to_focused(parser, &mut state.scroll_offset, &mut state.tracker);
+            scroll_to_focused(parser, &mut state.ui.scroll_offset, &mut state.tracker);
             true
         }
         (KeyCode::Down, m) if m.contains(KeyModifiers::SHIFT) => {
             if state.tracker.focused_index().is_some() {
                 state.tracker.focus_next();
             }
-            scroll_to_focused(parser, &mut state.scroll_offset, &mut state.tracker);
+            scroll_to_focused(parser, &mut state.ui.scroll_offset, &mut state.tracker);
             true
         }
         (KeyCode::Enter, _)
-            if state.tracker.focused_index().is_some() && state.pending_command.is_none() =>
+            if state.tracker.focused_index().is_some() && state.cmd.pending_command.is_none() =>
         {
             match state.tracker.focused() {
                 Some(Block::Tool(tb)) => {

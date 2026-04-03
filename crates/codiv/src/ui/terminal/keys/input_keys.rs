@@ -42,18 +42,18 @@ pub(crate) fn handle_input_keys(
     match (key_code, modifiers) {
         // --- Ctrl combos ---
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-            if state.pending_command.is_some() {
+            if state.cmd.pending_command.is_some() {
                 bash.send_interrupt();
                 bash.drain_for(100);
-                state.pending_command = None;
+                state.cmd.pending_command = None;
             } else {
                 bash.send_interrupt();
             }
             parser.process(b"^C\r\n");
-            state.prompt_is_live = false;
-            state.prompt_anchor_row = None;
+            state.ui.prompt_is_live = false;
+            state.ui.prompt_anchor_row = None;
             state.input.clear();
-            state.scroll_offset = 0;
+            state.ui.scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
 
@@ -88,31 +88,31 @@ pub(crate) fn handle_input_keys(
         (KeyCode::Char('j'), m)
             if m.contains(KeyModifiers::CONTROL)
                 && state.input_mode == InputMode::Ai
-                && state.pending_command.is_none() =>
+                && state.cmd.pending_command.is_none() =>
         {
             state.input.insert_newline();
-            state.scroll_offset = 0;
+            state.ui.scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
         (KeyCode::Enter, m)
             if m.contains(KeyModifiers::SHIFT)
                 && state.input_mode == InputMode::Ai
-                && state.pending_command.is_none() =>
+                && state.cmd.pending_command.is_none() =>
         {
             state.input.insert_newline();
-            state.scroll_offset = 0;
+            state.ui.scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
 
         // --- Enter: submit input ---
-        (KeyCode::Enter, _) if state.pending_command.is_none() => {
+        (KeyCode::Enter, _) if state.cmd.pending_command.is_none() => {
             // Capture the visual line count BEFORE submit expands paste markers.
             let visual_line_count = state.input.line_count();
             let raw_input = state.input.submit();
 
             // Empty input — spring back, don't create a prompt block
             if raw_input.trim().is_empty() {
-                state.scroll_offset = 0;
+                state.ui.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
             } else {
                 // Prompt text already on screen from last render_frame.
@@ -121,7 +121,7 @@ pub(crate) fn handle_input_keys(
                 let line_count = visual_line_count;
 
                 // Compute scrollback_line from the anchor (first row of prompt).
-                let scrollback_line = if let Some(anchor) = state.prompt_anchor_row {
+                let scrollback_line = if let Some(anchor) = state.ui.prompt_anchor_row {
                     let sb_len = true_scrollback_len(parser) as u64;
                     sb_len + anchor as u64
                 } else {
@@ -137,7 +137,7 @@ pub(crate) fn handle_input_keys(
 
                 // Rewrite the prompt area: position at anchor, clear the old
                 // (possibly collapsed) display, and write the full expanded text.
-                if let Some(anchor) = state.prompt_anchor_row {
+                if let Some(anchor) = state.ui.prompt_anchor_row {
                     // Write expanded lines (with erase-to-EOL to clear old content).
                     for (i, rline) in rendered_lines.iter().enumerate() {
                         let row = anchor as u16 + i as u16 + 1;
@@ -157,8 +157,8 @@ pub(crate) fn handle_input_keys(
                 parser.process(b"\r\n");
 
                 state.tracker.record_prompt(&raw_input, scrollback_line, state.input_mode, rendered_lines);
-                state.prompt_is_live = false;
-                state.prompt_anchor_row = None;
+                state.ui.prompt_is_live = false;
+                state.ui.prompt_anchor_row = None;
                 let action = classify_input(&raw_input);
 
                 match action {
@@ -169,8 +169,8 @@ pub(crate) fn handle_input_keys(
                     }
 
                     InputAction::Clear => {
-                        reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
-                        state.prompt_is_live = false;
+                        reset_screen(parser, &mut state.ui.scroll_offset, &mut state.tracker);
+                        state.ui.prompt_is_live = false;
                         state.tool_result_modal.close();
 
                         // Tell the daemon to start a fresh session
@@ -188,8 +188,8 @@ pub(crate) fn handle_input_keys(
                         let rows = parser_rows_from_term_height(term_size.height);
                         let cols = parser_cols_from_term_width(term_size.width);
                         *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
-                        state.scroll_offset = 0;
-                        state.prompt_is_live = false;
+                        state.ui.scroll_offset = 0;
+                        state.ui.prompt_is_live = false;
                         state.input.clear_history();
                         state.completion_engine = CompletionEngine::new();
                         state.completion_engine.start_init(bash);
@@ -244,10 +244,10 @@ pub(crate) fn handle_input_keys(
                             InputMode::Command => {
                                 match bash.start_command(&raw_input) {
                                     Some(sentinel) => {
-                                        state.cmd_start_scrollback =
+                                        state.cmd.cmd_start_scrollback =
                                             Some(get_scrollback_line(parser));
-                                        state.cmd_output_capture.clear();
-                                        state.pending_command = Some(PendingCommand {
+                                        state.cmd.cmd_output_capture.clear();
+                                        state.cmd.pending_command = Some(PendingCommand {
                                             sentinel,
                                             accumulated: String::new(),
                                             command: raw_input.clone(),
@@ -273,12 +273,12 @@ pub(crate) fn handle_input_keys(
                                     if let Some(rid) = send_agent_request(
                                         c,
                                         &raw_input,
-                                        &state.cwd,
+                                        &state.shell.cwd,
                                         state.thinking_enabled,
-                                        &state.cached_env_vars,
+                                        &state.shell.cached_env_vars,
                                     ) {
-                                        state.agent_streaming = true;
-                                        state.active_request_id = Some(rid);
+                                        state.stream.agent_streaming = true;
+                                        state.stream.active_request_id = Some(rid);
                                     }
                                 } else {
                                     let hint = daemon_launcher::daemon_start_hint();
@@ -296,13 +296,13 @@ pub(crate) fn handle_input_keys(
                     }
                 }
 
-                state.scroll_offset = 0;
+                state.ui.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
             }
         }
 
         // --- Tab: mode switch or completion ---
-        (KeyCode::Tab, _) if state.pending_command.is_none() => {
+        (KeyCode::Tab, _) if state.cmd.pending_command.is_none() => {
             if state.input.content().is_empty() {
                 // Toggle mode
                 state.input_mode = match state.input_mode {
@@ -429,13 +429,13 @@ pub(crate) fn handle_input_keys(
 
         // --- Scrolling ---
         (KeyCode::PageUp, _) => {
-            state.scroll_offset = state.scroll_offset.saturating_add(10);
-            parser.screen_mut().set_scrollback(state.scroll_offset);
-            state.scroll_offset = parser.screen().scrollback();
+            state.ui.scroll_offset = state.ui.scroll_offset.saturating_add(10);
+            parser.screen_mut().set_scrollback(state.ui.scroll_offset);
+            state.ui.scroll_offset = parser.screen().scrollback();
         }
         (KeyCode::PageDown, _) => {
-            state.scroll_offset = state.scroll_offset.saturating_sub(10);
-            parser.screen_mut().set_scrollback(state.scroll_offset);
+            state.ui.scroll_offset = state.ui.scroll_offset.saturating_sub(10);
+            parser.screen_mut().set_scrollback(state.ui.scroll_offset);
         }
 
         // --- Regular character input ---
@@ -470,7 +470,7 @@ pub(crate) fn handle_input_keys(
                     state.hint_shown_at = Some(Instant::now());
                     state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
                 }
-                state.scroll_offset = 0;
+                state.ui.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
             }
         }

@@ -12,7 +12,7 @@ use super::state::{PendingConfirmation, PendingSessionPicker, TerminalState, Tok
 use super::utils::{finalize_thinking, get_scrollback_line, parser_push_notice, rerender_all, reset_screen, NoticeKind, write_block_lines_to_parser};
 
 /// Mutable state used by the daemon message handler.
-/// Constructed from `TerminalState` fields for live messages,
+/// Constructed from `TerminalState` sub-structs for live messages,
 /// or from replay-local variables during `SessionReplay`.
 pub(super) struct DaemonStreamState<'a> {
     pub md_stream: &'a mut MarkdownStream,
@@ -532,8 +532,8 @@ pub(crate) fn handle_lease_message(
             lease_id,
             request_id,
         } => {
-            if state.pending_command.is_none() && state.shell_relay.active_lease.is_none() {
-                state.shell_relay.active_lease = Some(super::state::ActiveLease {
+            if state.cmd.pending_command.is_none() && state.shell.shell_relay.active_lease.is_none() {
+                state.shell.shell_relay.active_lease = Some(super::state::ActiveLease {
                     lease_id: lease_id.clone(),
                     request_id: request_id.clone(),
                     current_command: None,
@@ -542,8 +542,8 @@ pub(crate) fn handle_lease_message(
                     frames.push(frame);
                 }
             } else {
-                let queue_len = state.shell_relay.pending_leases.len() + 1;
-                state.shell_relay.pending_leases.push_back(
+                let queue_len = state.shell.shell_relay.pending_leases.len() + 1;
+                state.shell.shell_relay.pending_leases.push_back(
                     super::state::PendingLease { lease_id: lease_id.clone(), request_id: request_id.clone() },
                 );
                 if let Some(frame) = ipc_messages::build_shell_lease_queued(lease_id, queue_len) {
@@ -557,7 +557,7 @@ pub(crate) fn handle_lease_message(
             command,
             execution_timeout_ms,
         } => {
-            if let Some(ref mut lease) = state.shell_relay.active_lease {
+            if let Some(ref mut lease) = state.shell.shell_relay.active_lease {
                 if lease.lease_id == *lease_id {
                     lease.current_command = Some(super::state::ActiveLeasedCommand {
                         execution_id: execution_id.clone(),
@@ -568,9 +568,9 @@ pub(crate) fn handle_lease_message(
             }
         }
         ipc_messages::DaemonMessage::ReleaseShellLease { lease_id, .. } => {
-            if let Some(ref lease) = state.shell_relay.active_lease {
+            if let Some(ref lease) = state.shell.shell_relay.active_lease {
                 if lease.lease_id == *lease_id {
-                    state.shell_relay.active_lease = None;
+                    state.shell.shell_relay.active_lease = None;
                     if let Some(frame) = ipc_messages::build_shell_lease_released(lease_id) {
                         frames.push(frame);
                     }
@@ -587,7 +587,7 @@ pub(crate) fn handle_lease_message(
             if let Some(frame) = ipc_messages::build_command_cancelled(
                 lease_id,
                 execution_id,
-                &state.cwd,
+                &state.shell.cwd,
             ) {
                 frames.push(frame);
             }
@@ -648,7 +648,7 @@ pub(crate) fn handle_daemon_message(
                 parser.process(select_line.as_bytes());
                 prompt_lines += 2; // blank line + select line
 
-                state.pending_session_picker = Some(PendingSessionPicker {
+                state.modal.pending_session_picker = Some(PendingSessionPicker {
                     sessions,
                     selected_index: 0,
                     viewport_offset: 0,
@@ -659,7 +659,7 @@ pub(crate) fn handle_daemon_message(
         ipc_messages::DaemonMessage::SessionReplay { events } => {
             // Clear screen and block state
             state.tracker.clear();
-            state.prompt_anchor_row = None;
+            state.ui.prompt_anchor_row = None;
             state.tracker.set_replay_mode(true);
 
             let mut replay_token_usage = TokenUsage::default();
@@ -858,7 +858,7 @@ pub(crate) fn handle_daemon_message(
             state.token_usage = replay_token_usage;
 
             // Render all blocks at once
-            rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
+            rerender_all(parser, &mut state.tracker, &mut state.ui.scroll_offset);
         }
         // Lease protocol messages are handled by handle_lease_message (called
         // before this function in the event loop).
@@ -868,15 +868,15 @@ pub(crate) fn handle_daemon_message(
         | ipc_messages::DaemonMessage::CancelLeasedCommand { .. } => {}
         ipc_messages::DaemonMessage::Notice { message } => {
             state.notice_hint = Some((message, Instant::now()));
-            state.needs_render = true;
+            state.ui.needs_render = true;
         }
         ipc_messages::DaemonMessage::CompactionStarted {
             request_id,
             compacted_event_count,
         } => {
-            state.prompt_is_live = false;
-            state.prompt_anchor_row = None;
-            reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
+            state.ui.prompt_is_live = false;
+            state.ui.prompt_anchor_row = None;
+            reset_screen(parser, &mut state.ui.scroll_offset, &mut state.tracker);
 
             // Show pending yellow header + placeholder summary (2-line tool block pattern)
             let scrollback_line = get_scrollback_line(parser);
@@ -890,22 +890,22 @@ pub(crate) fn handle_daemon_message(
             state.pending_compaction_count = Some(compacted_event_count);
 
             // Enter streaming mode for the incoming summary text
-            state.agent_streaming = true;
-            state.active_request_id = Some(request_id);
-            state.md_stream.reset();
-            state.ai_start_scrollback = None;
-            state.ai_rendered_lines.clear();
-            state.needs_render = true;
+            state.stream.agent_streaming = true;
+            state.stream.active_request_id = Some(request_id);
+            state.stream.md_stream.reset();
+            state.stream.ai_start_scrollback = None;
+            state.stream.ai_rendered_lines.clear();
+            state.ui.needs_render = true;
         }
         ipc_messages::DaemonMessage::CompactionComplete {
             summary,
             compacted_event_count,
         } => {
-            let final_bytes = state.md_stream.finish();
+            let final_bytes = state.stream.md_stream.finish();
             if !final_bytes.is_empty() {
-                accumulate_ai_lines(&mut state.ai_rendered_lines, &final_bytes);
+                accumulate_ai_lines(&mut state.stream.ai_rendered_lines, &final_bytes);
             }
-            let mut ai_lines = std::mem::take(&mut state.ai_rendered_lines);
+            let mut ai_lines = std::mem::take(&mut state.stream.ai_rendered_lines);
             if ai_lines.last().is_some_and(|s| s.is_empty()) {
                 ai_lines.pop();
             }
@@ -925,36 +925,36 @@ pub(crate) fn handle_daemon_message(
                 false,
                 rendered_lines,
             );
-            rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
+            rerender_all(parser, &mut state.tracker, &mut state.ui.scroll_offset);
 
-            state.agent_streaming = false;
-            state.active_request_id = None;
-            state.ai_start_scrollback = None;
+            state.stream.agent_streaming = false;
+            state.stream.active_request_id = None;
+            state.stream.ai_start_scrollback = None;
             state.pending_compaction_count = None;
-            state.prompt_anchor_row = None;
-            state.md_stream.reset();
-            state.needs_render = true;
+            state.ui.prompt_anchor_row = None;
+            state.stream.md_stream.reset();
+            state.ui.needs_render = true;
         }
         // All other messages delegate to the core handler
         other => {
             let mut ds = DaemonStreamState {
-                md_stream: &mut state.md_stream,
-                agent_streaming: &mut state.agent_streaming,
+                md_stream: &mut state.stream.md_stream,
+                agent_streaming: &mut state.stream.agent_streaming,
                 last_daemon_timestamp: &mut state.last_daemon_timestamp,
                 model_alias: &mut state.model_alias,
                 token_usage: &mut state.token_usage,
                 tracker: &mut state.tracker,
-                ai_start_scrollback: &mut state.ai_start_scrollback,
-                ai_rendered_lines: &mut state.ai_rendered_lines,
-                thinking_buffer: &mut state.thinking_buffer,
-                thinking_start: &mut state.thinking_start,
-                thinking_scrollback: &mut state.thinking_scrollback,
-                pending_confirmation: &mut state.pending_confirmation,
+                ai_start_scrollback: &mut state.stream.ai_start_scrollback,
+                ai_rendered_lines: &mut state.stream.ai_rendered_lines,
+                thinking_buffer: &mut state.stream.thinking_buffer,
+                thinking_start: &mut state.stream.thinking_start,
+                thinking_scrollback: &mut state.stream.thinking_scrollback,
+                pending_confirmation: &mut state.modal.pending_confirmation,
                 permission_mode: &mut state.permission_mode,
                 last_permission_outcome: &mut state.last_permission_outcome,
                 session_id: &mut state.session_id,
                 session_name: &mut state.session_name,
-                active_request_id: &mut state.active_request_id,
+                active_request_id: &mut state.stream.active_request_id,
                 pending_compaction_count: &mut state.pending_compaction_count,
             };
             handle_single_message(other, parser, &mut ds, theme);
@@ -965,12 +965,12 @@ pub(crate) fn handle_daemon_message(
 /// Try to promote the next pending lease and return frames to send.
 fn promote_pending_lease_frames(state: &mut TerminalState) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
-    if state.shell_relay.active_lease.is_some() || state.pending_command.is_some() {
+    if state.shell.shell_relay.active_lease.is_some() || state.cmd.pending_command.is_some() {
         return frames;
     }
-    if let Some(pending) = state.shell_relay.pending_leases.pop_front() {
+    if let Some(pending) = state.shell.shell_relay.pending_leases.pop_front() {
         let lease_id = pending.lease_id.clone();
-        state.shell_relay.active_lease = Some(super::state::ActiveLease {
+        state.shell.shell_relay.active_lease = Some(super::state::ActiveLease {
             lease_id: lease_id.clone(),
             request_id: pending.request_id,
             current_command: None,

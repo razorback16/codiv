@@ -154,6 +154,58 @@ pub(crate) struct PendingSessionPicker {
 /// Default scrollback limit (number of lines retained).
 pub(crate) const MAX_SCROLLBACK: usize = 10_000;
 
+// ---------------------------------------------------------------------------
+// Sub-state structs
+// ---------------------------------------------------------------------------
+
+/// Command execution state.
+pub(crate) struct CommandState {
+    pub(crate) pending_command: Option<PendingCommand>,
+    pub(crate) cmd_start_scrollback: Option<u64>,
+    /// Accumulates PTY bytes during command execution for CmdResponseBlock replay.
+    pub(crate) cmd_output_capture: Vec<u8>,
+}
+
+/// AI streaming state.
+pub(crate) struct AgentStreamState {
+    pub(crate) agent_streaming: bool,
+    pub(crate) active_request_id: Option<String>,
+    pub(crate) ai_start_scrollback: Option<u64>,
+    pub(crate) thinking_buffer: String,
+    pub(crate) thinking_start: Option<Instant>,
+    pub(crate) thinking_scrollback: Option<u64>,
+    pub(crate) md_stream: MarkdownStream,
+    /// Accumulates ANSI-rendered lines during AI streaming for AiResponseBlock.
+    pub(crate) ai_rendered_lines: Vec<String>,
+}
+
+/// Shell and environment state.
+pub(crate) struct ShellState {
+    pub(crate) cwd: String,
+    pub(crate) git_info: Option<GitInfo>,
+    pub(crate) cached_env_vars: Vec<(String, String)>,
+    pub(crate) shell_relay: ShellRelayState,
+}
+
+/// UI rendering state.
+pub(crate) struct UiState {
+    pub(crate) scroll_offset: usize,
+    pub(crate) prompt_is_live: bool,
+    pub(crate) prompt_anchor_row: Option<u16>,
+    pub(crate) needs_render: bool,
+    pub(crate) anim: AnimationState,
+}
+
+/// Modal dialog state.
+pub(crate) struct ModalState {
+    pub(crate) pending_confirmation: Option<PendingConfirmation>,
+    pub(crate) pending_session_picker: Option<PendingSessionPicker>,
+}
+
+// ---------------------------------------------------------------------------
+// TerminalState
+// ---------------------------------------------------------------------------
+
 /// Consolidated UI state for the terminal event loop.
 #[allow(dead_code)]
 pub(crate) struct TerminalState {
@@ -162,20 +214,16 @@ pub(crate) struct TerminalState {
     pub last_reconnect_attempt: Instant,
     pub last_daemon_timestamp: u64,
 
-    // Command execution
-    pub pending_command: Option<PendingCommand>,
-    pub cmd_start_scrollback: Option<u64>,
+    // Sub-state groups
+    pub cmd: CommandState,
+    pub stream: AgentStreamState,
+    pub shell: ShellState,
+    pub ui: UiState,
+    pub modal: ModalState,
 
-    // AI / daemon
-    pub agent_streaming: bool,
-    pub active_request_id: Option<String>,
-    pub ai_start_scrollback: Option<u64>,
-    pub thinking_buffer: String,
-    pub thinking_start: Option<Instant>,
-    pub thinking_scrollback: Option<u64>,
+    // AI / daemon metadata
     pub model_alias: String,
     pub token_usage: TokenUsage,
-    pub md_stream: MarkdownStream,
 
     // Input
     pub input: InputLine,
@@ -183,40 +231,19 @@ pub(crate) struct TerminalState {
     pub completion_engine: CompletionEngine,
     pub completion_popup: CompletionPopup,
 
-    // UI state
-    pub scroll_offset: usize,
-    pub prompt_is_live: bool,
-    pub prompt_anchor_row: Option<u16>,
+    // Block registry and tool result modal
     pub tracker: BlockRegistry,
     pub tool_result_modal: ToolResultModal,
     pub was_alt_screen: bool,
-    pub anim: AnimationState,
-    pub needs_render: bool,
 
     // Settings / modes
     pub thinking_enabled: bool,
     pub permission_mode: PermissionMode,
 
-    // Confirmation / session
-    pub pending_confirmation: Option<PendingConfirmation>,
+    // Session
     pub last_permission_outcome: Option<(String, bool, String)>,
     pub session_id: Option<String>,
     pub session_name: Option<String>,
-    pub pending_session_picker: Option<PendingSessionPicker>,
-
-    // Shell state
-    pub cwd: String,
-    pub git_info: Option<GitInfo>,
-    pub cached_env_vars: Vec<(String, String)>,
-
-    // Shell lease relay state
-    pub shell_relay: ShellRelayState,
-
-    /// Accumulates PTY bytes during command execution for CmdResponseBlock replay.
-    pub cmd_output_capture: Vec<u8>,
-
-    /// Accumulates ANSI-rendered lines during AI streaming for AiResponseBlock.
-    pub ai_rendered_lines: Vec<String>,
 
     /// When set, a compaction is in progress; holds the compacted event count.
     pub pending_compaction_count: Option<usize>,
@@ -244,20 +271,46 @@ impl TerminalState {
             last_reconnect_attempt: now,
             last_daemon_timestamp: 0,
 
-            // Command execution
-            pending_command: None,
-            cmd_start_scrollback: None,
+            // Sub-state groups
+            cmd: CommandState {
+                pending_command: None,
+                cmd_start_scrollback: None,
+                cmd_output_capture: Vec::new(),
+            },
+            stream: AgentStreamState {
+                agent_streaming: false,
+                active_request_id: None,
+                ai_start_scrollback: None,
+                thinking_buffer: String::new(),
+                thinking_start: None,
+                thinking_scrollback: None,
+                md_stream: MarkdownStream::new(md_stream_width, theme),
+                ai_rendered_lines: Vec::new(),
+            },
+            shell: ShellState {
+                cwd: initial_cwd,
+                git_info: None,
+                cached_env_vars: Vec::new(),
+                shell_relay: ShellRelayState {
+                    active_lease: None,
+                    pending_leases: std::collections::VecDeque::new(),
+                },
+            },
+            ui: UiState {
+                scroll_offset: 0,
+                prompt_is_live: false,
+                prompt_anchor_row: None,
+                needs_render: true,
+                anim: AnimationState::new(),
+            },
+            modal: ModalState {
+                pending_confirmation: None,
+                pending_session_picker: None,
+            },
 
-            // AI / daemon
-            agent_streaming: false,
-            active_request_id: None,
-            ai_start_scrollback: None,
-            thinking_buffer: String::new(),
-            thinking_start: None,
-            thinking_scrollback: None,
+            // AI / daemon metadata
             model_alias: String::new(),
             token_usage: TokenUsage::default(),
-            md_stream: MarkdownStream::new(md_stream_width, theme),
 
             // Input
             input: InputLine::new(),
@@ -269,40 +322,20 @@ impl TerminalState {
             completion_engine: CompletionEngine::new(),
             completion_popup: CompletionPopup::new(),
 
-            // UI state
-            scroll_offset: 0,
-            prompt_is_live: false,
-            prompt_anchor_row: None,
+            // Block registry and tool result modal
             tracker: BlockRegistry::new(),
             tool_result_modal: ToolResultModal::new(),
             was_alt_screen: false,
-            anim: AnimationState::new(),
-            needs_render: true,
 
             // Settings / modes
             thinking_enabled: false,
             permission_mode: PermissionMode::default(),
 
-            // Confirmation / session
-            pending_confirmation: None,
+            // Session
             last_permission_outcome: None,
             session_id: None,
             session_name: None,
-            pending_session_picker: None,
 
-            // Shell state
-            cwd: initial_cwd,
-            git_info: None,
-            cached_env_vars: Vec::new(),
-
-            // Shell lease relay state
-            shell_relay: ShellRelayState {
-                active_lease: None,
-                pending_leases: std::collections::VecDeque::new(),
-            },
-
-            cmd_output_capture: Vec::new(),
-            ai_rendered_lines: Vec::new(),
             pending_compaction_count: None,
 
             // Contextual hint (shown for 5s after trigger)

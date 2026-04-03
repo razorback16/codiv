@@ -12,17 +12,17 @@ pub(crate) fn handle_mouse(
 ) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            state.scroll_offset = state.scroll_offset.saturating_add(3);
-            parser.screen_mut().set_scrollback(state.scroll_offset);
-            state.scroll_offset = parser.screen().scrollback();
+            state.ui.scroll_offset = state.ui.scroll_offset.saturating_add(3);
+            parser.screen_mut().set_scrollback(state.ui.scroll_offset);
+            state.ui.scroll_offset = parser.screen().scrollback();
         }
         MouseEventKind::ScrollDown => {
-            state.scroll_offset = state.scroll_offset.saturating_sub(3);
-            parser.screen_mut().set_scrollback(state.scroll_offset);
+            state.ui.scroll_offset = state.ui.scroll_offset.saturating_sub(3);
+            parser.screen_mut().set_scrollback(state.ui.scroll_offset);
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if state.prompt_is_live && state.scroll_offset == 0 {
-                if let Some(anchor) = state.prompt_anchor_row {
+            if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
+                if let Some(anchor) = state.ui.prompt_anchor_row {
                     let prompt_line_count = state.input.line_count() as u16;
                     let prompt_end_row = anchor + prompt_line_count - 1;
                     let content_left = super::super::PROMPT_GUTTER_WIDTH;
