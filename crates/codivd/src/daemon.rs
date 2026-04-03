@@ -1,4 +1,3 @@
-use crate::agent::permissions::PermissionContext;
 use crate::ipc::server::{ClientId, IpcServer};
 use crate::session::ClientSession;
 use crate::store::SessionStore;
@@ -14,8 +13,13 @@ const SYSTEM_PROMPT: &str = "You are a helpful coding assistant embedded in a te
     Use this context to give relevant, concise answers. \
     When referencing files or directories, use paths relative to the user's current working directory when possible.";
 
-fn create_agent(cwd: String, config: &crate::agent::config::AppConfig) -> crate::agent::agent::Agent {
-    let assignment = config.models.assignment_for(&codiv_common::types::AgentRole::Engineer);
+pub(crate) fn create_agent(
+    cwd: String,
+    config: &crate::agent::config::AppConfig,
+) -> crate::agent::agent::Agent {
+    let assignment = config
+        .models
+        .assignment_for(&codiv_common::types::AgentRole::Engineer);
     let provider_config = config.models.resolve_provider_config(&assignment);
     crate::agent::agent::Agent::new(
         codiv_common::types::AgentRole::Engineer,
@@ -28,7 +32,7 @@ fn create_agent(cwd: String, config: &crate::agent::config::AppConfig) -> crate:
 
 /// Generate a short initial name from the first user prompt (truncated to
 /// 60 chars on a word boundary).
-fn truncated_name(prompt: &str) -> String {
+pub(crate) fn truncated_name(prompt: &str) -> String {
     let trimmed = prompt.trim().replace('\n', " ");
     if trimmed.len() <= 60 {
         return trimmed;
@@ -47,18 +51,19 @@ fn truncated_name(prompt: &str) -> String {
 }
 
 pub struct Daemon {
-    ipc: IpcServer,
-    sessions: HashMap<ClientId, ClientSession>,
-    store: SessionStore,
+    pub(crate) ipc: IpcServer,
+    pub(crate) sessions: HashMap<ClientId, ClientSession>,
+    pub(crate) store: SessionStore,
     /// Notifies the event loop when a spawned agent task completes so
     /// `collect_returned_agents` runs immediately (not on next IPC message).
-    agent_done_tx: tokio::sync::mpsc::Sender<()>,
+    pub(crate) agent_done_tx: tokio::sync::mpsc::Sender<()>,
     agent_done_rx: tokio::sync::mpsc::Receiver<()>,
     /// Channel for background name-gen tasks to send results back to the
     /// event loop so the name can be persisted to SQLite.
     name_update_tx: tokio::sync::mpsc::Sender<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
-    name_update_rx: tokio::sync::mpsc::Receiver<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
-    config: Arc<RwLock<crate::agent::config::AppConfig>>,
+    name_update_rx:
+        tokio::sync::mpsc::Receiver<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
+    pub(crate) config: Arc<RwLock<crate::agent::config::AppConfig>>,
     _config_watcher: crate::agent::config::ConfigWatcherGuard,
     config_change_rx: tokio::sync::mpsc::Receiver<()>,
     _token_refresh_task: tokio::task::JoinHandle<()>,
@@ -135,7 +140,7 @@ impl Daemon {
                 }
                 _ = cleanup_interval.tick() => {
                     self.collect_returned_agents();
-                    self.cleanup_stale_sessions().await;
+                    crate::handlers::session::cleanup_stale_sessions(&mut self).await;
                 }
                 Some(_) = self.config_change_rx.recv() => {
                     // Notify all connected clients
@@ -148,13 +153,13 @@ impl Daemon {
                     // next request picks up the new provider/model config.
                     if let Ok(cfg) = self.config.read() {
                         for (_, session) in self.sessions.iter_mut() {
-                            if let Some(ref pctx) = session.permission_ctx {
+                            if let Some(ref pctx) = session.permissions.permission_ctx {
                                 pctx.set_mode(cfg.permissions.mode);
                             }
                             // Drop the cached agent so a fresh one is created
                             // with the updated config on the next request.
-                            if session.agent_task.is_none() {
-                                session.agent = None;
+                            if session.agent_state.agent_task.is_none() {
+                                session.agent_state.agent = None;
                             }
                         }
                     }
@@ -163,44 +168,9 @@ impl Daemon {
         }
     }
 
-    /// Ensure the client has a SQLite session. Returns the session_id.
-    fn ensure_session(&mut self, client_id: ClientId) -> Option<String> {
-        let session = self.sessions.get_mut(&client_id)?;
-        if let Some(ref id) = session.session_id {
-            return Some(id.clone());
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        let cwd = session.cwd.clone();
-        if let Err(e) = self.store.create_session(&id, &cwd) {
-            tracing::error!("failed to create session in sqlite: {}", e);
-            return None;
-        }
-        session.session_id = Some(id.clone());
-        Some(id)
-    }
-
-    /// Persist a single event and bump the session's seq counter.
-    fn persist_event(&mut self, client_id: ClientId, event: &ConversationEvent) {
-        let session = match self.sessions.get_mut(&client_id) {
-            Some(s) => s,
-            None => return,
-        };
-        if session.session_id.is_none() {
-            return;
-        }
-        let seq = session.next_seq();
-        let sid = session.session_id.as_deref().unwrap();
-        if let Err(e) = self.store.append_event(sid, seq, event) {
-            tracing::error!("failed to persist event seq={}: {}", seq, e);
-        }
-    }
-
-    /// Persist multiple events and bump the session's seq counter.
-    fn persist_events(&mut self, client_id: ClientId, events: &[ConversationEvent]) {
-        for event in events {
-            self.persist_event(client_id, event);
-        }
-    }
+    // -------------------------------------------------------------------
+    // Dispatch: thin router that delegates to handler modules
+    // -------------------------------------------------------------------
 
     async fn dispatch(&mut self, client_id: ClientId, msg: ClientMessage) {
         match msg {
@@ -210,194 +180,10 @@ impl Daemon {
                 context: _,
                 thinking,
             } => {
-                // Auto-compaction check: compact before spawning agent if threshold exceeded
-                let should_compact = self.sessions.get(&client_id)
-                    .map(|s| s.needs_compaction)
-                    .unwrap_or(false);
-                if should_compact {
-                    self.run_compaction(client_id).await;
-                }
-
-                if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    let rid = request_id.clone();
-
-                    // Ensure SQLite session exists
-                    let session_id = self.ensure_session(client_id);
-
-                    // Persist the UserPrompt event
-                    let user_event = ConversationEvent::UserPrompt {
-                        text: prompt.clone(),
-                        request_id: request_id.clone(),
-                    };
-                    self.persist_event(client_id, &user_event);
-
-                    // If this is the first prompt, set initial name + send SessionCreated.
-                    // Background LLM name generation is deferred until the agent
-                    // completes (in collect_returned_agents) so it doesn't compete
-                    // with the main LLM call.
-                    if let Some(ref sid) = session_id {
-                        let session = self.sessions.get(&client_id);
-                        let is_first = session.map(|s| s.event_seq == 1).unwrap_or(false);
-                        if is_first {
-                            let initial_name = truncated_name(&prompt);
-                            if let Err(e) = self.store.update_session_name(sid, &initial_name) {
-                                tracing::error!("failed to set initial session name: {}", e);
-                            }
-                            // Send SessionCreated to client
-                            let msg = DaemonMessage::SessionCreated {
-                                session_id: sid.clone(),
-                                name: Some(initial_name.clone()),
-                            };
-                            if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                                let _ = client_tx.send(frame).await;
-                            }
-                            // Mark for deferred name generation after agent completes
-                            if let Some(session) = self.sessions.get_mut(&client_id) {
-                                session.pending_name_gen = Some(prompt.clone());
-                            }
-                        }
-                    }
-
-                    // Take the agent out of the session so we can move it into the task.
-                    // If none exists yet, create one.
-                    let session = self.sessions.get_mut(&client_id);
-                    let (cwd, taken_agent) = match session {
-                        Some(s) => {
-                            let cwd = s.cwd.clone();
-                            let agent = s.agent.take();
-                            (cwd, agent)
-                        }
-                        None => (String::new(), None),
-                    };
-
-                    let mut agent = taken_agent.unwrap_or_else(|| {
-                        let cfg = self.config.read().unwrap();
-                        create_agent(cwd.clone(), &cfg)
-                    });
-
-                    // Ensure agent uses the session's latest cwd.
-                    agent.cwd = cwd;
-                    agent.add_user_message(&prompt, &request_id);
-
-                    // Create or reuse permission context for this session
-                    let permission_ctx = if let Some(ref s) = self.sessions.get(&client_id) {
-                        s.permission_ctx.clone()
-                    } else {
-                        None
-                    };
-                    let permission_ctx = match permission_ctx {
-                        Some(ctx) => Some(ctx),
-                        None => {
-                            let cfg = self.config.read().unwrap();
-                            let ctx = Arc::new(PermissionContext::new(
-                                cfg.permissions.mode,
-                                client_tx.clone(),
-                                cfg.models.clone(),
-                            ));
-                            if let Some(session) = self.sessions.get_mut(&client_id) {
-                                session.permission_ctx = Some(Arc::clone(&ctx));
-                            }
-                            Some(ctx)
-                        }
-                    };
-
-                    // Set up the RelayManager for this agent request
-                    {
-                        let session = self.sessions.get_mut(&client_id).unwrap();
-                        let relay = session
-                            .relay_manager
-                            .get_or_insert_with(|| {
-                                Arc::new(crate::agent::relay_manager::RelayManager::new(
-                                    client_tx.clone(),
-                                ))
-                            })
-                            .clone();
-                        agent.relay_manager = Some(relay);
-                    }
-
-                    // We need to put the agent back after the spawn completes.
-                    // Use a channel to return it along with collected tool events.
-                    let (agent_return_tx, agent_return_rx) =
-                        tokio::sync::oneshot::channel::<(crate::agent::agent::Agent, Vec<ConversationEvent>)>();
-
-                    let done_tx = self.agent_done_tx.clone();
-                    let agent_task_handle = tokio::spawn(async move {
-                        // Send model alias before streaming starts (tokens unknown yet).
-                        let meta_msg = DaemonMessage::AgentMeta {
-                            model_alias: agent.model_config.model_alias(),
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            cache_read_tokens: 0,
-                            context_window: agent.model_config.context_window(),
-                        };
-                        if let Ok(frame) = codiv_common::messages::frame_message(&meta_msg) {
-                            let _ = client_tx.send(frame).await;
-                        }
-                        match agent.run_streaming(&rid, &client_tx, thinking, permission_ctx).await {
-                            Ok((response, input_tokens, output_tokens, cache_read_tokens, tool_events)) => {
-                                info!("agent completed request {}: {} bytes", rid, response.len());
-                                // Add tool events to agent history
-                                agent.add_tool_events(&tool_events);
-                                agent.add_assistant_message(&response, &rid);
-                                // Build the full set of events to persist:
-                                // tool events + the final assistant text
-                                let mut persist_events = tool_events;
-                                persist_events.push(ConversationEvent::AssistantText {
-                                    request_id: rid.clone(),
-                                    text: response.clone(),
-                                });
-                                persist_events.push(ConversationEvent::TokenUsage {
-                                    request_id: rid.clone(),
-                                    input_tokens,
-                                    output_tokens,
-                                    cache_read_tokens,
-                                });
-                                // Send updated token usage after streaming.
-                                let meta_msg = DaemonMessage::AgentMeta {
-                                    model_alias: agent.model_config.model_alias(),
-                                    input_tokens,
-                                    output_tokens,
-                                    cache_read_tokens,
-                                    context_window: agent.model_config.context_window(),
-                                };
-                                if let Ok(frame) = codiv_common::messages::frame_message(&meta_msg) {
-                                    let _ = client_tx.send(frame).await;
-                                }
-                                let msg = DaemonMessage::AgentComplete {
-                                    request_id: rid,
-                                    summary: response,
-                                };
-                                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                                    let _ = client_tx.send(frame).await;
-                                }
-                                let _ = agent_return_tx.send((agent, persist_events));
-                            }
-                            Err(e) => {
-                                info!("agent error for request {}: {}", rid, e);
-                                let msg = DaemonMessage::Error {
-                                    request_id: rid.clone(),
-                                    message: e.clone(),
-                                };
-                                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                                    let _ = client_tx.send(frame).await;
-                                }
-                                let error_events = vec![ConversationEvent::Error {
-                                    request_id: rid,
-                                    message: e,
-                                }];
-                                let _ = agent_return_tx.send((agent, error_events));
-                            }
-                        }
-                        // Wake the event loop so collect_returned_agents runs immediately.
-                        let _ = done_tx.send(()).await;
-                    });
-
-                    // Store the receiver on the session so collect_returned_agents picks it up.
-                    if let Some(session) = self.sessions.get_mut(&client_id) {
-                        session.agent_return_rx = Some(agent_return_rx);
-                        session.agent_task = Some(agent_task_handle);
-                    }
-                }
+                crate::handlers::agent::handle_agent_request(
+                    self, client_id, prompt, request_id, thinking,
+                )
+                .await;
             }
 
             ClientMessage::EnvSnapshot {
@@ -406,16 +192,16 @@ impl Daemon {
                 cwd,
             } => {
                 if let Some(session) = self.sessions.get_mut(&client_id) {
-                    session.env_vars = env_vars;
-                    session.path = path;
-                    session.cwd = cwd;
+                    session.ipc.env_vars = env_vars;
+                    session.ipc.path = path;
+                    session.ipc.cwd = cwd;
                     info!("received env snapshot from client {}", client_id);
                 }
             }
 
             ClientMessage::Heartbeat { timestamp: _ } => {
                 if let Some(session) = self.sessions.get_mut(&client_id) {
-                    session.last_heartbeat = std::time::Instant::now();
+                    session.ipc.last_heartbeat = std::time::Instant::now();
                 }
                 let ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -431,162 +217,42 @@ impl Daemon {
                 std::process::exit(0);
             }
 
-            ClientMessage::Confirmation { request_id, approved, add_to_allowlist, add_to_denylist, comment } => {
-                if let Some(session) = self.sessions.get(&client_id) {
-                    if let Some(ref pctx) = session.permission_ctx {
-                        // Extract metadata for this request
-                        let meta = {
-                            let mut meta_guard = pctx.pending_meta.lock().unwrap();
-                            meta_guard.remove(&request_id)
-                        };
-
-                        let mut pending = pctx.pending.lock().unwrap();
-                        if let Some(sender) = pending.remove(&request_id) {
-                            // Persist permission decision if requested
-                            if let Some((ref tool_name, ref args)) = meta {
-                                let command_prefix = crate::agent::permission_evaluator::extract_args_pattern(tool_name, args);
-                                let entry = match command_prefix {
-                                    Some(ref prefix) => format!("{}:{}", tool_name, prefix),
-                                    None => tool_name.to_string(),
-                                };
-
-                                if add_to_allowlist && approved {
-                                    crate::agent::config::add_permission_to_config(&entry, "allow");
-                                } else if add_to_denylist && !approved {
-                                    crate::agent::config::add_permission_to_config(&entry, "deny");
-                                }
-                                // One-time decisions are not cached — they apply only to this call.
-                            }
-
-                            let result = crate::agent::permissions::ConfirmationResult {
-                                approved,
-                                add_to_allowlist,
-                                add_to_denylist,
-                                comment,
-                            };
-                            let _ = sender.send(result);
-                        }
-                    }
-                }
+            ClientMessage::Confirmation {
+                request_id,
+                approved,
+                add_to_allowlist,
+                add_to_denylist,
+                comment,
+            } => {
+                crate::handlers::permission::handle_confirmation(
+                    self,
+                    client_id,
+                    request_id,
+                    approved,
+                    add_to_allowlist,
+                    add_to_denylist,
+                    comment,
+                )
+                .await;
             }
 
             ClientMessage::SetPermissionMode { mode } => {
-                info!("permission mode change requested: {}", mode);
-                if let Some(session) = self.sessions.get_mut(&client_id) {
-                    match session.permission_ctx {
-                        Some(ref pctx) => {
-                            pctx.set_mode(mode);
-                        }
-                        None => {
-                            // Create PermissionContext eagerly so the mode is
-                            // applied even before the first AgentRequest.
-                            if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                                let cfg = self.config.read().unwrap();
-                                let ctx = Arc::new(PermissionContext::new(
-                                    mode,
-                                    client_tx,
-                                    cfg.models.clone(),
-                                ));
-                                session.permission_ctx = Some(ctx);
-                            }
-                        }
-                    }
-                }
-                // Acknowledge the mode change back to the client.
-                if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    let msg = DaemonMessage::PermissionModeChanged { mode };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                        let _ = client_tx.send(frame).await;
-                    }
-                }
+                crate::handlers::permission::handle_set_permission_mode(self, client_id, mode)
+                    .await;
             }
 
             ClientMessage::ListSessions => {
-                if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    let current_sid = self.sessions.get(&client_id)
-                        .and_then(|s| s.session_id.as_deref());
-                    let sessions: Vec<_> = self.store.list_sessions(50)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|s| current_sid != Some(s.id.as_str()))
-                        .collect();
-                    let msg = DaemonMessage::SessionList { sessions };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                        let _ = client_tx.send(frame).await;
-                    }
-                }
+                crate::handlers::session::handle_list_sessions(self, client_id).await;
             }
 
             ClientMessage::NewSession => {
-                if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    // Create a fresh agent
-                    if let Some(session) = self.sessions.get_mut(&client_id) {
-                        let cwd = session.cwd.clone();
-                        let cfg = self.config.read().unwrap();
-                        let agent = create_agent(cwd.clone(), &cfg);
-                        drop(cfg);
-                        session.agent = Some(agent);
-                        session.session_id = None;
-                        session.event_seq = 0;
-                    }
-
-                    // Create a new SQLite session
-                    let sid = self.ensure_session(client_id);
-
-                    if let Some(sid) = sid {
-                        let msg = DaemonMessage::SessionCreated {
-                            session_id: sid,
-                            name: None,
-                        };
-                        if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                            let _ = client_tx.send(frame).await;
-                        }
-                    }
-                }
+                crate::handlers::session::handle_new_session(self, client_id).await;
             }
 
-            ClientMessage::LoadSession { session_id: target_sid } => {
-                if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    // Load all events for the target session
-                    let events = self.store.load_events(&target_sid, None).unwrap_or_default();
-
-                    // Look up session info for the name
-                    let session_name = self.store.list_sessions(100)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .find(|s| s.id == target_sid)
-                        .and_then(|s| s.name);
-
-                    // Update the client session to point at the loaded session
-                    if let Some(session) = self.sessions.get_mut(&client_id) {
-                        // Clear agent history and reload from events
-                        let cwd = session.cwd.clone();
-                        let cfg = self.config.read().unwrap();
-                        let mut agent = create_agent(cwd, &cfg);
-                        drop(cfg);
-                        agent.add_tool_events(&events);
-                        session.agent = Some(agent);
-                        session.session_id = Some(target_sid.clone());
-                        // Set event_seq to the number of persisted events so new
-                        // events continue from the correct sequence number.
-                        session.event_seq = events.len() as u32;
-                    }
-
-                    // Confirm session switch
-                    let created_msg = DaemonMessage::SessionCreated {
-                        session_id: target_sid.clone(),
-                        name: session_name,
-                    };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&created_msg) {
-                        let _ = client_tx.send(frame).await;
-                    }
-
-                    // Send full event replay
-                    let replay_msg = DaemonMessage::SessionReplay { events };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&replay_msg) {
-                        let _ = client_tx.send(frame).await;
-                    }
-                }
+            ClientMessage::LoadSession {
+                session_id: target_sid,
+            } => {
+                crate::handlers::session::handle_load_session(self, client_id, target_sid).await;
             }
 
             ClientMessage::CommandResult {
@@ -595,62 +261,10 @@ impl Daemon {
                 exit_code,
                 cwd,
             } => {
-                // Ensure a session exists so we can persist the shell command
-                self.ensure_session(client_id);
-
-                // Name the session if this is the first event (command-initiated session)
-                if let Some(session) = self.sessions.get(&client_id) {
-                    if session.event_seq == 0 {
-                        if let Some(sid) = session.session_id.clone() {
-                            let base_cmd = command.split_whitespace().next().unwrap_or(&command);
-                            let name = format!("command {}", base_cmd);
-                            if let Err(e) = self.store.update_session_name(&sid, &name) {
-                                tracing::error!("failed to set command session name: {}", e);
-                            }
-                            if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                                let msg = DaemonMessage::SessionCreated {
-                                    session_id: sid,
-                                    name: Some(name),
-                                };
-                                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                                    let _ = client_tx.send(frame).await;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Persist ShellCommand event (truncate large output)
-                let truncated_output = if output.len() > 10000 {
-                    let mut t = output[..10000].to_string();
-                    t.push_str("\n... (truncated)");
-                    t
-                } else {
-                    output.clone()
-                };
-                let event = ConversationEvent::ShellCommand {
-                    command: command.clone(),
-                    output: truncated_output,
-                    exit_code,
-                    cwd: cwd.clone(),
-                };
-                self.persist_event(client_id, &event);
-
-                if let Some(session) = self.sessions.get_mut(&client_id) {
-                    // Keep session cwd in sync with the client's actual cwd.
-                    session.cwd = cwd.clone();
-
-                    let session_cwd = session.cwd.clone();
-                    let config_ref = Arc::clone(&self.config);
-                    let agent = session.agent.get_or_insert_with(|| {
-                        let cfg = config_ref.read().unwrap();
-                        create_agent(session_cwd, &cfg)
-                    });
-                    // Update the agent's cwd so tools execute in the right directory.
-                    agent.cwd = cwd.clone();
-                    agent.add_command_result(&command, &output, exit_code, &cwd);
-                    info!("recorded command result from client {}: {}", client_id, command);
-                }
+                crate::handlers::session::handle_command_result(
+                    self, client_id, command, output, exit_code, cwd,
+                )
+                .await;
             }
 
             // Shell lease protocol messages — route to RelayManager
@@ -661,221 +275,65 @@ impl Daemon {
             | ClientMessage::CommandFailed { .. }
             | ClientMessage::CommandCancelled { .. }
             | ClientMessage::ShellLeaseReleased { .. }) => {
-                if let Some(session) = self.sessions.get_mut(&client_id) {
-                    // Update session cwd from completion messages
-                    match &msg {
-                        ClientMessage::CommandCompleted { cwd, .. }
-                        | ClientMessage::CommandFailed { cwd, .. }
-                        | ClientMessage::CommandCancelled { cwd, .. } => {
-                            session.cwd = cwd.clone();
-                        }
-                        _ => {}
-                    }
-                    if let Some(ref relay) = session.relay_manager {
-                        relay.handle_client_message(&msg).await;
-                    }
-                }
+                crate::handlers::shell::handle_shell_lease_message(self, client_id, msg).await;
             }
 
             ClientMessage::CompactRequest => {
-                self.run_compaction(client_id).await;
+                crate::handlers::compaction::handle_compact_request(self, client_id).await;
             }
 
             ClientMessage::CancelRequest { request_id } => {
-                info!("cancel request: {}", request_id);
-                if let Some(session) = self.sessions.get_mut(&client_id) {
-                    // Cancel all pending relay operations before aborting the task.
-                    if let Some(ref relay) = session.relay_manager {
-                        relay.cancel_all(codiv_common::messages::CancelReason::UserAbort).await;
-                    }
-                    if let Some(handle) = session.agent_task.take() {
-                        handle.abort();
-                    }
-                    session.agent_return_rx = None;
-
-                    // Rebuild agent from persisted events so context is preserved.
-                    if let Some(ref sid) = session.session_id {
-                        let events = self.store.load_events(sid, None).unwrap_or_default();
-                        let cwd = session.cwd.clone();
-                        let cfg = self.config.read().unwrap();
-                        let mut agent = create_agent(cwd, &cfg);
-                        drop(cfg);
-                        agent.add_tool_events(&events);
-                        session.agent = Some(agent);
-                    }
-                }
-                // Send AgentComplete so client knows streaming ended.
-                if let Some(client_tx) = self.ipc.client_sender(client_id) {
-                    let msg = DaemonMessage::AgentComplete {
-                        request_id,
-                        summary: String::new(),
-                    };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                        let _ = client_tx.send(frame).await;
-                    }
-                }
+                crate::handlers::agent::handle_cancel_request(self, client_id, request_id).await;
             }
         }
     }
 
-    async fn run_compaction(&mut self, client_id: ClientId) {
-        let cfg = self.config.read().unwrap();
-        let models = cfg.models.clone();
-        drop(cfg);
+    // -------------------------------------------------------------------
+    // Persistence helpers (used by handlers via &mut Daemon)
+    // -------------------------------------------------------------------
 
+    /// Ensure the client has a SQLite session. Returns the session_id.
+    pub(crate) fn ensure_session(&mut self, client_id: ClientId) -> Option<String> {
+        let session = self.sessions.get_mut(&client_id)?;
+        if let Some(ref id) = session.persistence.session_id {
+            return Some(id.clone());
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let cwd = session.ipc.cwd.clone();
+        if let Err(e) = self.store.create_session(&id, &cwd) {
+            tracing::error!("failed to create session in sqlite: {}", e);
+            return None;
+        }
+        session.persistence.session_id = Some(id.clone());
+        Some(id)
+    }
+
+    /// Persist a single event and bump the session's seq counter.
+    pub(crate) fn persist_event(&mut self, client_id: ClientId, event: &ConversationEvent) {
         let session = match self.sessions.get_mut(&client_id) {
             Some(s) => s,
             None => return,
         };
-        session.needs_compaction = false;
-
-        let agent = match session.agent.as_mut() {
-            Some(a) => a,
-            None => return,
-        };
-
-        let compacted_event_count = agent.history.len();
-        let request_id = uuid::Uuid::new_v4().to_string();
-
-        let client_tx = match self.ipc.client_sender(client_id) {
-            Some(tx) => tx,
-            None => return,
-        };
-
-        // Send CompactionStarted so TUI can clear blocks and show tool header
-        let msg = DaemonMessage::CompactionStarted {
-            request_id: request_id.clone(),
-            compacted_event_count,
-        };
-        if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-            let _ = client_tx.send(frame).await;
+        if session.persistence.session_id.is_none() {
+            return;
         }
-
-        match tokio::time::timeout(
-            Duration::from_secs(60),
-            agent.compact(&models, &client_tx, &request_id),
-        )
-        .await
-        {
-            Ok(Ok((summary, count, input_tokens, output_tokens, cache_read_tokens))) => {
-                info!("compaction completed: {} events summarized", count);
-
-                // Persist Summary event to the OLD session
-                let event = ConversationEvent::Summary {
-                    text: summary.clone(),
-                    compacted_event_count: count,
-                };
-                self.persist_event(client_id, &event);
-
-                // Send AgentComplete to finalize the AI response block
-                let complete_msg = DaemonMessage::AgentComplete {
-                    request_id: request_id.clone(),
-                    summary: summary.clone(),
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&complete_msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-
-                // Create NEW session — old session is archived
-                if let Some(session) = self.sessions.get_mut(&client_id) {
-                    session.session_id = None;
-                    session.event_seq = 0;
-                    // Create fresh agent with Summary as first history event
-                    let cfg = self.config.read().unwrap();
-                    let cwd = session.cwd.clone();
-                    let mut new_agent = create_agent(cwd, &cfg);
-                    drop(cfg);
-                    new_agent.history.push(ConversationEvent::Summary {
-                        text: summary.clone(),
-                        compacted_event_count: count,
-                    });
-                    session.agent = Some(new_agent);
-                }
-
-                // Create the new SQLite session and persist the Summary event
-                let new_sid = self.ensure_session(client_id);
-                self.persist_event(client_id, &event);
-
-                // Send SessionCreated BEFORE AgentMeta so the token_usage.reset()
-                // in the TUI happens first, then AgentMeta records the new baseline.
-                if let Some(ref sid) = new_sid {
-                    let name = "Compacted conversation".to_string();
-                    if let Err(e) = self.store.update_session_name(sid, &name) {
-                        tracing::error!("failed to set compacted session name: {}", e);
-                    }
-                    let session_msg = DaemonMessage::SessionCreated {
-                        session_id: sid.clone(),
-                        name: Some(name),
-                    };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&session_msg) {
-                        let _ = client_tx.send(frame).await;
-                    }
-                }
-
-                // Send AgentMeta with token usage (after SessionCreated so reset happens first)
-                let context_window = if let Some(session) = self.sessions.get(&client_id) {
-                    session.agent.as_ref()
-                        .map(|a| a.model_config.context_window())
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-                let meta_msg = DaemonMessage::AgentMeta {
-                    model_alias: String::new(),
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    context_window,
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&meta_msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-
-                // Send CompactionComplete to finalize
-                let done_msg = DaemonMessage::CompactionComplete {
-                    summary,
-                    compacted_event_count: count,
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&done_msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-            }
-            Ok(Err(e)) => {
-                tracing::error!("compaction failed: {}", e);
-                // Send AgentComplete to clean up streaming state
-                let complete_msg = DaemonMessage::AgentComplete {
-                    request_id: request_id.clone(),
-                    summary: String::new(),
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&complete_msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-                let msg = DaemonMessage::Notice {
-                    message: format!("Compaction failed: {}", e),
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-            }
-            Err(_) => {
-                tracing::error!("compaction timed out after 60s");
-                // Send AgentComplete to clean up streaming state
-                let complete_msg = DaemonMessage::AgentComplete {
-                    request_id,
-                    summary: String::new(),
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&complete_msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-                let msg = DaemonMessage::Notice {
-                    message: "Compaction timed out".to_string(),
-                };
-                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                    let _ = client_tx.send(frame).await;
-                }
-            }
+        let seq = session.next_seq();
+        let sid = session.persistence.session_id.as_deref().unwrap();
+        if let Err(e) = self.store.append_event(sid, seq, event) {
+            tracing::error!("failed to persist event seq={}: {}", seq, e);
         }
     }
+
+    /// Persist multiple events and bump the session's seq counter.
+    pub(crate) fn persist_events(&mut self, client_id: ClientId, events: &[ConversationEvent]) {
+        for event in events {
+            self.persist_event(client_id, event);
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Agent lifecycle
+    // -------------------------------------------------------------------
 
     fn collect_returned_agents(&mut self) {
         // Collect completed agents from all sessions. We need to batch
@@ -883,22 +341,26 @@ impl Daemon {
         // iterating, so collect the data first.
         let mut to_persist: Vec<(ClientId, Vec<ConversationEvent>)> = Vec::new();
         // Collect deferred name-gen requests: (session_id, prompt, client_tx)
-        let mut name_gen_requests: Vec<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)> = Vec::new();
+        let mut name_gen_requests: Vec<(
+            String,
+            String,
+            tokio::sync::mpsc::Sender<Vec<u8>>,
+        )> = Vec::new();
 
         for (&cid, session) in self.sessions.iter_mut() {
-            if let Some(ref mut rx) = session.agent_return_rx {
+            if let Some(ref mut rx) = session.agent_state.agent_return_rx {
                 match rx.try_recv() {
                     Ok((agent, events)) => {
-                        session.agent = Some(agent);
-                        session.agent_return_rx = None;
-                        session.agent_task = None;
+                        session.agent_state.agent = Some(agent);
+                        session.agent_state.agent_return_rx = None;
+                        session.agent_state.agent_task = None;
                         if !events.is_empty() {
                             to_persist.push((cid, events));
                         }
                         // If this session has a pending name generation, fire it
                         // now that the main agent task is done.
-                        if let Some(prompt) = session.pending_name_gen.take() {
-                            if let Some(ref sid) = session.session_id {
+                        if let Some(prompt) = session.persistence.pending_name_gen.take() {
+                            if let Some(ref sid) = session.persistence.session_id {
                                 if let Some(tx) = self.ipc.client_sender(cid) {
                                     name_gen_requests.push((sid.clone(), prompt, tx));
                                 }
@@ -907,7 +369,7 @@ impl Daemon {
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                        session.agent_return_rx = None;
+                        session.agent_state.agent_return_rx = None;
                     }
                 }
             }
@@ -921,14 +383,14 @@ impl Daemon {
                 _ => None,
             }) {
                 if let Some(session) = self.sessions.get_mut(&cid) {
-                    session.last_input_tokens = input_tokens;
+                    session.agent_state.last_input_tokens = input_tokens;
                     let cfg = self.config.read().unwrap();
-                    if let Some(ref agent) = session.agent {
+                    if let Some(ref agent) = session.agent_state.agent {
                         let threshold = agent.model_config.context_window()
                             * cfg.compaction.threshold_percent as usize
                             / 100;
                         if input_tokens > threshold {
-                            session.needs_compaction = true;
+                            session.agent_state.needs_compaction = true;
                             info!(
                                 "compaction needed: {} tokens > {} threshold ({}%)",
                                 input_tokens, threshold, cfg.compaction.threshold_percent
@@ -942,7 +404,10 @@ impl Daemon {
 
         // Spawn deferred background name generation tasks
         if !name_gen_requests.is_empty() {
-            info!("spawning {} deferred name generation task(s)", name_gen_requests.len());
+            info!(
+                "spawning {} deferred name generation task(s)",
+                name_gen_requests.len()
+            );
         }
         for (sid, prompt, client_tx) in name_gen_requests {
             let name_update_tx = self.name_update_tx.clone();
@@ -954,7 +419,9 @@ impl Daemon {
                 match tokio::time::timeout(
                     Duration::from_secs(30),
                     generate_session_name(&prompt, &models),
-                ).await {
+                )
+                .await
+                {
                     Ok(Some(name)) => {
                         info!("session name generated: {:?}", name);
                         // Send back to the event loop so the name is persisted
@@ -971,32 +438,14 @@ impl Daemon {
             });
         }
     }
-
-    async fn cleanup_stale_sessions(&mut self) {
-        let stale: Vec<ClientId> = self
-            .sessions
-            .iter()
-            .filter(|(_, s)| s.is_stale(120))
-            .map(|(id, _)| *id)
-            .collect();
-
-        for id in stale {
-            info!("cleaning stale session {}", id);
-            // Cancel all pending relay operations before removing the session
-            if let Some(session) = self.sessions.get(&id) {
-                if let Some(ref relay) = session.relay_manager {
-                    relay.cancel_all(codiv_common::messages::CancelReason::SessionStale).await;
-                }
-            }
-            self.sessions.remove(&id);
-            self.ipc.disconnect(id);
-        }
-    }
 }
 
 /// Attempt to generate a short session title using a cheap LLM call.
 /// Returns `None` on failure (network error, no API key, etc.).
-async fn generate_session_name(prompt: &str, models: &crate::agent::config::ModelCatalog) -> Option<String> {
+async fn generate_session_name(
+    prompt: &str,
+    models: &crate::agent::config::ModelCatalog,
+) -> Option<String> {
     // Only use "session_namer" role — don't fall back to other roles
     // which may point to expensive models. If not configured, the
     // truncated prompt name is good enough.
@@ -1009,7 +458,10 @@ async fn generate_session_name(prompt: &str, models: &crate::agent::config::Mode
     };
     let provider_config = models.resolve_provider_config(&assignment);
 
-    info!("generate_session_name: using {}/{}", assignment.provider, assignment.model);
+    info!(
+        "generate_session_name: using {}/{}",
+        assignment.provider, assignment.model
+    );
 
     let result = crate::agent::config::simple_text_completion(
         &assignment,
@@ -1017,11 +469,15 @@ async fn generate_session_name(prompt: &str, models: &crate::agent::config::Mode
         "Summarize the following user request in 2-4 words on a single line. Reply with ONLY the summary, no quotes or punctuation.",
         prompt,
     )
-        .await
-        .ok();
+    .await
+    .ok();
 
     result.map(|s| {
         let s = s.trim().to_string();
-        if s.len() > 80 { s[..80].to_string() } else { s }
+        if s.len() > 80 {
+            s[..80].to_string()
+        } else {
+            s
+        }
     })
 }
