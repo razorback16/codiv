@@ -1,6 +1,7 @@
 mod agent;
 mod daemon;
 pub mod daemon_shell;
+mod handlers;
 mod ipc;
 mod session;
 mod store;
