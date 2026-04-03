@@ -299,6 +299,32 @@ pub async fn maybe_refresh_stored_token(provider_id: &str, config: &OAuthConfig)
     }
 }
 
+/// Fetch OAuth profile from Anthropic API to retrieve account_uuid.
+///
+/// Used after successful OAuth login to get the account UUID needed for
+/// rate limit attribution in API requests.
+pub async fn fetch_oauth_profile_uuid(access_token: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/profile")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body.get("account")
+        .and_then(|a| a.get("uuid"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Run the full OAuth code flow for a provider.
 ///
 /// This function handles only the HTTP/PKCE layer — NOT interactive prompts.

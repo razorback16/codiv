@@ -166,6 +166,15 @@ fn run_oauth_flow(
     write_oauth_tokens_to_config(provider_id, &tokens)
         .with_context(|| format!("Failed to save tokens for {}", display_name))?;
 
+    // Step 5: Fetch and store account UUID (needed for API rate limit attribution)
+    if anthropic_style {
+        if let Some(uuid) = rt.block_on(codiv_common::auth::fetch_oauth_profile_uuid(
+            tokens.access_token.as_str(),
+        )) {
+            let _ = codiv_common::auth::write_oauth_account_uuid(provider_id, &uuid);
+        }
+    }
+
     println!("Authentication successful for {}.", display_name);
     Ok(())
 }
