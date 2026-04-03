@@ -162,15 +162,22 @@ impl BlockRegistry {
 
     /// Save the pending tool call so its arguments are available when
     /// `record_tool_result` is called.
-    pub fn record_tool_call(&mut self, name: &str, arguments: &str) {
+    ///
+    /// `pre_edit_content` is the file content captured by the daemon *before*
+    /// the edit tool executes.  When present it is used instead of reading
+    /// from disk, avoiding a race where the file has already been modified by
+    /// the time the client processes the ToolCall message.
+    pub fn record_tool_call(&mut self, name: &str, arguments: &str, pre_edit_content: Option<&str>) {
         // Stash old file content for Edit tools to compute file-level diff later.
         if canonical_tool_name(name) == "Edit" {
             if !self.replay_mode {
                 if let Ok(args) = serde_json::from_str::<Value>(arguments) {
                     if let Some(path) = json_str(&args, "file_path") {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            self.pending_edit_old_contents.insert(path, content);
-                        }
+                        let content = match pre_edit_content {
+                            Some(c) => c.to_string(),
+                            None => std::fs::read_to_string(&path).unwrap_or_default(),
+                        };
+                        self.pending_edit_old_contents.insert(path, content);
                     }
                 }
             }

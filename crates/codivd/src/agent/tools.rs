@@ -7,7 +7,7 @@ use codiv_tools::tools::bash::BashInput;
 use codiv_tools::tools::{edit, glob, grep, read, write};
 
 use super::permissions::PermissionContext;
-use super::shell_backend::ShellBackend;
+use super::relay_manager::RelayManager;
 
 fn make_tool_with_permissions<T: schemars::JsonSchema>(
     name: &str,
@@ -32,8 +32,51 @@ fn make_tool_with_permissions<T: schemars::JsonSchema>(
     }
 }
 
+fn make_async_tool_with_permissions<T: schemars::JsonSchema, F, Fut>(
+    name: &str,
+    description: &str,
+    execute: F,
+    permission_ctx: Option<&Arc<PermissionContext>>,
+) -> Tool
+where
+    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
+{
+    let final_execute: Arc<
+        dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+            + Send
+            + Sync,
+    > = match permission_ctx {
+        Some(ctx) => {
+            let wrapped = super::permissions::wrap_with_permissions_async(
+                name.to_string(),
+                execute,
+                Arc::clone(ctx),
+            );
+            Arc::new(wrapped)
+        }
+        None => {
+            let f = Arc::new(execute);
+            Arc::new(move |v: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> {
+                let f = Arc::clone(&f);
+                Box::pin(async move { f(v).await })
+            })
+        }
+    };
+
+    Tool {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema: schemars::schema_for!(T),
+        execute: ToolExecute::from_async(move |_ctx, input| {
+            let exec = Arc::clone(&final_execute);
+            async move { exec(input).await }
+        }),
+    }
+}
+
 pub fn build_tools(
-    backend: ShellBackend,
+    relay: Arc<RelayManager>,
     cwd_ref: Arc<RwLock<String>>,
     permission_ctx: Option<Arc<PermissionContext>>,
 ) -> Vec<Tool> {
@@ -41,15 +84,26 @@ pub fn build_tools(
 
     vec![
         {
-            let backend = backend.clone();
+            let relay = Arc::clone(&relay);
             let cwd_ref = Arc::clone(&cwd_ref);
-            make_tool_with_permissions::<BashInput>(
+            make_async_tool_with_permissions::<BashInput, _, _>(
                 "bash",
                 "Execute a bash command and return its output. Pagers are disabled and stdin is /dev/null — do not run interactive/TUI programs (vim, top, less, htop, nano, etc.) as they will hang. Use for running shell commands, installing packages, running tests, etc.",
                 move |v| {
-                    let input: BashInput = serde_json::from_value(v)
-                        .map_err(|e| format!("invalid bash input: {}", e))?;
-                    backend.execute(&input.command, input.timeout_ms, &cwd_ref)
+                    let relay = Arc::clone(&relay);
+                    let cwd_ref = Arc::clone(&cwd_ref);
+                    async move {
+                        let input: BashInput = serde_json::from_value(v)
+                            .map_err(|e| format!("invalid bash input: {}", e))?;
+                        relay
+                            .execute_bash(
+                                String::new(),
+                                input.command,
+                                input.timeout_ms,
+                                &cwd_ref,
+                            )
+                            .await
+                    }
                 },
                 pctx.as_ref(),
             )

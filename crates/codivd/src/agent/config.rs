@@ -310,6 +310,11 @@ macro_rules! with_provider_model {
                 let $is_openai_compat = false;
                 $body
             }
+            "claude_code" => {
+                let $model = build_claude_code_model(&$assignment.model, $provider_config)?;
+                let $is_openai_compat = false;
+                $body
+            }
             "openai" => {
                 let $model = build_openai_model(&$assignment.model, $provider_config)?;
                 let $is_openai_compat = true;
@@ -512,6 +517,46 @@ fn build_anthropic_model(
     }
 }
 
+/// Build an Anthropic model for Claude Code OAuth tokens.
+///
+/// Uses aisdk's `.use_oauth(true)` which sends `Authorization: Bearer {token}`
+/// instead of `x-api-key`, and adds the required `anthropic-beta` flags.
+fn build_claude_code_model(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::Anthropic<aisdk::core::DynamicModel>, DynError> {
+    let api_key = provider_config
+        .api_key
+        .clone()
+        .ok_or("claude_code provider requires an api_key (OAuth access token) in config")?;
+
+    let headers = std::collections::HashMap::from([
+        ("user-agent".to_string(), "Claude Code".to_string()),
+        ("x-app".to_string(), "cli".to_string()),
+        ("x-claude-code-session-id".to_string(), uuid::Uuid::new_v4().to_string()),
+    ]);
+
+    // Build metadata matching Claude Code's format.
+    // The account_uuid is critical for the API to apply correct rate limits.
+    let account_uuid = codiv_common::auth::read_oauth_account_uuid("claude_code").unwrap_or_default();
+    let metadata = serde_json::json!({
+        "metadata": {
+            "user_id": serde_json::json!({
+                "account_uuid": account_uuid,
+            }).to_string()
+        }
+    });
+
+    let model = Anthropic::builder()
+        .model_name(model_name)
+        .api_key(api_key)
+        .use_oauth(true)
+        .headers(headers)
+        .body(metadata)
+        .build()?;
+    Ok(model)
+}
+
 fn build_openai_model(
     model_name: &str,
     provider_config: &ProviderConfig,
@@ -692,6 +737,20 @@ async fn run_stream<M>(
 where
     M: LanguageModel + aisdk::core::capabilities::TextInputSupport + aisdk::core::capabilities::ToolCallSupport + aisdk::core::capabilities::ReasoningSupport + Send + Sync + 'static,
 {
+    {
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        tracing::debug!(
+            request_id,
+            system_prompt_len = system_prompt.len(),
+            message_count = messages.len(),
+            tools = ?tool_names,
+            thinking,
+            provider = %config.provider,
+            model = %config.model,
+            "preparing API request"
+        );
+    }
+
     let mut builder = LanguageModelRequest::builder()
         .model(model)
         .system(system_prompt)
@@ -718,8 +777,6 @@ where
     let mut reasoning_buffer = String::new();
     let mut reasoning_start: Option<Instant> = None;
     let mut tool_call_names: HashMap<String, String> = HashMap::new();
-
-    tracing::debug!("stream started for request {}", request_id);
 
     while let Some(chunk) = response.stream.next().await {
         chunk_count += 1;
@@ -780,6 +837,17 @@ where
                     tool_name: info.tool.name.clone(),
                     arguments: arguments.clone(),
                 });
+                // For edit tools, capture the file content NOW (before the tool
+                // executes) so the client can compute an accurate diff. Without
+                // this, the client may read the file after the edit has already
+                // been applied due to IPC batching.
+                let pre_edit_content = if info.tool.name == "edit" {
+                    info.input.get("file_path")
+                        .and_then(|v| v.as_str())
+                        .and_then(|p| std::fs::read_to_string(p).ok())
+                } else {
+                    None
+                };
                 send_ipc(
                     tx,
                     &DaemonMessage::AgentStreamChunk {
@@ -787,6 +855,7 @@ where
                         chunk: StreamChunk::ToolCall {
                             name: info.tool.name,
                             arguments,
+                            pre_edit_content,
                         },
                     },
                 )
@@ -819,9 +888,8 @@ where
                 .await?;
             }
             LanguageModelStreamChunkType::Failed(err) => {
-                let kind = classify_error(&err.to_string());
                 tracing::error!("stream failed: {err}");
-                return Err(kind.user_message(&err.to_string()).into());
+                return Err(err.to_string().into());
             }
             LanguageModelStreamChunkType::Incomplete(reason) => {
                 tracing::warn!("stream incomplete: {reason}");

@@ -68,15 +68,50 @@ pub enum ClientMessage {
     CancelRequest {
         request_id: String,
     },
-    /// Result of an AI-requested command execution from the client.
-    CommandExecutionResult {
+    /// Request manual compaction of the current conversation.
+    CompactRequest,
+
+    // --- Shell lease protocol (client → daemon) ---
+
+    /// Client acquired the shell lease (coprocess is free).
+    ShellLeaseAcquired {
+        lease_id: String,
+    },
+    /// Client queued the lease request (coprocess is busy).
+    ShellLeaseQueued {
+        lease_id: String,
+        queue_len: usize,
+    },
+    /// Client started executing a leased command in the coprocess.
+    CommandStarted {
+        lease_id: String,
+        execution_id: String,
+    },
+    /// Leased command completed successfully.
+    CommandCompleted {
+        lease_id: String,
         execution_id: String,
         output: String,
         exit_code: i32,
         cwd: String,
     },
-    /// Request manual compaction of the current conversation.
-    CompactRequest,
+    /// Leased command failed to start (e.g. coprocess error).
+    CommandFailed {
+        lease_id: String,
+        execution_id: String,
+        error: String,
+        cwd: String,
+    },
+    /// Leased command was cancelled (e.g. SIGINT sent to PTY).
+    CommandCancelled {
+        lease_id: String,
+        execution_id: String,
+        cwd: String,
+    },
+    /// Client released the shell lease.
+    ShellLeaseReleased {
+        lease_id: String,
+    },
 }
 
 /// Messages sent from the codivd daemon to the codiv client.
@@ -151,12 +186,47 @@ pub enum DaemonMessage {
         summary: String,
         compacted_event_count: usize,
     },
-    /// Request from the daemon for the client to execute a command in its shell.
-    ExecuteCommand {
+    // --- Shell lease protocol (daemon → client) ---
+
+    /// Request exclusive access to the client's shell coprocess.
+    AcquireShellLease {
+        lease_id: String,
+        request_id: String,
+    },
+    /// Execute a command within an acquired lease.
+    ExecuteLeasedCommand {
+        lease_id: String,
         execution_id: String,
         command: String,
-        timeout_ms: u64,
+        execution_timeout_ms: u64,
     },
+    /// Release the shell lease (daemon is done with the shell).
+    ReleaseShellLease {
+        lease_id: String,
+        reason: ReleaseReason,
+    },
+    /// Cancel an in-flight leased command.
+    CancelLeasedCommand {
+        lease_id: String,
+        execution_id: String,
+        reason: CancelReason,
+    },
+}
+
+/// Why the daemon is releasing a shell lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReleaseReason {
+    Completed,
+    Cancelled,
+    ClientDisconnect,
+}
+
+/// Why a leased command is being cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CancelReason {
+    UserAbort,
+    ExecutionTimeout,
+    SessionStale,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,7 +234,14 @@ pub enum StreamChunk {
     Text(String),
     Reasoning(String),
     ToolCallDelta { tool_call_id: String, tool_name: String, delta: String },
-    ToolCall { name: String, arguments: String },
+    ToolCall {
+        name: String,
+        arguments: String,
+        /// For edit tools: file content captured before the tool executes,
+        /// so the client can compute an accurate diff regardless of timing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pre_edit_content: Option<String>,
+    },
     ToolResult { name: String, result: String },
 }
 

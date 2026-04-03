@@ -228,7 +228,7 @@ fn handle_single_message(
                     }
                     // Subsequent deltas: no-op
                 }
-                ipc_messages::StreamChunk::ToolCall { name, arguments } => {
+                ipc_messages::StreamChunk::ToolCall { name, arguments, pre_edit_content } => {
                     // If no ToolCallDelta preceded this, do the visual transition now
                     if ds.tracker.pending_tool().is_none() {
                         let finalized = finalize_thinking_ds(parser, ds, theme);
@@ -258,7 +258,7 @@ fn handle_single_message(
                         }
                     }
 
-                    ds.tracker.record_tool_call(&name, &arguments);
+                    ds.tracker.record_tool_call(&name, &arguments, pre_edit_content.as_deref());
                     // Don't update header here — the ConfirmationRequest (if permission-gated)
                     // or ToolResult handler will render the final header with full args.
                     // This avoids a double-render when ConfirmationRequest follows immediately.
@@ -506,8 +506,11 @@ fn handle_single_message(
             *ds.session_name = Some(name);
         }
         ipc_messages::DaemonMessage::Notice { .. } => {}
-        // ExecuteCommand is handled in handle_daemon_message (needs full state)
-        ipc_messages::DaemonMessage::ExecuteCommand { .. } => {}
+        // Shell lease protocol messages are handled in handle_daemon_message (needs full state)
+        ipc_messages::DaemonMessage::AcquireShellLease { .. } => {}
+        ipc_messages::DaemonMessage::ExecuteLeasedCommand { .. } => {}
+        ipc_messages::DaemonMessage::ReleaseShellLease { .. } => {}
+        ipc_messages::DaemonMessage::CancelLeasedCommand { .. } => {}
         // CompactionStarted/Complete are handled in handle_daemon_message (needs full state)
         ipc_messages::DaemonMessage::CompactionStarted { .. } => {}
         ipc_messages::DaemonMessage::CompactionComplete { .. } => {}
@@ -517,6 +520,83 @@ fn handle_single_message(
     }
 }
 
+/// Handle a lease protocol message. Returns frames to send to the daemon.
+/// Separated from handle_daemon_message to avoid borrow conflicts with `client`.
+pub(crate) fn handle_lease_message(
+    msg: &ipc_messages::DaemonMessage,
+    state: &mut TerminalState,
+) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    match msg {
+        ipc_messages::DaemonMessage::AcquireShellLease {
+            lease_id,
+            request_id,
+        } => {
+            if state.pending_command.is_none() && state.shell_relay.active_lease.is_none() {
+                state.shell_relay.active_lease = Some(super::state::ActiveLease {
+                    lease_id: lease_id.clone(),
+                    request_id: request_id.clone(),
+                    current_command: None,
+                });
+                if let Some(frame) = ipc_messages::build_shell_lease_acquired(lease_id) {
+                    frames.push(frame);
+                }
+            } else {
+                let queue_len = state.shell_relay.pending_leases.len() + 1;
+                state.shell_relay.pending_leases.push_back(
+                    super::state::PendingLease { lease_id: lease_id.clone(), request_id: request_id.clone() },
+                );
+                if let Some(frame) = ipc_messages::build_shell_lease_queued(lease_id, queue_len) {
+                    frames.push(frame);
+                }
+            }
+        }
+        ipc_messages::DaemonMessage::ExecuteLeasedCommand {
+            lease_id,
+            execution_id,
+            command,
+            execution_timeout_ms,
+        } => {
+            if let Some(ref mut lease) = state.shell_relay.active_lease {
+                if lease.lease_id == *lease_id {
+                    lease.current_command = Some(super::state::ActiveLeasedCommand {
+                        execution_id: execution_id.clone(),
+                        command: command.clone(),
+                        _timeout_ms: *execution_timeout_ms,
+                    });
+                }
+            }
+        }
+        ipc_messages::DaemonMessage::ReleaseShellLease { lease_id, .. } => {
+            if let Some(ref lease) = state.shell_relay.active_lease {
+                if lease.lease_id == *lease_id {
+                    state.shell_relay.active_lease = None;
+                    if let Some(frame) = ipc_messages::build_shell_lease_released(lease_id) {
+                        frames.push(frame);
+                    }
+                    // Promote next pending lease if coprocess is free.
+                    frames.extend(promote_pending_lease_frames(state));
+                }
+            }
+        }
+        ipc_messages::DaemonMessage::CancelLeasedCommand {
+            lease_id,
+            execution_id,
+            ..
+        } => {
+            if let Some(frame) = ipc_messages::build_command_cancelled(
+                lease_id,
+                execution_id,
+                &state.cwd,
+            ) {
+                frames.push(frame);
+            }
+        }
+        _ => {}
+    }
+    frames
+}
+
 pub(crate) fn handle_daemon_message(
     msg: ipc_messages::DaemonMessage,
     parser: &mut vt100::Parser,
@@ -524,6 +604,7 @@ pub(crate) fn handle_daemon_message(
     md_stream_width: u16,
     theme: &Theme,
 ) {
+    // Note: lease protocol messages are no-ops here (handled by handle_lease_message).
     match msg {
         ipc_messages::DaemonMessage::SessionList { sessions } => {
             if sessions.is_empty() {
@@ -685,7 +766,7 @@ pub(crate) fn handle_daemon_message(
                         arguments,
                         ..
                     } => {
-                        state.tracker.record_tool_call(tool_name, arguments);
+                        state.tracker.record_tool_call(tool_name, arguments, None);
                     }
                     ConversationEvent::ToolResult {
                         tool_name, result, ..
@@ -779,20 +860,12 @@ pub(crate) fn handle_daemon_message(
             // Render all blocks at once
             rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
         }
-        ipc_messages::DaemonMessage::ExecuteCommand {
-            execution_id,
-            command,
-            timeout_ms,
-        } => {
-            // Queue AI-requested command for execution in the coprocess
-            state.pending_ai_executions.push_back(
-                super::state::PendingAiExecution {
-                    execution_id,
-                    command,
-                    _timeout_ms: timeout_ms,
-                },
-            );
-        }
+        // Lease protocol messages are handled by handle_lease_message (called
+        // before this function in the event loop).
+        ipc_messages::DaemonMessage::AcquireShellLease { .. }
+        | ipc_messages::DaemonMessage::ExecuteLeasedCommand { .. }
+        | ipc_messages::DaemonMessage::ReleaseShellLease { .. }
+        | ipc_messages::DaemonMessage::CancelLeasedCommand { .. } => {}
         ipc_messages::DaemonMessage::Notice { message } => {
             state.notice_hint = Some((message, Instant::now()));
             state.needs_render = true;
@@ -885,6 +958,40 @@ pub(crate) fn handle_daemon_message(
                 pending_compaction_count: &mut state.pending_compaction_count,
             };
             handle_single_message(other, parser, &mut ds, theme);
+        }
+    }
+}
+
+/// Try to promote the next pending lease and return frames to send.
+fn promote_pending_lease_frames(state: &mut TerminalState) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    if state.shell_relay.active_lease.is_some() || state.pending_command.is_some() {
+        return frames;
+    }
+    if let Some(pending) = state.shell_relay.pending_leases.pop_front() {
+        let lease_id = pending.lease_id.clone();
+        state.shell_relay.active_lease = Some(super::state::ActiveLease {
+            lease_id: lease_id.clone(),
+            request_id: pending.request_id,
+            current_command: None,
+        });
+        if let Some(frame) = ipc_messages::build_shell_lease_acquired(&lease_id) {
+            frames.push(frame);
+        }
+    }
+    frames
+}
+
+/// Try to promote the next pending lease to active when the coprocess is free.
+/// Sends frames directly to the client.
+pub(crate) fn promote_pending_lease(
+    state: &mut TerminalState,
+    client: &mut Option<crate::ipc::client::CodivdClient>,
+) {
+    let frames = promote_pending_lease_frames(state);
+    if let Some(ref mut c) = client {
+        for frame in frames {
+            c.send(&frame);
         }
     }
 }
