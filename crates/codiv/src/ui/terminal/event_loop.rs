@@ -51,11 +51,11 @@ pub(crate) fn event_loop(
         if !daemon_connected && client.is_some() {
             *client = None;
             parser_push_notice(parser, NoticeKind::Warning, "daemon disconnected — will retry automatically");
-            state.needs_render = true;
+            state.ui.needs_render = true;
         }
 
         // --- Poll completion engine background init when the coprocess is free ---
-        if state.pending_command.is_none() {
+        if state.cmd.pending_command.is_none() {
             state.completion_engine.poll_init(bash);
         }
 
@@ -73,18 +73,18 @@ pub(crate) fn event_loop(
                 parser.screen_mut().set_size(parser_rows, parser_cols);
                 bash.resize(parser_rows, parser_cols);
             }
-            state.needs_render = true;
+            state.ui.needs_render = true;
         }
 
         // --- Render only when needed ---
-        if state.needs_render {
+        if state.ui.needs_render {
             render_frame(term, parser, state, daemon_connected, theme)?;
-            state.needs_render = false;
+            state.ui.needs_render = false;
         }
 
         // --- Compute timeout ---
         let timeout = terminal_io::compute_next_timeout(
-            &state.pending_command,
+            &state.cmd.pending_command,
             daemon_connected,
             state.last_heartbeat_sent,
             state.completion_engine.is_ready(),
@@ -92,7 +92,7 @@ pub(crate) fn event_loop(
 
         // --- Select on all event sources ---
         let no_pty: crossbeam_channel::Receiver<Vec<u8>> = crossbeam_channel::never();
-        let pty_rx = if state.pending_command.is_some() {
+        let pty_rx = if state.cmd.pending_command.is_some() {
             bash.pty_receiver()
         } else {
             &no_pty
@@ -104,14 +104,14 @@ pub(crate) fn event_loop(
         crossbeam_channel::select! {
             recv(pty_rx) -> msg => {
                 if let Ok(bytes) = msg {
-                    if let Some(ref mut pending) = state.pending_command {
+                    if let Some(ref mut pending) = state.cmd.pending_command {
                         // Capture PTY bytes for CmdResponseBlock (skip alternate screen)
                         if pending.ai_execution_id.is_none() && !parser.screen().alternate_screen() {
-                            state.cmd_output_capture.extend_from_slice(&bytes);
+                            state.cmd.cmd_output_capture.extend_from_slice(&bytes);
                         }
                         terminal_io::process_pty_bytes(&bytes, pending, parser, bash);
                     }
-                    state.needs_render = true;
+                    state.ui.needs_render = true;
                 }
             }
             recv(crossterm_rx) -> msg => {
@@ -133,12 +133,12 @@ pub(crate) fn event_loop(
                                 parser_cols_from_term_width(*cols)
                             };
                             bash.resize(parser_rows, parser_cols);
-                            state.md_stream.set_width(parser_cols);
+                            state.stream.md_stream.set_width(parser_cols);
 
                             // Guard: skip rerender if modal or streaming is active
-                            let has_modal = state.pending_confirmation.is_some()
-                                || state.pending_session_picker.is_some();
-                            let is_streaming = state.agent_streaming
+                            let has_modal = state.modal.pending_confirmation.is_some()
+                                || state.modal.pending_session_picker.is_some();
+                            let is_streaming = state.stream.agent_streaming
                                 || state.tracker.pending_tool().is_some();
                             if has_modal || is_streaming || state.was_alt_screen {
                                 // Just resize the parser without rerendering
@@ -150,16 +150,16 @@ pub(crate) fn event_loop(
                                     parser_cols,
                                     super::state::MAX_SCROLLBACK,
                                 );
-                                rerender_all(parser, &mut state.tracker, &mut state.scroll_offset);
+                                rerender_all(parser, &mut state.tracker, &mut state.ui.scroll_offset);
                             }
                         }
                         Event::Paste(ref text) => {
-                            if state.pending_command.is_some() {
+                            if state.cmd.pending_command.is_some() {
                                 // Forward paste text to the running command's PTY.
                                 bash.send_bytes(text.as_bytes());
-                            } else if !state.agent_streaming {
+                            } else if !state.stream.agent_streaming {
                                 state.input.insert_paste(text.clone());
-                                state.scroll_offset = 0;
+                                state.ui.scroll_offset = 0;
                                 parser.screen_mut().set_scrollback(0);
                             }
                         }
@@ -184,7 +184,7 @@ pub(crate) fn event_loop(
                             }
 
                             // --- Session picker key interception ---
-                            if state.pending_session_picker.is_some() && !key_handled {
+                            if state.modal.pending_session_picker.is_some() && !key_handled {
                                 key_handled = super::keys::handle_session_picker(
                                     key.code,
                                     state,
@@ -194,7 +194,7 @@ pub(crate) fn event_loop(
                             }
 
                             // --- Confirmation prompt key interception ---
-                            if state.pending_confirmation.is_some() && !key_handled {
+                            if state.modal.pending_confirmation.is_some() && !key_handled {
                                 key_handled = super::keys::handle_confirmation(
                                     key.code,
                                     state,
@@ -204,9 +204,9 @@ pub(crate) fn event_loop(
                             }
 
                             // --- Cancel AI streaming on Escape ---
-                            if state.agent_streaming && !key_handled {
+                            if state.stream.agent_streaming && !key_handled {
                                 if key.code == KeyCode::Esc {
-                                    if let Some(ref rid) = state.active_request_id {
+                                    if let Some(ref rid) = state.stream.active_request_id {
                                         if let Some(ref mut c) = client {
                                             if let Some(frame) = ipc_messages::build_cancel_request(rid) {
                                                 c.send(&frame);
@@ -216,38 +216,38 @@ pub(crate) fn event_loop(
                                     // Finalize thinking block if in progress
                                     finalize_thinking(
                                         parser,
-                                        &mut state.thinking_start,
-                                        &mut state.thinking_buffer,
-                                        &mut state.thinking_scrollback,
+                                        &mut state.stream.thinking_start,
+                                        &mut state.stream.thinking_buffer,
+                                        &mut state.stream.thinking_scrollback,
                                         &mut state.tracker,
                                         theme.ansi_thinking,
                                     );
                                     // Flush any in-progress AI content
-                                    let final_bytes = state.md_stream.finish();
+                                    let final_bytes = state.stream.md_stream.finish();
                                     if !final_bytes.is_empty() {
                                         parser.process(&final_bytes);
                                     }
                                     // Close AI response block if one was open
-                                    if let Some(start) = state.ai_start_scrollback.take() {
+                                    if let Some(start) = state.stream.ai_start_scrollback.take() {
                                         let ai_end = get_scrollback_line(parser);
                                         let line_count = (ai_end.saturating_sub(start)) as u16;
                                         if line_count > 0 {
-                                            let lines = std::mem::take(&mut state.ai_rendered_lines);
+                                            let lines = std::mem::take(&mut state.stream.ai_rendered_lines);
                                             state.tracker.record_ai_response(start, line_count, lines);
                                         } else {
-                                            state.ai_rendered_lines.clear();
+                                            state.stream.ai_rendered_lines.clear();
                                         }
                                     }
-                                    state.agent_streaming = false;
-                                    state.active_request_id = None;
-                                    state.md_stream.reset();
+                                    state.stream.agent_streaming = false;
+                                    state.stream.active_request_id = None;
+                                    state.stream.md_stream.reset();
                                     parser_push_notice(parser, NoticeKind::Notice, "[cancelled]");
                                     key_handled = true;
                                 }
                             }
 
                             // --- Forward keystrokes to PTY when a command is executing ---
-                            if state.pending_command.is_some() {
+                            if state.cmd.pending_command.is_some() {
                                 if key.code == KeyCode::Char('c')
                                     && key.modifiers.contains(KeyModifiers::CONTROL)
                                 {
@@ -256,7 +256,7 @@ pub(crate) fn event_loop(
                                     terminal_input::key_event_to_bytes(key.code, key.modifiers)
                                 {
                                     bash.send_bytes(&bytes);
-                                    if let Some(ref mut p) = state.pending_command {
+                                    if let Some(ref mut p) = state.cmd.pending_command {
                                         p.last_activity = Instant::now();
                                     }
                                     key_handled = true;
@@ -288,7 +288,7 @@ pub(crate) fn event_loop(
                         }
                     }
 
-                    state.needs_render = true;
+                    state.ui.needs_render = true;
                 }
             }
             recv(daemon_rx) -> msg => {
@@ -307,27 +307,27 @@ pub(crate) fn event_loop(
                         }
                         daemon::handle_daemon_message(dm, parser, state, md_width, theme);
                     }
-                    state.needs_render = true;
+                    state.ui.needs_render = true;
                 }
             }
             recv(tick_rx) -> _ => {
-                state.anim.update_active(
-                    state.pending_command.is_some(),
-                    state.agent_streaming,
-                    state.thinking_start.is_some(),
+                state.ui.anim.update_active(
+                    state.cmd.pending_command.is_some(),
+                    state.stream.agent_streaming,
+                    state.stream.thinking_start.is_some(),
                     state.tracker.pending_tool().is_some(),
                 );
-                if state.anim.tick() || current_hint(&state).is_some() {
-                    state.needs_render = true;
+                if state.ui.anim.tick() || current_hint(&state).is_some() {
+                    state.ui.needs_render = true;
                 }
             }
             default(timeout) => {
-                state.needs_render = true;
+                state.ui.needs_render = true;
             }
         }
 
         // --- Post-select: drain additional PTY data ---
-        if state.pending_command.is_some() {
+        if state.cmd.pending_command.is_some() {
             let drain: Vec<Vec<u8>> = {
                 let pty_rx = bash.pty_receiver();
                 let mut collected = Vec::new();
@@ -337,9 +337,9 @@ pub(crate) fn event_loop(
                 collected
             };
             for bytes in &drain {
-                if let Some(ref mut pending) = state.pending_command {
+                if let Some(ref mut pending) = state.cmd.pending_command {
                     if pending.ai_execution_id.is_none() && !parser.screen().alternate_screen() {
-                        state.cmd_output_capture.extend_from_slice(bytes);
+                        state.cmd.cmd_output_capture.extend_from_slice(bytes);
                     }
                     terminal_io::process_pty_bytes(bytes, pending, parser, bash);
                 }
@@ -347,7 +347,7 @@ pub(crate) fn event_loop(
         }
 
         // --- Post-select: check command completion ---
-        if let Some(ref mut pending) = state.pending_command {
+        if let Some(ref mut pending) = state.cmd.pending_command {
             if let Some(result) = BashCoprocess::check_complete(
                 &pending.accumulated,
                 &pending.command,
@@ -364,14 +364,14 @@ pub(crate) fn event_loop(
                         );
                     }
                 }
-                state.cwd = bash.capture_cwd();
-                state.git_info = bash.capture_git_info();
+                state.shell.cwd = bash.capture_cwd();
+                state.shell.git_info = bash.capture_git_info();
                 if pending.needs_env_refresh {
-                    state.cached_env_vars = bash.capture_env();
+                    state.shell.cached_env_vars = bash.capture_env();
                 }
                 if let Some(ref execution_id) = pending.ai_execution_id {
                     // AI-requested command: send CommandCompleted back via lease protocol
-                    let lease_id = state.shell_relay.active_lease
+                    let lease_id = state.shell.shell_relay.active_lease
                         .as_ref()
                         .map(|l| l.lease_id.clone())
                         .unwrap_or_default();
@@ -381,7 +381,7 @@ pub(crate) fn event_loop(
                             execution_id,
                             &result.output,
                             result.exit_code,
-                            &state.cwd,
+                            &state.shell.cwd,
                         ) {
                             c.send(&frame);
                         }
@@ -393,7 +393,7 @@ pub(crate) fn event_loop(
                             &pending.command,
                             &result.output,
                             result.exit_code,
-                            &state.cwd,
+                            &state.shell.cwd,
                         ) {
                             c.send(&frame);
                         }
@@ -401,10 +401,10 @@ pub(crate) fn event_loop(
                 }
                 if !is_ai_command {
                     let cmd_end = get_scrollback_line(parser);
-                    if let Some(start) = state.cmd_start_scrollback.take() {
+                    if let Some(start) = state.cmd.cmd_start_scrollback.take() {
                         let line_count = (cmd_end.saturating_sub(start)) as u16;
                         if line_count > 0 {
-                            let raw_bytes = std::mem::take(&mut state.cmd_output_capture);
+                            let raw_bytes = std::mem::take(&mut state.cmd.cmd_output_capture);
                             state.tracker.record_cmd_response(
                                 &pending.command,
                                 start,
@@ -413,17 +413,17 @@ pub(crate) fn event_loop(
                                 raw_bytes,
                             );
                         } else {
-                            state.cmd_output_capture.clear();
+                            state.cmd.cmd_output_capture.clear();
                         }
                     } else {
-                        state.cmd_output_capture.clear();
+                        state.cmd.cmd_output_capture.clear();
                     }
                     parser.process(b"\r\n");
                 }
-                state.pending_command = None;
-                state.scroll_offset = 0;
+                state.cmd.pending_command = None;
+                state.ui.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
-                state.needs_render = true;
+                state.ui.needs_render = true;
             } else if pending.last_activity.elapsed() > std::time::Duration::from_secs(300) {
                 bash.send_interrupt();
                 bash.drain_for(100);
@@ -433,28 +433,28 @@ pub(crate) fn event_loop(
                     "command timed out (no activity for 5m)",
                 );
                 let cmd_end = get_scrollback_line(parser);
-                if let Some(start) = state.cmd_start_scrollback.take() {
+                if let Some(start) = state.cmd.cmd_start_scrollback.take() {
                     let line_count = (cmd_end.saturating_sub(start)) as u16;
                     if line_count > 0 {
-                        let raw_bytes = std::mem::take(&mut state.cmd_output_capture);
+                        let raw_bytes = std::mem::take(&mut state.cmd.cmd_output_capture);
                         state.tracker.record_cmd_response(&pending.command, start, line_count, -1, raw_bytes);
                     }
                 }
                 parser.process(b"\r\n");
-                state.pending_command = None;
-                state.scroll_offset = 0;
+                state.cmd.pending_command = None;
+                state.ui.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);
-                state.needs_render = true;
+                state.ui.needs_render = true;
             }
         }
 
         // --- Start leased AI command when the coprocess is free ---
-        if state.pending_command.is_none() {
+        if state.cmd.pending_command.is_none() {
             // Try to promote a pending lease first.
             daemon::promote_pending_lease(state, client);
 
             // Check if the active lease has a command ready to execute.
-            let cmd_to_start = state.shell_relay.active_lease.as_mut().and_then(|lease| {
+            let cmd_to_start = state.shell.shell_relay.active_lease.as_mut().and_then(|lease| {
                 lease.current_command.take().map(|cmd| (lease.lease_id.clone(), cmd))
             });
 
@@ -476,8 +476,8 @@ pub(crate) fn event_loop(
                                 c.send(&frame);
                             }
                         }
-                        state.cmd_start_scrollback = Some(get_scrollback_line(parser));
-                        state.pending_command = Some(super::state::PendingCommand {
+                        state.cmd.cmd_start_scrollback = Some(get_scrollback_line(parser));
+                        state.cmd.pending_command = Some(super::state::PendingCommand {
                             sentinel,
                             accumulated: String::new(),
                             command: leased_cmd.command,
@@ -485,7 +485,7 @@ pub(crate) fn event_loop(
                             needs_env_refresh: needs_env,
                             ai_execution_id: Some(leased_cmd.execution_id),
                         });
-                        state.needs_render = true;
+                        state.ui.needs_render = true;
                     }
                     None => {
                         // Failed to start — send CommandFailed back
@@ -494,7 +494,7 @@ pub(crate) fn event_loop(
                                 &lease_id,
                                 &leased_cmd.execution_id,
                                 "failed to send command to shell",
-                                &state.cwd,
+                                &state.shell.cwd,
                             ) {
                                 c.send(&frame);
                             }
@@ -524,7 +524,7 @@ pub(crate) fn event_loop(
             let socket = daemon_launcher::socket_path();
             if let Some(mut new_client) = CodivdClient::connect(&socket) {
                 if let Some(snapshot) =
-                    ipc_messages::build_env_snapshot(&state.cached_env_vars, "", &state.cwd)
+                    ipc_messages::build_env_snapshot(&state.shell.cached_env_vars, "", &state.shell.cwd)
                 {
                     new_client.send(&snapshot);
                 }
@@ -533,12 +533,12 @@ pub(crate) fn event_loop(
                         new_client.send(&frame);
                     }
                 } else {
-                    reset_screen(parser, &mut state.scroll_offset, &mut state.tracker);
+                    reset_screen(parser, &mut state.ui.scroll_offset, &mut state.tracker);
                 }
                 *client = Some(new_client);
                 state.last_heartbeat_sent = Instant::now();
                 log::info!("reconnected to daemon");
-                state.needs_render = true;
+                state.ui.needs_render = true;
             }
         }
     }

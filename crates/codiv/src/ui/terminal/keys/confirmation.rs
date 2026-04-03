@@ -99,7 +99,7 @@ pub(crate) fn handle_confirmation(
 ) -> bool {
     match key_code {
         KeyCode::Up => {
-            if let Some(ref mut conf) = state.pending_confirmation {
+            if let Some(ref mut conf) = state.modal.pending_confirmation {
                 conf.selected_index = if conf.selected_index == 0 {
                     conf.option_count - 1
                 } else {
@@ -110,7 +110,7 @@ pub(crate) fn handle_confirmation(
             true
         }
         KeyCode::Down => {
-            if let Some(ref mut conf) = state.pending_confirmation {
+            if let Some(ref mut conf) = state.modal.pending_confirmation {
                 conf.selected_index = if conf.selected_index >= conf.option_count - 1 {
                     0
                 } else {
@@ -121,14 +121,14 @@ pub(crate) fn handle_confirmation(
             true
         }
         KeyCode::Enter => {
-            if let Some(conf) = state.pending_confirmation.take() {
+            if let Some(conf) = state.modal.pending_confirmation.take() {
                 clear_prompt(&conf, parser);
                 send_confirmation(&conf, client);
             }
             true
         }
         KeyCode::Char('1') => {
-            if let Some(mut conf) = state.pending_confirmation.take() {
+            if let Some(mut conf) = state.modal.pending_confirmation.take() {
                 conf.selected_index = 0;
                 clear_prompt(&conf, parser);
                 send_confirmation(&conf, client);
@@ -136,7 +136,7 @@ pub(crate) fn handle_confirmation(
             true
         }
         KeyCode::Char('2') => {
-            if let Some(mut conf) = state.pending_confirmation.take() {
+            if let Some(mut conf) = state.modal.pending_confirmation.take() {
                 conf.selected_index = 1;
                 clear_prompt(&conf, parser);
                 send_confirmation(&conf, client);
@@ -144,7 +144,7 @@ pub(crate) fn handle_confirmation(
             true
         }
         KeyCode::Char('3') => {
-            if let Some(mut conf) = state.pending_confirmation.take() {
+            if let Some(mut conf) = state.modal.pending_confirmation.take() {
                 conf.selected_index = 2;
                 clear_prompt(&conf, parser);
                 send_confirmation(&conf, client);
@@ -153,9 +153,9 @@ pub(crate) fn handle_confirmation(
         }
         KeyCode::Char('4') => {
             // Only valid for non-critical (4 options)
-            if let Some(ref conf) = state.pending_confirmation {
+            if let Some(ref conf) = state.modal.pending_confirmation {
                 if conf.risk != codiv_common::messages::RiskLevel::Critical {
-                    if let Some(mut conf) = state.pending_confirmation.take() {
+                    if let Some(mut conf) = state.modal.pending_confirmation.take() {
                         conf.selected_index = 3;
                         clear_prompt(&conf, parser);
                         send_confirmation(&conf, client);
@@ -166,7 +166,7 @@ pub(crate) fn handle_confirmation(
         }
         KeyCode::Esc => {
             // Reject on Escape
-            if let Some(conf) = state.pending_confirmation.take() {
+            if let Some(conf) = state.modal.pending_confirmation.take() {
                 clear_prompt(&conf, parser);
                 if let Some(ref mut c) = client {
                     if let Some(frame) =

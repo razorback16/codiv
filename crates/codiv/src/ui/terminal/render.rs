@@ -154,11 +154,11 @@ pub(crate) fn render_frame(
     // Write live prompt into the vt100 parser (only when scrolled to bottom
     // and no command is currently executing or agent streaming, and not in alt screen).
     let in_alt_screen = parser.screen().alternate_screen();
-    let is_executing = state.pending_command.is_some();
-    let is_thinking = state.thinking_start.is_some();
-    let has_inline_picker = state.pending_session_picker.is_some() || state.pending_confirmation.is_some();
+    let is_executing = state.cmd.pending_command.is_some();
+    let is_thinking = state.stream.thinking_start.is_some();
+    let has_inline_picker = state.modal.pending_session_picker.is_some() || state.modal.pending_confirmation.is_some();
     let has_focused_block = state.tracker.focused().is_some();
-    if state.scroll_offset == 0 && !is_executing && !state.agent_streaming && !in_alt_screen && !has_inline_picker && !has_focused_block {
+    if state.ui.scroll_offset == 0 && !is_executing && !state.stream.agent_streaming && !in_alt_screen && !has_inline_picker && !has_focused_block {
         let lines: Vec<String> = if state.input.has_paste_blocks() {
             state.input.display_lines()
         } else {
@@ -170,7 +170,7 @@ pub(crate) fn render_frame(
         // Determine the anchor row (first row of the prompt).
         // On the first render of a live prompt, record the cursor position as the anchor.
         // On subsequent renders, reuse the anchor so the start stays fixed.
-        let first_row = if let Some(anchor) = state.prompt_anchor_row {
+        let first_row = if let Some(anchor) = state.ui.prompt_anchor_row {
             // Anchor exists — ensure we have room for all lines below it.
             let last_row = anchor + line_count + 1; // +1 for hint row
             if last_row >= screen_rows {
@@ -181,7 +181,7 @@ pub(crate) fn render_frame(
                 }
                 // Anchor shifts up by the number of scrolled lines
                 let new_anchor = anchor.saturating_sub(overflow);
-                state.prompt_anchor_row = Some(new_anchor);
+                state.ui.prompt_anchor_row = Some(new_anchor);
                 new_anchor
             } else {
                 anchor
@@ -200,7 +200,7 @@ pub(crate) fn render_frame(
             } else {
                 cursor_row
             };
-            state.prompt_anchor_row = Some(first_row);
+            state.ui.prompt_anchor_row = Some(first_row);
             first_row
         };
 
@@ -227,14 +227,14 @@ pub(crate) fn render_frame(
         let cursor_row_1based = first_row + crow as u16 + 1;
         parser.process(format!("\x1b[{};{}H", cursor_row_1based, ccol + 1).as_bytes());
 
-        if !state.prompt_is_live {
+        if !state.ui.prompt_is_live {
             // First time prompt goes live — show hint
             state.hint_shown_at = Some(std::time::Instant::now());
         }
-        state.prompt_is_live = true;
+        state.ui.prompt_is_live = true;
     } else {
         // Not rendering a live prompt — clear the anchor
-        state.prompt_anchor_row = None;
+        state.ui.prompt_anchor_row = None;
     }
 
     term.draw(|frame| {
@@ -265,7 +265,7 @@ pub(crate) fn render_frame(
             };
 
             // --- Render pseudoterminal ---
-            let cursor_visible = state.scroll_offset == 0;
+            let cursor_visible = state.ui.scroll_offset == 0;
             let pseudo_term = PseudoTerminal::new(parser.screen())
                 .cursor(PtCursor::default().visibility(cursor_visible));
             frame.render_widget(pseudo_term, content_area);
@@ -277,14 +277,14 @@ pub(crate) fn render_frame(
 
             // --- Render status bar ---
             let status_info = StatusBarInfo {
-                cwd: state.cwd.as_str(),
+                cwd: state.shell.cwd.as_str(),
                 daemon_connected,
                 daemon_timestamp: state.last_daemon_timestamp,
                 is_executing,
-                git_info: state.git_info.as_ref(),
+                git_info: state.shell.git_info.as_ref(),
                 model_alias: &state.model_alias,
                 token_usage: &state.token_usage,
-                anim: &state.anim,
+                anim: &state.ui.anim,
                 thinking_enabled: state.thinking_enabled,
                 permission_mode: state.permission_mode,
                 session_name: state.session_name.as_deref(),
@@ -332,7 +332,7 @@ fn render_prompt_gutter(
     let abs_bottom = sb_len + screen_rows;
     let abs_top = abs_bottom
         .saturating_sub(screen_rows)
-        .saturating_sub(state.scroll_offset as u64);
+        .saturating_sub(state.ui.scroll_offset as u64);
     let abs_view_bottom = abs_top + screen_rows;
 
     for block in state.tracker.blocks() {
@@ -360,8 +360,8 @@ fn render_prompt_gutter(
         }
     }
     // Live prompt: draw `>` at the anchor row.
-    if state.prompt_is_live && state.scroll_offset == 0 {
-        if let Some(anchor) = state.prompt_anchor_row {
+    if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
+        if let Some(anchor) = state.ui.prompt_anchor_row {
             let (live_char, live_fg) = match state.input_mode {
                 InputMode::Command => ('$', theme.gutter_cmd),
                 InputMode::Ai => ('>', theme.gutter_ai),
@@ -377,7 +377,7 @@ fn render_prompt_gutter(
                 }
             }
         }
-    } else if state.tracker.pending_tool().is_some() && state.scroll_offset == 0 {
+    } else if state.tracker.pending_tool().is_some() && state.ui.scroll_offset == 0 {
         // Gutter-only spinner for pending tool (header is in VT100 content)
         if let Some(pending_sl) = state.tracker.pending_tool_start_index() {
             log::debug!(
@@ -391,31 +391,31 @@ fn render_prompt_gutter(
                 let row = term_area.top() + screen_row;
                 if row < term_area.bottom() {
                     buf[(term_area.left(), row)]
-                        .set_char(state.anim.spinner_char())
+                        .set_char(state.ui.anim.spinner_char())
                         .set_fg(theme.spinner);
                 }
             }
         }
-    } else if state.agent_streaming && state.scroll_offset == 0 {
+    } else if state.stream.agent_streaming && state.ui.scroll_offset == 0 {
         let (cursor_row, _) = parser.screen().cursor_position();
         let row = term_area.top() + cursor_row;
         if row < term_area.bottom() {
             buf[(term_area.left(), row)]
-                .set_char(state.anim.spinner_char())
+                .set_char(state.ui.anim.spinner_char())
                 .set_fg(theme.spinner);
         }
-    } else if is_thinking && state.scroll_offset == 0 {
+    } else if is_thinking && state.ui.scroll_offset == 0 {
         let (cursor_row, _) = parser.screen().cursor_position();
         let row = term_area.top() + cursor_row;
         if row < term_area.bottom() {
             buf[(term_area.left(), row)]
-                .set_char(state.anim.spinner_char())
+                .set_char(state.ui.anim.spinner_char())
                 .set_fg(theme.spinner);
         }
         // Overwrite the placeholder line (one above cursor) with animated dots.
         let placeholder_row = row.saturating_sub(1);
         if placeholder_row >= term_area.top() && placeholder_row < term_area.bottom() {
-            let text = format!("Thinking{}", state.anim.thinking_dots());
+            let text = format!("Thinking{}", state.ui.anim.thinking_dots());
             for (i, ch) in text.chars().enumerate() {
                 let col = content_area.left() + i as u16;
                 if col < content_area.right() {
@@ -460,7 +460,7 @@ fn render_block_selection_overlay(
         let abs_bottom = sb_len + screen_rows;
         let abs_top = abs_bottom
             .saturating_sub(screen_rows)
-            .saturating_sub(state.scroll_offset as u64);
+            .saturating_sub(state.ui.scroll_offset as u64);
         if start_index >= abs_top && start_index < abs_bottom {
             let screen_row = (start_index - abs_top) as u16 + term_area.top();
             let top_rule = screen_row.saturating_sub(1);
@@ -499,8 +499,8 @@ fn render_block_selection_overlay(
                 }
             }
         }
-    } else if state.prompt_is_live && state.scroll_offset == 0 {
-        if let Some(anchor) = state.prompt_anchor_row {
+    } else if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
+        if let Some(anchor) = state.ui.prompt_anchor_row {
             let prompt_lines = state.input.line_count() as u16;
             let first_prompt_row = term_area.top() + anchor;
             let top_rule = first_prompt_row.saturating_sub(1);
@@ -530,8 +530,8 @@ fn render_horizontal_rules(buf: &mut Buffer, rows: &[u16], term_area: Rect, them
 
 /// Render the contextual hint text below the live prompt.
 fn render_contextual_hint(buf: &mut Buffer, state: &TerminalState, theme: &Theme, term_area: Rect) {
-    if state.prompt_is_live && state.scroll_offset == 0 {
-        if let (Some(anchor), Some(hint)) = (state.prompt_anchor_row, current_hint(state)) {
+    if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
+        if let (Some(anchor), Some(hint)) = (state.ui.prompt_anchor_row, current_hint(state)) {
             let prompt_lines = state.input.line_count() as u16;
             let bottom_rule = term_area.top() + anchor + prompt_lines;
             let hint_row = bottom_rule + 1;
