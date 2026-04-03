@@ -101,6 +101,9 @@ impl BashCoprocess {
         // Suppress PTY echo so the sentinel-wrapped command line is never echoed back.
         // Programs that need echo (vim, python, ssh) call tcsetattr() themselves.
         session.execute("stty -echo", Duration::from_secs(2));
+        // Disable history expansion so `!` in commands (e.g. echo "hello!")
+        // doesn't trigger "event not found" errors that kill the sentinel protocol.
+        session.execute("set +H", Duration::from_secs(2));
 
         log::info!("bash coprocess ready (pid=child)");
         Ok(BashCoprocess {

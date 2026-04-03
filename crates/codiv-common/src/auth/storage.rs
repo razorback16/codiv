@@ -96,6 +96,41 @@ pub fn write_oauth_tokens_to_config(provider_id: &str, tokens: &OAuthTokens) -> 
     save_doc(&doc)
 }
 
+/// Write the account UUID for an OAuth provider into [auth.tokens.{provider_id}].
+pub fn write_oauth_account_uuid(provider_id: &str, uuid: &str) -> Result<()> {
+    let mut doc = load_doc();
+
+    if !doc.contains_table("auth") {
+        doc["auth"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let auth = doc["auth"].as_table_mut().expect("auth must be table");
+    if !auth.contains_key("tokens") {
+        auth["tokens"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let tokens_table = auth["tokens"].as_table_mut().expect("tokens must be table");
+    if !tokens_table.contains_key(provider_id) {
+        tokens_table[provider_id] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let entry = tokens_table[provider_id].as_table_mut().expect("entry must be table");
+    entry["account_uuid"] = value(uuid);
+
+    save_doc(&doc)
+}
+
+/// Read the account UUID for an OAuth provider from [auth.tokens.{provider_id}].
+pub fn read_oauth_account_uuid(provider_id: &str) -> Option<String> {
+    let doc = load_doc();
+    doc.get("auth")
+        .and_then(|a| a.as_table())
+        .and_then(|t| t.get("tokens"))
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get(provider_id))
+        .and_then(|e| e.as_table())
+        .and_then(|e| e.get("account_uuid"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Read stored OAuth tokens for a provider from [auth.tokens.{provider_id}].
 /// Returns Ok(None) if no tokens are stored for this provider.
 pub fn read_oauth_tokens_from_config(provider_id: &str) -> Result<Option<OAuthTokens>> {
