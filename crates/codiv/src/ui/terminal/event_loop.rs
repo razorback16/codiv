@@ -293,12 +293,19 @@ pub(crate) fn event_loop(
             }
             recv(daemon_rx) -> msg => {
                 if let Ok(msg) = msg {
-                    let md_width = term.size().map(|s| parser_cols_from_term_width(s.width)).unwrap_or(80);
-                    daemon::handle_daemon_message(msg, parser, state, md_width, theme);
-                    // Drain any additional daemon messages that arrived.
+                    // Collect all daemon messages (first + drained) before processing,
+                    // to avoid borrow conflicts between daemon_rx and client.
+                    let mut daemon_msgs = vec![msg];
                     while let Ok(msg2) = daemon_rx.try_recv() {
+                        daemon_msgs.push(msg2);
+                    }
+                    for dm in daemon_msgs {
                         let md_width = term.size().map(|s| parser_cols_from_term_width(s.width)).unwrap_or(80);
-                        daemon::handle_daemon_message(msg2, parser, state, md_width, theme);
+                        let lease_frames = daemon::handle_lease_message(&dm, state);
+                        if let Some(ref mut c) = client {
+                            for frame in lease_frames { c.send(&frame); }
+                        }
+                        daemon::handle_daemon_message(dm, parser, state, md_width, theme);
                     }
                     state.needs_render = true;
                 }
@@ -363,9 +370,14 @@ pub(crate) fn event_loop(
                     state.cached_env_vars = bash.capture_env();
                 }
                 if let Some(ref execution_id) = pending.ai_execution_id {
-                    // AI-requested command: send CommandExecutionResult back
+                    // AI-requested command: send CommandCompleted back via lease protocol
+                    let lease_id = state.shell_relay.active_lease
+                        .as_ref()
+                        .map(|l| l.lease_id.clone())
+                        .unwrap_or_default();
                     if let Some(ref mut c) = client {
-                        if let Some(frame) = ipc_messages::build_command_execution_result(
+                        if let Some(frame) = ipc_messages::build_command_completed(
+                            &lease_id,
                             execution_id,
                             &result.output,
                             result.exit_code,
@@ -436,37 +448,52 @@ pub(crate) fn event_loop(
             }
         }
 
-        // --- Start queued AI command executions when the coprocess is free ---
+        // --- Start leased AI command when the coprocess is free ---
         if state.pending_command.is_none() {
-            if let Some(ai_exec) = state.pending_ai_executions.pop_front() {
-                let needs_env = super::state::command_modifies_env(&ai_exec.command);
-                // Wrap AI commands with env vars that prevent pagers, credential
-                // prompts, and editor launches from hanging. These are scoped to
-                // the subshell so they don't leak into user-typed commands.
+            // Try to promote a pending lease first.
+            daemon::promote_pending_lease(state, client);
+
+            // Check if the active lease has a command ready to execute.
+            let cmd_to_start = state.shell_relay.active_lease.as_mut().and_then(|lease| {
+                lease.current_command.take().map(|cmd| (lease.lease_id.clone(), cmd))
+            });
+
+            if let Some((lease_id, leased_cmd)) = cmd_to_start {
+                let needs_env = super::state::command_modifies_env(&leased_cmd.command);
                 let wrapped_command = format!(
                     "GIT_PAGER=cat PAGER=cat SYSTEMD_PAGER=cat GIT_TERMINAL_PROMPT=0 GIT_EDITOR=true {}",
-                    &ai_exec.command
+                    &leased_cmd.command
                 );
                 match bash.start_command(&wrapped_command) {
                     Some(sentinel) => {
+                        // Send CommandStarted ACK — this is when the daemon starts
+                        // the execution timeout timer.
+                        if let Some(ref mut c) = client {
+                            if let Some(frame) = ipc_messages::build_command_started(
+                                &lease_id,
+                                &leased_cmd.execution_id,
+                            ) {
+                                c.send(&frame);
+                            }
+                        }
                         state.cmd_start_scrollback = Some(get_scrollback_line(parser));
                         state.pending_command = Some(super::state::PendingCommand {
                             sentinel,
                             accumulated: String::new(),
-                            command: ai_exec.command,
+                            command: leased_cmd.command,
                             last_activity: Instant::now(),
                             needs_env_refresh: needs_env,
-                            ai_execution_id: Some(ai_exec.execution_id),
+                            ai_execution_id: Some(leased_cmd.execution_id),
                         });
                         state.needs_render = true;
                     }
                     None => {
-                        // Failed to start — send back error result
+                        // Failed to start — send CommandFailed back
                         if let Some(ref mut c) = client {
-                            if let Some(frame) = ipc_messages::build_command_execution_result(
-                                &ai_exec.execution_id,
+                            if let Some(frame) = ipc_messages::build_command_failed(
+                                &lease_id,
+                                &leased_cmd.execution_id,
                                 "failed to send command to shell",
-                                -1,
                                 &state.cwd,
                             ) {
                                 c.send(&frame);

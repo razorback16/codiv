@@ -106,18 +106,86 @@ pub fn build_load_session(session_id: &str) -> Option<Vec<u8>> {
     frame_message(&msg).ok()
 }
 
-/// Build a framed CommandExecutionResult message.
-pub fn build_command_execution_result(
+// --- Shell lease protocol builders ---
+
+/// Build a framed ShellLeaseAcquired message.
+pub fn build_shell_lease_acquired(lease_id: &str) -> Option<Vec<u8>> {
+    let msg = ClientMessage::ShellLeaseAcquired {
+        lease_id: lease_id.to_string(),
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed ShellLeaseQueued message.
+pub fn build_shell_lease_queued(lease_id: &str, queue_len: usize) -> Option<Vec<u8>> {
+    let msg = ClientMessage::ShellLeaseQueued {
+        lease_id: lease_id.to_string(),
+        queue_len,
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed CommandStarted message.
+pub fn build_command_started(lease_id: &str, execution_id: &str) -> Option<Vec<u8>> {
+    let msg = ClientMessage::CommandStarted {
+        lease_id: lease_id.to_string(),
+        execution_id: execution_id.to_string(),
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed CommandCompleted message.
+pub fn build_command_completed(
+    lease_id: &str,
     execution_id: &str,
     output: &str,
     exit_code: i32,
     cwd: &str,
 ) -> Option<Vec<u8>> {
-    let msg = ClientMessage::CommandExecutionResult {
+    let msg = ClientMessage::CommandCompleted {
+        lease_id: lease_id.to_string(),
         execution_id: execution_id.to_string(),
         output: output.to_string(),
         exit_code,
         cwd: cwd.to_string(),
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed CommandFailed message.
+pub fn build_command_failed(
+    lease_id: &str,
+    execution_id: &str,
+    error: &str,
+    cwd: &str,
+) -> Option<Vec<u8>> {
+    let msg = ClientMessage::CommandFailed {
+        lease_id: lease_id.to_string(),
+        execution_id: execution_id.to_string(),
+        error: error.to_string(),
+        cwd: cwd.to_string(),
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed CommandCancelled message.
+pub fn build_command_cancelled(
+    lease_id: &str,
+    execution_id: &str,
+    cwd: &str,
+) -> Option<Vec<u8>> {
+    let msg = ClientMessage::CommandCancelled {
+        lease_id: lease_id.to_string(),
+        execution_id: execution_id.to_string(),
+        cwd: cwd.to_string(),
+    };
+    frame_message(&msg).ok()
+}
+
+/// Build a framed ShellLeaseReleased message.
+pub fn build_shell_lease_released(lease_id: &str) -> Option<Vec<u8>> {
+    let msg = ClientMessage::ShellLeaseReleased {
+        lease_id: lease_id.to_string(),
     };
     frame_message(&msg).ok()
 }

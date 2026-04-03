@@ -24,11 +24,32 @@ pub(crate) struct PendingCommand {
     pub(crate) ai_execution_id: Option<String>,
 }
 
-/// An AI-requested command waiting to be executed in the coprocess.
-pub(crate) struct PendingAiExecution {
+/// A pending shell lease request from the daemon.
+pub(crate) struct PendingLease {
+    pub(crate) lease_id: String,
+    pub(crate) request_id: String,
+}
+
+/// An active shell lease held by the daemon.
+pub(crate) struct ActiveLease {
+    pub(crate) lease_id: String,
+    #[allow(dead_code)]
+    pub(crate) request_id: String,
+    /// The command to execute within this lease (set by ExecuteLeasedCommand).
+    pub(crate) current_command: Option<ActiveLeasedCommand>,
+}
+
+/// A command queued for execution within an active lease.
+pub(crate) struct ActiveLeasedCommand {
     pub(crate) execution_id: String,
     pub(crate) command: String,
     pub(crate) _timeout_ms: u64,
+}
+
+/// State for the shell lease protocol on the client side.
+pub(crate) struct ShellRelayState {
+    pub(crate) active_lease: Option<ActiveLease>,
+    pub(crate) pending_leases: std::collections::VecDeque<PendingLease>,
 }
 
 const ENV_MODIFIERS: &[&str] = &[
@@ -188,8 +209,8 @@ pub(crate) struct TerminalState {
     pub git_info: Option<GitInfo>,
     pub cached_env_vars: Vec<(String, String)>,
 
-    // AI-requested command execution queue
-    pub pending_ai_executions: std::collections::VecDeque<PendingAiExecution>,
+    // Shell lease relay state
+    pub shell_relay: ShellRelayState,
 
     /// Accumulates PTY bytes during command execution for CmdResponseBlock replay.
     pub cmd_output_capture: Vec<u8>,
@@ -274,8 +295,11 @@ impl TerminalState {
             git_info: None,
             cached_env_vars: Vec::new(),
 
-            // AI-requested command execution queue
-            pending_ai_executions: std::collections::VecDeque::new(),
+            // Shell lease relay state
+            shell_relay: ShellRelayState {
+                active_lease: None,
+                pending_leases: std::collections::VecDeque::new(),
+            },
 
             cmd_output_capture: Vec::new(),
             ai_rendered_lines: Vec::new(),

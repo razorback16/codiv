@@ -38,7 +38,7 @@ pub struct Agent {
     pub provider_config: ProviderConfig,
     pub history: Vec<ConversationEvent>,
     pub cwd: String,
-    pub shell_backend: Option<super::shell_backend::ShellBackend>,
+    pub relay_manager: Option<Arc<super::relay_manager::RelayManager>>,
     pub cwd_ref: Arc<RwLock<String>>,
 }
 
@@ -52,7 +52,7 @@ impl Agent {
             provider_config,
             history: Vec::new(),
             cwd,
-            shell_backend: None,
+            relay_manager: None,
             cwd_ref,
         }
     }
@@ -348,9 +348,9 @@ impl Agent {
             *cwd_guard = self.cwd.clone();
         }
 
-        let backend = self.shell_backend.clone().expect("shell_backend must be set before run_streaming");
+        let relay = self.relay_manager.clone().expect("relay_manager must be set before run_streaming");
         let tools = super::tools::build_tools(
-            backend,
+            relay,
             Arc::clone(&self.cwd_ref),
             permission_ctx,
         );

@@ -301,21 +301,18 @@ impl Daemon {
                         }
                     };
 
-                    // Set up the ShellBackend for this agent request
+                    // Set up the RelayManager for this agent request
                     {
                         let session = self.sessions.get_mut(&client_id).unwrap();
-                        let pending_executions = session
-                            .pending_executions
+                        let relay = session
+                            .relay_manager
                             .get_or_insert_with(|| {
-                                Arc::new(std::sync::Mutex::new(HashMap::new()))
+                                Arc::new(crate::agent::relay_manager::RelayManager::new(
+                                    client_tx.clone(),
+                                ))
                             })
                             .clone();
-                        let shell_backend = crate::agent::shell_backend::ShellBackend::ClientRelay {
-                            client_tx: client_tx.clone(),
-                            pending: pending_executions,
-                            handle: tokio::runtime::Handle::current(),
-                        };
-                        agent.shell_backend = Some(shell_backend);
+                        agent.relay_manager = Some(relay);
                     }
 
                     // We need to put the agent back after the spawn completes.
@@ -656,27 +653,26 @@ impl Daemon {
                 }
             }
 
-            ClientMessage::CommandExecutionResult {
-                execution_id,
-                output,
-                exit_code,
-                cwd,
-            } => {
-                // Update session cwd from the execution result
+            // Shell lease protocol messages — route to RelayManager
+            msg @ (ClientMessage::ShellLeaseAcquired { .. }
+            | ClientMessage::ShellLeaseQueued { .. }
+            | ClientMessage::CommandStarted { .. }
+            | ClientMessage::CommandCompleted { .. }
+            | ClientMessage::CommandFailed { .. }
+            | ClientMessage::CommandCancelled { .. }
+            | ClientMessage::ShellLeaseReleased { .. }) => {
                 if let Some(session) = self.sessions.get_mut(&client_id) {
-                    session.cwd = cwd.clone();
-                    // Resolve the pending execution
-                    if let Some(ref pending) = session.pending_executions {
-                        use crate::agent::shell_backend::{RelayResult, ShellBackend};
-                        ShellBackend::resolve_pending(
-                            pending,
-                            &execution_id,
-                            RelayResult {
-                                output,
-                                exit_code,
-                                cwd,
-                            },
-                        );
+                    // Update session cwd from completion messages
+                    match &msg {
+                        ClientMessage::CommandCompleted { cwd, .. }
+                        | ClientMessage::CommandFailed { cwd, .. }
+                        | ClientMessage::CommandCancelled { cwd, .. } => {
+                            session.cwd = cwd.clone();
+                        }
+                        _ => {}
+                    }
+                    if let Some(ref relay) = session.relay_manager {
+                        relay.handle_client_message(&msg).await;
                     }
                 }
             }
@@ -688,6 +684,10 @@ impl Daemon {
             ClientMessage::CancelRequest { request_id } => {
                 info!("cancel request: {}", request_id);
                 if let Some(session) = self.sessions.get_mut(&client_id) {
+                    // Cancel all pending relay operations before aborting the task.
+                    if let Some(ref relay) = session.relay_manager {
+                        relay.cancel_all(codiv_common::messages::CancelReason::UserAbort).await;
+                    }
                     if let Some(handle) = session.agent_task.take() {
                         handle.abort();
                     }
@@ -982,10 +982,10 @@ impl Daemon {
 
         for id in stale {
             info!("cleaning stale session {}", id);
-            // Fail all pending relay executions before removing the session
+            // Cancel all pending relay operations before removing the session
             if let Some(session) = self.sessions.get(&id) {
-                if let Some(ref pending) = session.pending_executions {
-                    crate::agent::shell_backend::ShellBackend::fail_all_pending(pending);
+                if let Some(ref relay) = session.relay_manager {
+                    relay.cancel_all(codiv_common::messages::CancelReason::SessionStale).await;
                 }
             }
             self.sessions.remove(&id);
