@@ -585,7 +585,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "codiv"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "bincode",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "codiv-common"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "bincode",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "codiv-tools"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "codiv-common",
  "crossbeam-channel",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "codivd"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aisdk",
  "bincode",
