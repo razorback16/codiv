@@ -7,19 +7,19 @@ class Codiv < Formula
   on_macos do
     on_arm do
       url "https://github.com/razorback16/codiv/releases/download/v0.1.7/codiv-v0.1.7-aarch64-apple-darwin.tar.gz"
-      sha256 "14cb93a73ecee9473b044cc71cfa9718128ca16f2bf7c44e29f44618b12f6bc1"
+      sha256 "7c06dcb5549bc195f33ac1e12bfc1076ad758db2c2265a975c281fa33215dbd6"
     end
 
     on_intel do
       url "https://github.com/razorback16/codiv/releases/download/v0.1.7/codiv-v0.1.7-x86_64-apple-darwin.tar.gz"
-      sha256 "09589533f795cf0dbebcc665df9ed02fb30ccf1536383fc57c93164ed475b128"
+      sha256 "59f1b639348700f444a1e6835b47d7e50373a19d9ae25883351e3efc7c858b23"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/razorback16/codiv/releases/download/v0.1.7/codiv-v0.1.7-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "04937a9af2078c5f92765f03f5a33aa6f48001d4f5256d85e1fb37260b1123d7"
+      sha256 "a8a5e7c4530b0c6e7456072d12eca0ef0960ee58bcd46cc77bd4a6c0f0119161"
     end
   end
 
