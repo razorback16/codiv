@@ -36,12 +36,14 @@ pub enum ConversationEvent {
     /// A tool invocation the model made during a request.
     ToolCall {
         request_id: String,
+        tool_call_id: String,
         tool_name: String,
         arguments: String,
     },
     /// The result returned by a tool invocation.
     ToolResult {
         request_id: String,
+        tool_call_id: String,
         tool_name: String,
         result: String,
     },

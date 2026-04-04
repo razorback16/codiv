@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::agent::config::{self, ModelAssignment, ModelCatalog, ProviderConfig};
 use aisdk::core::messages::{AssistantMessage, Message, Messages};
@@ -39,12 +39,10 @@ pub struct Agent {
     pub history: Vec<ConversationEvent>,
     pub cwd: String,
     pub relay_manager: Option<Arc<super::relay_manager::RelayManager>>,
-    pub cwd_ref: Arc<RwLock<String>>,
 }
 
 impl Agent {
     pub fn new(role: AgentRole, model_config: ModelAssignment, provider_config: ProviderConfig, system_prompt: String, cwd: String) -> Self {
-        let cwd_ref = Arc::new(RwLock::new(cwd.clone()));
         Self {
             role,
             system_prompt,
@@ -53,7 +51,6 @@ impl Agent {
             history: Vec::new(),
             cwd,
             relay_manager: None,
-            cwd_ref,
         }
     }
 
@@ -265,11 +262,8 @@ impl Agent {
                     // Reasoning is internal; not included in the message history
                     // sent back to the model.
                 }
-                ConversationEvent::ToolCall { tool_name, arguments, request_id } => {
-                    // Native aisdk tool-call message format.
-                    // We synthesize a tool_call_id from request_id + tool_name
-                    // since ConversationEvent doesn't store the provider's ID.
-                    let tool_call_id = format!("{}_{}", request_id, tool_name);
+                ConversationEvent::ToolCall { tool_name, arguments, tool_call_id, .. } => {
+                    let tool_call_id = tool_call_id.clone();
                     let input: serde_json::Value = serde_json::from_str(arguments)
                         .unwrap_or_else(|_| serde_json::Value::String(arguments.clone()));
                     let tool_call = ToolCallInfo {
@@ -285,9 +279,8 @@ impl Agent {
                         None,
                     )));
                 }
-                ConversationEvent::ToolResult { tool_name, result, request_id } => {
-                    // Native aisdk tool-result message format.
-                    let tool_call_id = format!("{}_{}", request_id, tool_name);
+                ConversationEvent::ToolResult { tool_name, result, tool_call_id, .. } => {
+                    let tool_call_id = tool_call_id.clone();
                     let output: serde_json::Value = serde_json::from_str(result)
                         .unwrap_or_else(|_| serde_json::Value::String(result.clone()));
                     let tool_result = ToolResultInfo {
@@ -342,16 +335,10 @@ impl Agent {
 
         let messages = self.build_messages();
 
-        // Update the shared cwd reference so tools use the latest cwd
-        {
-            let mut cwd_guard = self.cwd_ref.write().unwrap();
-            *cwd_guard = self.cwd.clone();
-        }
-
         let relay = self.relay_manager.clone().expect("relay_manager must be set before run_streaming");
         let tools = super::tools::build_tools(
             relay,
-            Arc::clone(&self.cwd_ref),
+            self.cwd.clone(),
             permission_ctx,
         );
 

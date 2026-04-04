@@ -27,9 +27,10 @@ pub(crate) fn present_edit(
     replay_mode: bool,
     stashed_content: Option<String>,
     merge_baseline: Option<String>,
+    width: u16,
 ) -> EditPresentation {
     if result.starts_with("Error:") {
-        let header = build_tool_header("Edit", args);
+        let header = build_tool_header("Edit", args, width);
         let summary = format!("  \u{2514} Edit failed: {}", result);
         return EditPresentation {
             header,
@@ -46,7 +47,7 @@ pub(crate) fn present_edit(
     if replay_mode {
         let old_string = json_str(args, "old_string").unwrap_or_default();
         let new_string = json_str(args, "new_string").unwrap_or_default();
-        let header = build_tool_header("Edit", args);
+        let header = build_tool_header("Edit", args, width);
         let summary = format!("  \u{2514} {}", edit_args_summary(&old_string, &new_string));
         return EditPresentation {
             header,
@@ -72,7 +73,7 @@ pub(crate) fn present_edit(
     if diff.is_empty() {
         let old_string = json_str(args, "old_string").unwrap_or_default();
         let new_string = json_str(args, "new_string").unwrap_or_default();
-        let header = build_tool_header("Edit", args);
+        let header = build_tool_header("Edit", args, width);
         let summary = format!("  \u{2514} {}", edit_args_summary(&old_string, &new_string));
         return EditPresentation {
             header,
@@ -88,7 +89,7 @@ pub(crate) fn present_edit(
 
     let diff_preview = generate_diff_preview_lines(&diff);
     let summary = format!("  \u{2514} {}", diff_summary(&diff));
-    let header = build_tool_header("Edit", args);
+    let header = build_tool_header("Edit", args, width);
 
     EditPresentation {
         header,
@@ -115,8 +116,8 @@ pub(crate) struct EditPresentation {
 }
 
 /// Present a Read tool result.
-pub(crate) fn present_read(args: &Value, result: &str) -> ToolPresentation {
-    let header = build_tool_header("Read", args);
+pub(crate) fn present_read(args: &Value, result: &str, width: u16) -> ToolPresentation {
+    let header = build_tool_header("Read", args, width);
     if result.starts_with("Error:") {
         let summary = format!("  \u{2514} Read failed: {}", result);
         ToolPresentation {
@@ -140,10 +141,10 @@ pub(crate) fn present_read(args: &Value, result: &str) -> ToolPresentation {
 }
 
 /// Present a Write tool result.
-pub(crate) fn present_write(args: &Value, result: &str) -> ToolPresentation {
+pub(crate) fn present_write(args: &Value, result: &str, width: u16) -> ToolPresentation {
     let file_path = json_str(args, "file_path").unwrap_or_default();
     let content = json_str(args, "content").unwrap_or_default();
-    let header = build_tool_header("Write", args);
+    let header = build_tool_header("Write", args, width);
 
     if result.starts_with("Error:") {
         let summary = format!("  \u{2514} Write failed: {}", result);
@@ -170,9 +171,9 @@ pub(crate) fn present_write(args: &Value, result: &str) -> ToolPresentation {
 }
 
 /// Present a Bash tool result.
-pub(crate) fn present_bash(args: &Value, result: &str) -> ToolPresentation {
+pub(crate) fn present_bash(args: &Value, result: &str, width: u16) -> ToolPresentation {
     let exit_code = parse_bash_exit_code(result);
-    let header = build_tool_header("Bash", args);
+    let header = build_tool_header("Bash", args, width);
     let summary = if exit_code == 0 {
         "  \u{2514} exit 0".to_string()
     } else {
@@ -195,9 +196,9 @@ pub(crate) fn present_bash(args: &Value, result: &str) -> ToolPresentation {
 }
 
 /// Present a Grep tool result.
-pub(crate) fn present_grep(args: &Value, result: &str) -> ToolPresentation {
+pub(crate) fn present_grep(args: &Value, result: &str, width: u16) -> ToolPresentation {
     let match_count = result.lines().filter(|l| !l.is_empty()).count();
-    let header = build_tool_header("Grep", args);
+    let header = build_tool_header("Grep", args, width);
     let noun = if match_count == 1 { "line" } else { "lines" };
     let summary = format!("  \u{2514} Found {} {}", match_count, noun);
     ToolPresentation {
@@ -210,9 +211,9 @@ pub(crate) fn present_grep(args: &Value, result: &str) -> ToolPresentation {
 }
 
 /// Present a Glob tool result.
-pub(crate) fn present_glob(args: &Value, result: &str) -> ToolPresentation {
+pub(crate) fn present_glob(args: &Value, result: &str, width: u16) -> ToolPresentation {
     let file_count = result.lines().filter(|l| !l.is_empty()).count();
-    let header = build_tool_header("Glob", args);
+    let header = build_tool_header("Glob", args, width);
     let noun = if file_count == 1 { "file" } else { "files" };
     let summary = format!("  \u{2514} Found {} {}", file_count, noun);
     ToolPresentation {
@@ -225,8 +226,8 @@ pub(crate) fn present_glob(args: &Value, result: &str) -> ToolPresentation {
 }
 
 /// Present an unknown/other tool result.
-pub(crate) fn present_other(tool_name: &str, args: &Value, result: &str) -> ToolPresentation {
-    let header = build_tool_header(tool_name, args);
+pub(crate) fn present_other(tool_name: &str, args: &Value, result: &str, width: u16) -> ToolPresentation {
+    let header = build_tool_header(tool_name, args, width);
     let summary = "  \u{2514} completed".to_string();
     ToolPresentation {
         header,
@@ -256,13 +257,16 @@ pub(crate) fn json_str(v: &Value, key: &str) -> Option<String> {
 }
 
 /// Truncate a string to at most `max` characters, appending "..." if truncated.
+/// Uses char count (not byte count) to handle multi-byte characters safely.
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        let mut truncated = s[..max].to_string();
-        truncated.push_str("...");
-        truncated
+        let truncated: String = s.chars().take(max).collect();
+        format!("{}...", truncated)
     }
 }
 

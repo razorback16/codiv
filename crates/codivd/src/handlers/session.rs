@@ -28,8 +28,13 @@ pub(crate) async fn handle_new_session(daemon: &mut Daemon, client_id: ClientId)
             session_id: sid,
             name: None,
         };
-        if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-            let _ = client_tx.send(frame).await;
+        match codiv_common::messages::frame_message(&msg) {
+            Ok(frame) => {
+                if client_tx.send(frame).await.is_err() {
+                    tracing::warn!("failed to send SessionCreated (NewSession): client disconnected");
+                }
+            }
+            Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
         }
     }
 }
@@ -79,14 +84,24 @@ pub(crate) async fn handle_load_session(
         session_id: target_sid.clone(),
         name: session_name,
     };
-    if let Ok(frame) = codiv_common::messages::frame_message(&created_msg) {
-        let _ = client_tx.send(frame).await;
+    match codiv_common::messages::frame_message(&created_msg) {
+        Ok(frame) => {
+            if client_tx.send(frame).await.is_err() {
+                tracing::warn!("failed to send SessionCreated (LoadSession): client disconnected");
+            }
+        }
+        Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
     }
 
     // Send full event replay
     let replay_msg = DaemonMessage::SessionReplay { events };
-    if let Ok(frame) = codiv_common::messages::frame_message(&replay_msg) {
-        let _ = client_tx.send(frame).await;
+    match codiv_common::messages::frame_message(&replay_msg) {
+        Ok(frame) => {
+            if client_tx.send(frame).await.is_err() {
+                tracing::warn!("failed to send SessionReplay: client disconnected");
+            }
+        }
+        Err(e) => tracing::error!("failed to frame SessionReplay: {}", e),
     }
 }
 
@@ -141,8 +156,13 @@ pub(crate) async fn handle_command_result(
                         session_id: sid,
                         name: Some(name),
                     };
-                    if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                        let _ = client_tx.send(frame).await;
+                    match codiv_common::messages::frame_message(&msg) {
+                        Ok(frame) => {
+                            if client_tx.send(frame).await.is_err() {
+                                tracing::warn!("failed to send SessionCreated (CommandResult): client disconnected");
+                            }
+                        }
+                        Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
                     }
                 }
             }

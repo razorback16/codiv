@@ -68,12 +68,14 @@ pub(crate) async fn handle_set_permission_mode(
                 // Create PermissionContext eagerly so the mode is
                 // applied even before the first AgentRequest.
                 if let Some(client_tx) = daemon.ipc.client_sender(client_id) {
-                    let cfg = daemon.config.read().unwrap();
+                    let cfg = daemon.config.read().expect("daemon config RwLock poisoned");
                     let ctx = Arc::new(PermissionContext::new(
                         mode,
                         client_tx,
                         cfg.models.clone(),
+                        Arc::clone(&daemon.config),
                     ));
+                    drop(cfg);
                     session.permissions.permission_ctx = Some(ctx);
                 }
             }

@@ -134,6 +134,7 @@ pub(crate) fn event_loop(
                             };
                             bash.resize(parser_rows, parser_cols);
                             state.stream.md_stream.set_width(parser_cols);
+                            state.tracker.set_width(parser_cols);
 
                             // Guard: skip rerender if modal or streaming is active
                             let has_modal = state.modal.pending_confirmation.is_some()

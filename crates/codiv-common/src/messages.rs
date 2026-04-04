@@ -239,7 +239,6 @@ pub enum StreamChunk {
         arguments: String,
         /// For edit tools: file content captured before the tool executes,
         /// so the client can compute an accurate diff regardless of timing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         pre_edit_content: Option<String>,
     },
     ToolResult { name: String, result: String },
@@ -254,6 +253,10 @@ pub enum RiskLevel {
 }
 
 /// Frame a message for IPC transport: 4-byte BE length prefix + bincode payload.
+///
+/// **Warning:** bincode is a non-self-describing format. Do NOT use
+/// `#[serde(skip_serializing_if)]` on any field that goes through this
+/// function — it will silently corrupt the message.
 pub fn frame_message<T: Serialize>(msg: &T) -> Result<Vec<u8>, bincode::Error> {
     let payload = bincode::serialize(msg)?;
     let len = payload.len() as u32;
@@ -266,4 +269,50 @@ pub fn frame_message<T: Serialize>(msg: &T) -> Result<Vec<u8>, bincode::Error> {
 /// Parse the 4-byte big-endian frame header into a payload length.
 pub fn parse_frame_header(header: &[u8; 4]) -> u32 {
     u32::from_be_bytes(*header)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_call_bincode_roundtrip_none() {
+        let msg = DaemonMessage::AgentStreamChunk {
+            request_id: "r1".into(),
+            chunk: StreamChunk::ToolCall {
+                name: "bash".into(),
+                arguments: r#"{"command":"echo hi"}"#.into(),
+                pre_edit_content: None,
+            },
+        };
+        let encoded = bincode::serialize(&msg).unwrap();
+        let decoded: DaemonMessage = bincode::deserialize(&encoded).unwrap();
+        if let DaemonMessage::AgentStreamChunk { chunk: StreamChunk::ToolCall { name, arguments, pre_edit_content }, .. } = decoded {
+            assert_eq!(name, "bash");
+            assert!(arguments.contains("echo hi"));
+            assert!(pre_edit_content.is_none());
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn tool_call_bincode_roundtrip_some() {
+        let msg = DaemonMessage::AgentStreamChunk {
+            request_id: "r2".into(),
+            chunk: StreamChunk::ToolCall {
+                name: "edit".into(),
+                arguments: r#"{"file_path":"foo.rs"}"#.into(),
+                pre_edit_content: Some("old content".into()),
+            },
+        };
+        let encoded = bincode::serialize(&msg).unwrap();
+        let decoded: DaemonMessage = bincode::deserialize(&encoded).unwrap();
+        if let DaemonMessage::AgentStreamChunk { chunk: StreamChunk::ToolCall { name, pre_edit_content, .. }, .. } = decoded {
+            assert_eq!(name, "edit");
+            assert_eq!(pre_edit_content.unwrap(), "old content");
+        } else {
+            panic!("wrong variant");
+        }
+    }
 }

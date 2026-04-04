@@ -834,6 +834,7 @@ where
                 let arguments = serde_json::to_string(&info.input).unwrap_or_default();
                 collected_events.push(ConversationEvent::ToolCall {
                     request_id: request_id.to_string(),
+                    tool_call_id: info.tool.id.clone(),
                     tool_name: info.tool.name.clone(),
                     arguments: arguments.clone(),
                 });
@@ -872,6 +873,7 @@ where
                 let output = truncate_tool_output(&output, MAX_TOOL_OUTPUT_BYTES);
                 collected_events.push(ConversationEvent::ToolResult {
                     request_id: request_id.to_string(),
+                    tool_call_id: info.tool.id.clone(),
                     tool_name: info.tool.name.clone(),
                     result: output.clone(),
                 });
