@@ -19,7 +19,7 @@ The client is a terminal application built with [ratatui](https://ratatui.rs/). 
 
 A persistent bash child process runs alongside the TUI. When you type a known command, it is sent directly to this co-process for instant execution — no daemon round-trip needed.
 
-The co-process also handles AI-relayed commands via the command relay protocol. When the orchestrator agent runs a bash command, the daemon sends an `ExecuteCommand` message to the client, which executes it through this same co-process and returns a `CommandExecutionResult` with the output, exit code, and updated working directory. This means the AI agent shares shell state (environment variables, working directory, etc.) with the user.
+The co-process also handles AI-relayed commands via the shell lease protocol. When the orchestrator agent needs to run a bash command, it first acquires a lease on the client's shell. The daemon sends an `AcquireShellLease` message, the client responds with `ShellLeaseAcquired`, and the daemon can then send `ExecuteLeasedCommand` messages through the leased shell. When the agent is done, it sends `ReleaseShellLease` to free the shell for other use. If multiple agents request the shell concurrently, leases are queued and granted in order. Leases have timeouts to prevent indefinite blocking. This means the AI agent shares shell state (environment variables, working directory, etc.) with the user while maintaining safe concurrent access.
 
 ### Command Index
 
@@ -52,7 +52,11 @@ Responses stream token-by-token from the LLM provider via the aisdk library. Sup
 
 ### Worker Bash Sessions
 
-The orchestrator agent does not use a separate worker session — its bash commands route through the client's co-process via the command relay (see above), so shell state is shared with the user. Independent agents (engineer, reviewer, etc. in multi-agent mode) get their own daemon-side `DaemonShell` instances — pipe-based `bash -i` processes with fresh state, inheriting only the initial working directory from the parent.
+The orchestrator agent does not use a separate worker session — its bash commands route through the client's co-process via the shell lease protocol (see above), so shell state is shared with the user. Independent agents (engineer, reviewer, etc. in multi-agent mode) get their own daemon-side `DaemonShell` instances — pipe-based `bash -i` processes with fresh state, inheriting only the initial working directory from the parent.
+
+### Background Token Refresh
+
+The daemon runs a background token refresh cycle that checks OAuth tokens every 30 seconds. When a token is nearing expiration, the daemon automatically refreshes it using the stored refresh token. This ensures that long-running agent sessions never fail mid-stream due to an expired OAuth credential. The refresh cycle covers all configured OAuth providers (Claude Code, Codex, etc.).
 
 ## IPC Communication
 
@@ -77,10 +81,13 @@ sequenceDiagram
     end
     C->>D: AgentRequest
     D-->>C: StreamChunk (repeated)
-    Note right of D: Agent runs bash command
-    D->>C: ExecuteCommand
+    Note right of D: Agent needs bash
+    D->>C: AcquireShellLease
+    C->>D: ShellLeaseAcquired
+    D->>C: ExecuteLeasedCommand
     Note left of C: Runs in co-process
-    C->>D: CommandExecutionResult
+    C->>D: CommandCompleted
+    D->>C: ReleaseShellLease
     D-->>C: StreamChunk (continued)
     D->>C: AgentComplete
 ```

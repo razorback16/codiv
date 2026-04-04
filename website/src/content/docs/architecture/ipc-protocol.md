@@ -33,8 +33,15 @@ This keeps parsing simple and avoids delimiter-based framing issues with binary 
 | `ConfirmationRequest` | Daemon to Client | Ask user to approve a risky command |
 | `ConfirmationResponse` | Client to Daemon | User's approval or denial |
 | `CommandResult` | Daemon to Client | Result of a tool execution |
-| `ExecuteCommand` | Daemon to Client | Route AI bash command through client's co-process |
-| `CommandExecutionResult` | Client to Daemon | Relay result with output, exit code, and updated cwd |
+| `AcquireShellLease` | Daemon to Client | Request exclusive access to client's bash co-process |
+| `ShellLeaseAcquired` | Client to Daemon | Confirm shell lease granted |
+| `ExecuteLeasedCommand` | Daemon to Client | Run a command through the leased co-process |
+| `CommandCompleted` | Client to Daemon | Relay result with output, exit code, and updated cwd |
+| `ReleaseShellLease` | Daemon to Client | Release the shell lease |
+| `CancelLeasedCommand` | Daemon to Client | Cancel a running leased command |
+| `CompactRequest` | Client to Daemon | Request conversation compaction |
+| `CompactionStarted` | Daemon to Client | Compaction in progress |
+| `CompactionComplete` | Daemon to Client | Compaction finished with summary |
 
 ## Agent Task Flow
 
@@ -71,9 +78,9 @@ sequenceDiagram
     D-->>C: AgentStreamChunk (continues)
 ```
 
-## Command Relay Flow
+## Shell Lease Flow
 
-When the orchestrator agent runs a bash command, it is relayed through the client's co-process so that shell state is shared with the user:
+When the orchestrator agent runs bash commands, it first acquires a lease on the client's co-process. Leases are queued if another agent holds the shell, and time out if not released promptly:
 
 ```mermaid
 sequenceDiagram
@@ -83,14 +90,21 @@ sequenceDiagram
     participant S as Bash Co-Process
 
     A->>D: bash tool call
-    D->>C: ExecuteCommand (command, cwd)
+    D->>C: AcquireShellLease
+    C->>D: ShellLeaseAcquired
+    D->>C: ExecuteLeasedCommand (command, cwd)
     C->>S: Write command to co-process
     S-->>C: Output + exit code
-    C->>D: CommandExecutionResult (output, exit_code, new_cwd)
+    C->>D: CommandCompleted (output, exit_code, new_cwd)
+    D->>C: ReleaseShellLease
     D->>A: Tool result
 ```
 
-Independent agents (engineer, reviewer) bypass this relay and execute commands in their own daemon-side `DaemonShell` processes.
+Independent agents (engineer, reviewer) bypass this lease flow and execute commands in their own daemon-side `DaemonShell` processes.
+
+## Serialization Warning
+
+Do not use `#[serde(skip_serializing_if)]` on fields in IPC message types. Bincode relies on positional encoding, not field names, and skipping fields corrupts the binary layout. This causes deserialization failures on the receiving end. Always serialize every field, even if its value is `None` or a default.
 
 ## Versioning
 

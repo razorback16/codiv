@@ -15,6 +15,23 @@ Codiv reads its configuration from:
 
 If this file does not exist, Codiv uses sensible defaults but you will need to provide at least one API key for AI features to work.
 
+## Authentication
+
+The recommended way to configure provider credentials is the interactive login wizard:
+
+```bash
+# Interactive provider selection
+codiv login
+
+# Login to a specific provider
+codiv login anthropic
+codiv login openai
+```
+
+The wizard supports both API key entry and OAuth code flows (for Claude Code and Codex). Credentials are stored in `~/.codiv/config.toml`.
+
+For OAuth providers, tokens are stored under `[auth.tokens.{provider_id}]` in the config file and are automatically refreshed by the daemon in the background, so you never need to re-authenticate unless a refresh token is revoked.
+
 ## API Key Setup
 
 Add your API key for one or more providers:
@@ -39,6 +56,14 @@ export GOOGLE_API_KEY="AIza..."
 ```
 
 Environment variables take precedence over the config file.
+
+If you already have API keys set as environment variables and want to migrate them into `config.toml`, run:
+
+```bash
+codiv migrate-env
+```
+
+This detects `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY` in your environment and writes them to the config file.
 
 ## Model Selection
 

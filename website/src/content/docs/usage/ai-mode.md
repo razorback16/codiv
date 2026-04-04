@@ -49,7 +49,16 @@ This context flows into the LLM prompt, so the agent is aware of what you have b
 
 When the AI agent runs bash commands, it operates in the same shell environment as you. Environment changes like `cd`, `export`, `source`, etc. made by the AI are immediately reflected in your terminal, and changes you make are visible to the AI on its next command.
 
-This works because the agent's bash commands are relayed through your terminal's co-process rather than running in a separate shell. The result is seamless integration — if the AI runs `cd src/` and then you type `ls`, you see the contents of `src/`.
+This works because the agent's bash commands are routed through your terminal's co-process using a lease-based protocol rather than running in a separate shell. The agent acquires a shell lease, executes commands, and releases the lease when done. The result is seamless integration — if the AI runs `cd src/` and then you type `ls`, you see the contents of `src/`.
+
+## Conversation Compaction
+
+As a session grows, the conversation history can exceed the LLM's context window. Codiv handles this with conversation compaction:
+
+- **Auto-compaction** — when the input token count exceeds a threshold, the daemon automatically compacts the conversation by summarizing older turns into a `Summary` event and discarding the originals. This happens between agent turns so it never interrupts a response.
+- **Manual compaction** — type `/compact` in AI mode to trigger compaction on demand. This is useful if you want to free up context space before starting a new line of work in the same session.
+
+After compaction, the agent retains a concise summary of everything that happened earlier, plus the most recent turns in full detail.
 
 ## Safety Confirmations
 

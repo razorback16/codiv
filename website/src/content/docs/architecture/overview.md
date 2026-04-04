@@ -23,6 +23,7 @@ graph TD
         C1[Terminal UI\nratatui + crossterm]
         C2[Bash Co-Process\nportable-pty]
         C3[Markdown Render\nstreamdown-rs]
+        C4[Auth\nlogin wizard · OAuth]
     end
 
     subgraph Daemon["codivd (async daemon)"]
@@ -30,6 +31,7 @@ graph TD
         D1[Agent System\naisdk]
         D2[Session Store\nSQLite]
         D3[Permission\nSystem]
+        D4[Token Refresh\nOAuth background cycle]
     end
 
     Client <-->|"IPC · bincode\nUnix socket"| Daemon
@@ -37,7 +39,7 @@ graph TD
 
     subgraph Shared["shared crates"]
         direction LR
-        S1[codiv-common\nIPC messages · config · types]
+        S1[codiv-common\nIPC messages · config · types · auth]
         S2[codiv-tools\nbash · read · write · edit · glob · grep]
     end
 
@@ -54,7 +56,7 @@ The workspace contains four crates:
 | `codiv` | TUI client — terminal rendering, bash co-process, dual-mode input, tab completion |
 | `codivd` | Async daemon — AI agent, session management, LLM streaming, tool execution |
 | `codiv-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
-| `codiv-common` | Shared types — IPC messages, config, utilities |
+| `codiv-common` | Shared types — IPC messages, config, auth types, utilities |
 
 ## Key Design Decisions
 

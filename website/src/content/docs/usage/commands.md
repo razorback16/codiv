@@ -37,3 +37,30 @@ Bash tab completion works in Command mode. Press **Tab** while typing to complet
 ## Switching Back
 
 To return to AI mode, press **Tab** on an empty input line. The gutter switches back to `>` (cyan) and input routes to the AI agent again.
+
+## Authentication Commands
+
+### codiv login
+
+Interactive wizard for configuring AI provider credentials:
+
+```bash
+# Launch the provider selection menu
+codiv login
+
+# Login to a specific provider directly
+codiv login anthropic
+codiv login openai
+```
+
+The wizard walks you through either entering an API key or completing an OAuth flow (for providers like Claude Code and Codex that support it). Credentials are written to `~/.codiv/config.toml`.
+
+### codiv migrate-env
+
+Migrate API keys from environment variables into the config file:
+
+```bash
+codiv migrate-env
+```
+
+This detects `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY` in your shell environment and writes them to `~/.codiv/config.toml` so you no longer need the environment variables set.

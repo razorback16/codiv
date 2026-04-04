@@ -28,6 +28,7 @@ codiv (TUI)                 codivd (daemon)
 │ ratatui     │◄─IPC────►  │ tokio + aisdk    │
 │ bash PTY    │ bincode    │ agent loop       │
 │ completion  │ Unix sock  │ tool execution   │
+│ login/auth  │            │ token refresh    │
 └─────────────┘            └──────────────────┘
                                     │
                            ┌────────┴────────┐
@@ -42,10 +43,10 @@ codiv (TUI)                 codivd (daemon)
 
 ```
 crates/
-├── codiv/           # TUI client (ratatui, crossterm, portable-pty)
+├── codiv/           # TUI client (ratatui, crossterm, portable-pty, dialoguer)
 ├── codivd/          # Daemon (tokio, aisdk, rusqlite)
 ├── codiv-tools/     # Tools (bash, read, write, edit, glob, grep)
-└── codiv-common/    # Shared types, IPC, config
+└── codiv-common/    # Shared types, IPC, config, auth
 ```
 
 ---
@@ -56,12 +57,38 @@ crates/
 - Unix domain socket at `/tmp/codivd-{uid}.sock`
 - Serde + bincode serialization
 - Length-prefixed framing
+- **Warning:** Do not use `#[serde(skip_serializing_if)]` on fields going through `frame_message()` — bincode is non-self-describing and it will silently corrupt messages
+
+### Shell Lease Protocol
+Agent bash execution uses a lease-based state machine (replaced the v0.1.6 request-response relay):
+1. Daemon sends `AcquireShellLease` → client grants or queues
+2. `ExecuteLeasedCommand` runs in PTY with per-command timeout
+3. `ReleaseShellLease` frees the PTY for the next lease
+- Supports cancellation (`UserAbort`, `ExecutionTimeout`, `SessionStale`)
+- Managed by `RelayManager` (`crates/codivd/src/agent/relay_manager.rs`)
 
 ### Bash Co-Process
 - Persistent bash session via PTY
-- Shared by orchestrator agent
+- Shared by orchestrator agent via shell lease protocol
 - Zero-latency command execution
 - Full interactive program support (vim, ssh, etc.)
+- History expansion disabled (`HISTFILE=/dev/null`)
+
+### Authentication
+- `codiv login [provider]` — interactive wizard for API key entry or OAuth code flows
+- `codiv migrate-env` — migrates environment variable API keys to config.toml
+- 4 built-in providers: Anthropic, OpenAI, Claude Code (OAuth), Codex (OAuth)
+- Provider registry in `codiv-common/src/auth/provider_registry.rs`
+- OAuth supports PKCE, localhost callback (Codex) and manual paste (Anthropic) flows
+- Credentials stored in `~/.codiv/config.toml` under `[providers.{id}]` and `[auth.tokens.{id}]`
+- Background token refresh task in daemon (checks every 30s, refreshes 1 min before expiry)
+- API keys use safe display truncation (never logged in full)
+
+### Conversation Compaction
+- When `input_tokens` exceeds threshold, `needs_compaction` is set on `ClientSession`
+- Next idle cycle triggers a summarization LLM call
+- Old history is replaced with a `ConversationEvent::Summary` event
+- Manual compaction available via `/compact` command
 
 ### Environment Snapshots
 - Daemon syncs shell state (PWD, env vars) from client
@@ -77,6 +104,7 @@ All tools (built-in and external) are CLI executables with:
 - Location: `~/.codiv/config.toml`
 - Hot-reloads without daemon restart
 - Per-role model assignment, API keys, permissions
+- Auth tokens stored at `[auth.tokens.{provider_id}]`
 
 ---
 
@@ -99,7 +127,7 @@ codiv --debug=trace  # Verbose logging
 Config is at `~/.codiv/config.toml` (not in `~/.config/`)
 
 ### 2. Environment Variable Precedence
-Environment variables override config file:
+Environment variables override config file. Use `codiv migrate-env` to move them into config.toml:
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
 - `GOOGLE_API_KEY`
@@ -125,6 +153,12 @@ Tests interacting with daemon need unique sessions or cleanup to prevent state b
 ### 7. IPC Compatibility
 Changing message types in `codiv-common` breaks client-daemon communication.
 
+### 8. Bincode Serialization
+Do not use `#[serde(skip_serializing_if)]` on any field serialized through `frame_message()`. Bincode is non-self-describing — skipped fields silently corrupt the message.
+
+### 9. OAuth Token Storage
+OAuth tokens are stored in `[auth.tokens.{provider_id}]` in config.toml. The access token is also written to `[providers.{provider_id}] api_key` for daemon compatibility. Refreshing happens automatically in the daemon background task.
+
 ---
 
 ## External Dependencies
@@ -140,6 +174,12 @@ Changing message types in `codiv-common` breaks client-daemon communication.
 - `rusqlite` — session storage
 - `schemars` — JSON Schema for tools
 
+**Auth:**
+- `dialoguer` — interactive CLI prompts (login wizard)
+- `oauth2` — PKCE code challenge/verifier
+- `reqwest` — HTTP client for OAuth token exchange
+- `chrono` — token expiry tracking
+
 ---
 
 ## Quick Reference
@@ -148,6 +188,8 @@ Changing message types in `codiv-common` breaks client-daemon communication.
 |---------|---------|
 | `codiv` | Launch TUI |
 | `codiv <tool>` | Run tool directly |
+| `codiv login [provider]` | Auth wizard (API key or OAuth) |
+| `codiv migrate-env` | Migrate env vars to config.toml |
 | `codiv --debug` | Debug logging |
 | `codivd` | Start daemon |
 | `pkill codivd` | Stop daemon |
@@ -239,10 +281,17 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - `glob` 0.3 — File glob matching (`crates/codiv-tools/`)
 - `grep-regex` 0.1 + `grep-searcher` 0.1 — Ripgrep-based file search (`crates/codiv-tools/`)
 - `ignore` 0.4 — `.gitignore`-aware directory traversal (`crates/codiv-tools/`)
+- `dialoguer` 0.12 — Interactive CLI prompts with Select/Password widgets (`crates/codiv/`)
+- `oauth2` 5.0 — PKCE code challenge/verifier generation (`crates/codiv-common/`)
+- `open` 5.3 — Open URLs in default browser for OAuth flows (`crates/codiv/`, `crates/codiv-common/`)
+- `chrono` 0.4 — DateTime for OAuth token expiry tracking (`crates/codiv-common/`)
+- `anyhow` 1 — Error handling in auth flows and CLI commands (`crates/codiv/`, `crates/codiv-common/`)
+- `serde_urlencoded` 0.7 — URL form encoding for OAuth token exchange (`crates/codiv-common/`)
 ## Configuration
 - Config file: `~/.codiv/config.toml` (auto-created from embedded default on first run)
 - Environment variable overrides: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
 - Per-provider and per-role API keys configurable in TOML
+- OAuth tokens stored at `[auth.tokens.{provider_id}]` with access/refresh/expiry
 - Config hot-reloads at runtime via `notify` filesystem watcher (no daemon restart needed)
 - `Makefile` with targets: `build`, `test`, `release`, `debug`, `clean`
 - `make build` → `cargo build --workspace`
@@ -295,7 +344,8 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - `std::io::Result<T>` — process/socket/PTY operations
 - `?` operator throughout async code
 - `map_err(|e| format!("context: {e}"))` for converting typed errors to `String` errors at tool boundaries
-- No `anyhow` or `thiserror` — either raw `Box<dyn Error>` or explicit `Result<T, SomeError>`
+- `anyhow` used in auth flows (`codiv-common/src/auth/`) and CLI login/migrate commands
+- No `thiserror` — either raw `Box<dyn Error>`, `anyhow::Result`, or explicit `Result<T, SomeError>`
 - `ApiErrorKind` enum in `crates/codivd/src/agent/error.rs` provides structured classification of API errors (Server, RateLimited, ContextOverflow, AuthError, Other) with `is_retryable()` helper
 - `tracing::error!(...)` / `tracing::warn!(...)` for soft failures in the daemon
 - `log::debug!()` / `log::info!()` in the TUI client (uses `log` crate, not `tracing`)
@@ -338,13 +388,13 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - Used by: end users directly
 - Purpose: AI agent loop, session persistence, permission gating
 - Location: `crates/codivd/src/`
-- Contains: `daemon.rs` (event loop), `agent/` (LLM agent, tools, permissions), `ipc/` (Unix socket server), `session.rs` (per-client state), `store.rs` (SQLite persistence)
+- Contains: `daemon.rs` (event loop), `agent/` (LLM agent, tools, permissions, relay_manager), `handlers/` (agent, compaction, permission, session, shell), `ipc/` (Unix socket server), `session.rs` (per-client state), `store.rs` (SQLite persistence)
 - Depends on: `codiv-common`, `codiv-tools`, `aisdk` (LLM abstraction)
 - Used by: `codiv` TUI via IPC
 - Purpose: Shared types, IPC message definitions, config paths
 - Location: `crates/codiv-common/src/`
-- Contains: `messages.rs` (IPC enums `ClientMessage`/`DaemonMessage`/`StreamChunk`), `conversation.rs` (`ConversationEvent` enum), `types.rs` (`AgentRole`), `permissions.rs` (`PermissionMode`/`PermissionDecision`), `config.rs` (path helpers)
-- Depends on: serde, bincode
+- Contains: `messages.rs` (IPC enums `ClientMessage`/`DaemonMessage`/`StreamChunk`), `conversation.rs` (`ConversationEvent` enum), `types.rs` (`AgentRole`), `permissions.rs` (`PermissionMode`/`PermissionDecision`), `config.rs` (path helpers), `auth/` (types, flows, storage, provider_registry)
+- Depends on: serde, bincode, oauth2, reqwest, chrono, toml_edit
 - Used by: both `codiv` and `codivd`
 - Purpose: Shared implementations of all agent tools (bash, read, write, edit, glob, grep)
 - Location: `crates/codiv-tools/src/`
@@ -352,8 +402,8 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - Depends on: schemars (JSON schema for tool inputs)
 - Used by: `codivd` (agent tool execution), `codiv` (direct CLI subcommand dispatch)
 ## Data Flow
-- The `ShellBackend::ClientRelay` variant in `crates/codivd/src/agent/shell_backend.rs` implements a request-response relay: daemon sends `ExecuteCommand` to the client; client executes in PTY; client sends `CommandExecutionResult` back; daemon unblocks the waiting agent task
-- `TerminalState` (`crates/codiv/src/ui/terminal/state.rs`) is the single mutable state object for the TUI, holding pending commands, streaming buffers, block registry, token usage, and UI flags
+- `RelayManager` in `crates/codivd/src/agent/relay_manager.rs` implements a lease-based shell protocol: daemon acquires a shell lease → sends command with timeout → awaits started ACK → awaits completion → releases lease. Supports queuing, timeout, and cancellation
+- `TerminalState` (`crates/codiv/src/ui/terminal/state.rs`) is the single mutable state object for the TUI, holding pending commands, streaming buffers, block registry, token usage, UI flags, and `ShellRelayState` (shell lease management with active/pending leases)
 - `ClientSession` (`crates/codivd/src/session.rs`) is the daemon-side per-client state, holding the `Agent`, permission context, and SQLite session ID
 - `Agent` struct (`crates/codivd/src/agent/agent.rs`) holds conversation history as `Vec<ConversationEvent>` plus model config and shell backend reference
 ## Key Abstractions
@@ -370,30 +420,30 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - Location: `crates/codivd/src/agent/permissions.rs`
 - Pattern: Shared `Arc<PermissionContext>` with `RwLock<PermissionMode>` (Auto/Manual/Bypass) and risk classification pipeline (`risk_classifier.rs` → `permission_evaluator.rs` → optional `llm_evaluator.rs`)
 - Purpose: TUI rendering abstraction for conversation turns (tool calls, prompts, responses)
-- Location: `crates/codiv/src/ui/blocks.rs`
-- Pattern: Registry of `ToolBlock`, `PromptBlock`, `CmdResponseBlock` each tracking scrollback index, height, and rendered ANSI lines
+- Location: `crates/codiv/src/ui/blocks.rs` (registry/lifecycle) + `crates/codiv/src/ui/tool_presenters.rs` (visual presentation)
+- Pattern: BlockRegistry manages lifecycle; tool_presenters contains extracted per-tool rendering functions (`present_edit()`, `present_read()`, `present_bash()`, etc.)
 - Purpose: Persistent bash session via PTY providing zero-latency shell execution
 - Location: `crates/codiv/src/shell/bash_coprocess.rs`
 - Pattern: `portable-pty`-based PTY, shared by both direct user commands and AI-relayed commands
 - Purpose: SQLite-backed persistence of sessions and conversation events
 - Location: `crates/codivd/src/store.rs`
 - Pattern: Synchronous `rusqlite` `Connection` on the daemon main task; `sessions` and `events` tables with WAL journal mode
-- Purpose: Abstract bash execution for the agent (currently `ClientRelay` only)
-- Location: `crates/codivd/src/agent/shell_backend.rs`
-- Pattern: Enum allowing future backends; `ClientRelay` routes via IPC to the TUI's PTY
+- Purpose: Lease-based shell execution management for the agent
+- Location: `crates/codivd/src/agent/relay_manager.rs`
+- Pattern: State machine with `LeasePhase`/`CommandPhase` tracking; manages lease acquisition, command execution with timeouts, cancellation, and release via IPC to the TUI's PTY
 ## Entry Points
 - Location: `crates/codiv/src/main.rs`
 - Triggers: User runs `codiv` (no subcommand)
 - Responsibilities: Parse CLI args, init logging, set SIGTERM handler, call `app::run()`
 - Location: `crates/codiv/src/main.rs` → `crates/codiv/src/cli/mod.rs`
-- Triggers: User runs `codiv read <file>`, `codiv bash <cmd>`, etc.
-- Responsibilities: Dispatch to `codiv-tools` implementations directly, bypassing permission checks
+- Triggers: User runs `codiv read <file>`, `codiv bash <cmd>`, `codiv login`, `codiv migrate-env`, etc.
+- Responsibilities: Dispatch to `codiv-tools` implementations directly (bypasses permission checks), or run auth subcommands (`login.rs`, `migrate.rs`)
 - Location: `crates/codivd/src/main.rs` → `async_main()`
 - Triggers: Service manager (launchd/systemd) or direct invocation
 - Responsibilities: Fork/daemonize, write PID file, build tokio runtime, create and run `Daemon`
 - Location: `crates/codivd/src/daemon.rs`
 - Triggers: Called from `async_main()`
-- Responsibilities: `tokio::select!` on new IPC connections, client messages, agent completion, name updates, config changes, cleanup interval, SIGTERM
+- Responsibilities: `tokio::select!` on new IPC connections, client messages, agent completion, name updates, config changes, cleanup interval, SIGTERM. Dispatches to focused handler modules in `handlers/` (agent, compaction, permission, session, shell). Spawns background OAuth token refresh task
 - Location: `crates/codiv/src/ui/terminal/event_loop.rs`
 - Triggers: Called from `ui::terminal::run()`
 - Responsibilities: Poll crossterm events (keyboard, mouse, resize), daemon messages, tick channel; dispatch to input/render handlers; manage daemon reconnection

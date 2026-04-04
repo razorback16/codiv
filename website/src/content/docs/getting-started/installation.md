@@ -31,7 +31,7 @@ This will:
 To install a specific version:
 
 ```bash
-curl -fsSL https://codiv.ai/install.sh | bash -s -- v0.1.0
+curl -fsSL https://codiv.ai/install.sh | bash -s -- v0.1.7
 ```
 
 ### Uninstall

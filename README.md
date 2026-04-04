@@ -7,6 +7,7 @@ A terminal-native AI coding assistant built in Rust. Codiv replaces your shell w
 - **Dual-mode interface** — AI mode for natural language queries, Command mode for direct shell execution, toggled with Tab
 - **AI-first** — starts in AI mode by default; the agent reasons, calls tools, and streams responses
 - **Multi-model** — supports Anthropic, OpenAI, and Google providers via aisdk, with plans for per-role model assignment
+- **Easy authentication** — `codiv login` wizard for API keys and OAuth with automatic token refresh
 - **Native tools as subcommands** — built-in tools (read, write, edit, glob, grep, bash) are accessible both to the agent in-process and to users from the CLI
 
 ## Architecture
@@ -18,7 +19,8 @@ codiv (TUI client)          codivd (daemon)
 │ command index  │ bincode  │ agent + tool loop    │
 │ tab completion │  over    │ session management   │
 │ markdown render│  unix    │ worker bash sessions │
-└────────────────┘ socket   └──────────────────────┘
+│                │ socket   │ token refresh        │
+└────────────────┘          └──────────────────────┘
                                       │
                             ┌─────────┴─────────┐
                             │   codiv-tools      │
@@ -31,7 +33,7 @@ codiv (TUI client)          codivd (daemon)
 | `codiv` | TUI client — terminal rendering, bash co-process, dual-mode input, tab completion |
 | `codivd` | Async daemon — AI agent, session management, LLM streaming, tool execution |
 | `codiv-tools` | Shared library — tool implementations (bash, read, write, edit, glob, grep) and agent guides |
-| `codiv-common` | Shared types — IPC messages, config, utilities |
+| `codiv-common` | Shared types — IPC messages, auth types, config, utilities |
 
 ## Install
 
@@ -46,7 +48,7 @@ This downloads the latest release, installs `codiv` and `codivd` to `~/.local/bi
 To install a specific version:
 
 ```bash
-curl -fsSL https://codiv.ai/install.sh | bash -s -- v0.1.0
+curl -fsSL https://codiv.ai/install.sh | bash -s -- v0.1.7
 ```
 
 ### Homebrew (macOS / Linux)
@@ -93,6 +95,13 @@ codiv read --path ./src/main.rs
 codiv grep --pattern "fn main" --path ./src
 codiv bash --command "cargo test"
 codiv glob --pattern "**/*.rs"
+
+# Authenticate with AI providers
+codiv login
+codiv login anthropic
+
+# Migrate API keys from environment variables to config
+codiv migrate-env
 
 # JSON mode for programmatic use
 echo '{"file_path":"./Cargo.toml"}' | codiv read --json-in --json-out
@@ -160,6 +169,7 @@ AI mode input goes to an agent that reasons and uses tools.
 8. [x] Risk classification + confirmation prompts for destructive commands
 9. [x] Env snapshot refresh on `cd` and `source`
 10. [x] TOML config for API keys and model selection (with hot-reload)
+11. [x] OAuth authentication with interactive login wizard and automatic token refresh
 
 ### Phase 3: Work Item DAG + Scheduler
 
