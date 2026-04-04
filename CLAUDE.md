@@ -162,7 +162,7 @@ Changing message types in `codiv-common` breaks client-daemon communication.
 
 ---
 
-**Version:** 0.1.6 | **License:** GPL-3.0 | **Updated:** 2026-03-20
+**Version:** 0.1.7 | **License:** GPL-3.0 | **Updated:** 2026-04-04
 
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
