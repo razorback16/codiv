@@ -177,6 +177,10 @@ impl Daemon {
             ClientMessage::AgentRequest {
                 prompt,
                 request_id,
+                // SessionContext is kept in the protocol for backwards compatibility
+                // but is not used — cwd/env are synced via EnvSnapshot messages and
+                // CommandResult/CommandCompleted updates. ClientSession.cwd is the
+                // single source of truth on the daemon side.
                 context: _,
                 thinking,
             } => {

@@ -323,7 +323,11 @@ impl TerminalState {
             completion_popup: CompletionPopup::new(),
 
             // Block registry and tool result modal
-            tracker: BlockRegistry::new(),
+            tracker: {
+                let mut t = BlockRegistry::new();
+                t.set_width(md_stream_width);
+                t
+            },
             tool_result_modal: ToolResultModal::new(),
             was_alt_screen: false,
 

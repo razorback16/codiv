@@ -54,13 +54,18 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
             };
             daemon.persist_event(client_id, &event);
 
-            // Send AgentComplete to finalize the AI response block
+            // Send AgentComplete to finalize the AI response block (critical)
             let complete_msg = DaemonMessage::AgentComplete {
                 request_id: request_id.clone(),
                 summary: summary.clone(),
             };
-            if let Ok(frame) = codiv_common::messages::frame_message(&complete_msg) {
-                let _ = client_tx.send(frame).await;
+            match codiv_common::messages::frame_message(&complete_msg) {
+                Ok(frame) => {
+                    if client_tx.send(frame).await.is_err() {
+                        tracing::warn!("failed to send AgentComplete (compaction): client disconnected");
+                    }
+                }
+                Err(e) => tracing::error!("failed to frame AgentComplete: {}", e),
             }
 
             // Create NEW session — old session is archived
@@ -94,8 +99,13 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
                     session_id: sid.clone(),
                     name: Some(name),
                 };
-                if let Ok(frame) = codiv_common::messages::frame_message(&session_msg) {
-                    let _ = client_tx.send(frame).await;
+                match codiv_common::messages::frame_message(&session_msg) {
+                    Ok(frame) => {
+                        if client_tx.send(frame).await.is_err() {
+                            tracing::warn!("failed to send SessionCreated (compaction): client disconnected");
+                        }
+                    }
+                    Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
                 }
             }
 
@@ -132,13 +142,18 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
         }
         Ok(Err(e)) => {
             tracing::error!("compaction failed: {}", e);
-            // Send AgentComplete to clean up streaming state
+            // Send AgentComplete to clean up streaming state (critical)
             let complete_msg = DaemonMessage::AgentComplete {
                 request_id: request_id.clone(),
                 summary: String::new(),
             };
-            if let Ok(frame) = codiv_common::messages::frame_message(&complete_msg) {
-                let _ = client_tx.send(frame).await;
+            match codiv_common::messages::frame_message(&complete_msg) {
+                Ok(frame) => {
+                    if client_tx.send(frame).await.is_err() {
+                        tracing::warn!("failed to send AgentComplete (compaction error): client disconnected");
+                    }
+                }
+                Err(e2) => tracing::error!("failed to frame AgentComplete: {}", e2),
             }
             let msg = DaemonMessage::Notice {
                 message: format!("Compaction failed: {}", e),
@@ -149,13 +164,18 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
         }
         Err(_) => {
             tracing::error!("compaction timed out after 60s");
-            // Send AgentComplete to clean up streaming state
+            // Send AgentComplete to clean up streaming state (critical)
             let complete_msg = DaemonMessage::AgentComplete {
                 request_id,
                 summary: String::new(),
             };
-            if let Ok(frame) = codiv_common::messages::frame_message(&complete_msg) {
-                let _ = client_tx.send(frame).await;
+            match codiv_common::messages::frame_message(&complete_msg) {
+                Ok(frame) => {
+                    if client_tx.send(frame).await.is_err() {
+                        tracing::warn!("failed to send AgentComplete (compaction timeout): client disconnected");
+                    }
+                }
+                Err(e) => tracing::error!("failed to frame AgentComplete: {}", e),
             }
             let msg = DaemonMessage::Notice {
                 message: "Compaction timed out".to_string(),

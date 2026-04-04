@@ -128,6 +128,8 @@ pub struct BlockRegistry {
     pending_tool_start_index: Option<u64>,
     pending_edit_old_contents: HashMap<String, String>,
     replay_mode: bool,
+    /// Available content width for header truncation (updated on resize).
+    width: u16,
 }
 
 impl BlockRegistry {
@@ -141,7 +143,18 @@ impl BlockRegistry {
             pending_tool_start_index: None,
             pending_edit_old_contents: HashMap::new(),
             replay_mode: false,
+            width: 120,
         }
+    }
+
+    /// Set the available content width (called on init and resize).
+    pub fn set_width(&mut self, width: u16) {
+        self.width = width;
+    }
+
+    /// Get the current content width.
+    pub fn width(&self) -> u16 {
+        self.width
     }
 
     pub fn set_replay_mode(&mut self, replay: bool) {
@@ -213,7 +226,10 @@ impl BlockRegistry {
             .pending_tool_calls
             .pop_front()
             .map(|p| p.arguments)
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                log::debug!("record_tool_result: pending_tool_calls empty for tool '{}'", name);
+                String::new()
+            });
         let args: Value = serde_json::from_str(&args_json).unwrap_or(Value::Null);
 
         let canonical = canonical_tool_name(name);
@@ -565,7 +581,7 @@ impl BlockRegistry {
             None
         };
 
-        let ep = tool_presenters::present_edit(args, result, self.replay_mode, stashed, merge_baseline);
+        let ep = tool_presenters::present_edit(args, result, self.replay_mode, stashed, merge_baseline, self.width);
 
         if ep.merging {
             // Remove trailing Thinking blocks so the Edit block is last again.
@@ -603,32 +619,32 @@ impl BlockRegistry {
     }
 
     fn record_read(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let p = tool_presenters::present_read(args, result);
+        let p = tool_presenters::present_read(args, result, self.width);
         self.push_tool_block("Read", p.header, p.summary, p.full_content, p.is_diff, start_index, p.preview_lines)
     }
 
     fn record_write(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let p = tool_presenters::present_write(args, result);
+        let p = tool_presenters::present_write(args, result, self.width);
         self.push_tool_block("Write", p.header, p.summary, p.full_content, p.is_diff, start_index, p.preview_lines)
     }
 
     fn record_bash(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let p = tool_presenters::present_bash(args, result);
+        let p = tool_presenters::present_bash(args, result, self.width);
         self.push_tool_block("Bash", p.header, p.summary, p.full_content, p.is_diff, start_index, p.preview_lines)
     }
 
     fn record_grep(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let p = tool_presenters::present_grep(args, result);
+        let p = tool_presenters::present_grep(args, result, self.width);
         self.push_tool_block("Grep", p.header, p.summary, p.full_content, p.is_diff, start_index, p.preview_lines)
     }
 
     fn record_glob(&mut self, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let p = tool_presenters::present_glob(args, result);
+        let p = tool_presenters::present_glob(args, result, self.width);
         self.push_tool_block("Glob", p.header, p.summary, p.full_content, p.is_diff, start_index, p.preview_lines)
     }
 
     fn record_other(&mut self, tool_name: &str, args: &Value, result: &str, start_index: u64) -> ToolResultAction {
-        let p = tool_presenters::present_other(tool_name, args, result);
+        let p = tool_presenters::present_other(tool_name, args, result, self.width);
         self.push_tool_block(tool_name, p.header, p.summary, p.full_content, p.is_diff, start_index, p.preview_lines)
     }
 }
@@ -652,21 +668,28 @@ pub(crate) fn canonical_tool_name(name: &str) -> &str {
 
 /// Build the single-line header for a tool block (e.g. `Edit(foo.rs)`).
 /// Returns a summary suitable for the green/red result header.
-pub fn build_tool_header(name: &str, args: &Value) -> String {
+/// `width` is the available content width in columns.
+pub fn build_tool_header(name: &str, args: &Value, width: u16) -> String {
     // Single-line header is just the first line of the multi-line version.
-    build_tool_header_lines(name, args, 0).into_iter().next().unwrap_or_default()
+    build_tool_header_lines(name, args, 0, width).into_iter().next().unwrap_or_default()
 }
 
 /// Format a pattern+path pair for Grep/Glob tool headers.
-fn format_search_args(tool: &str, args: &Value) -> String {
+/// `width` is the available content width in columns.
+fn format_search_args(tool: &str, args: &Value, width: u16) -> String {
     let pattern = json_str(args, "pattern").unwrap_or_default();
     let path = json_str(args, "path").unwrap_or_default();
+    // Overhead: "Tool(pattern: "")" = tool.len() + 14
+    let overhead = tool.len() + 14;
+    let available = (width as usize).saturating_sub(overhead);
     let args_preview = if path.is_empty() {
-        format!("pattern: \"{}\"", truncate_str(&pattern, 40))
+        format!("pattern: \"{}\"", truncate_str(&pattern, available))
     } else {
+        // Extra overhead for ", path: \"\"" = 10
+        let pattern_budget = available.saturating_sub(10) * 2 / 3;
         format!(
             "pattern: \"{}\", path: \"{}\"",
-            truncate_str(&pattern, 30),
+            truncate_str(&pattern, pattern_budget.max(10)),
             short_filename(&path)
         )
     };
@@ -676,14 +699,18 @@ fn format_search_args(tool: &str, args: &Value) -> String {
 /// Build a multi-line header for a tool block, showing up to `max_lines` of content.
 /// Returns a Vec of lines (first line is the header, subsequent lines are indented content).
 /// Used for the yellow "in-progress" header where we want to show full command details.
-pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize) -> Vec<String> {
+/// `width` is the available content width in columns.
+pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize, width: u16) -> Vec<String> {
     let canonical = canonical_tool_name(name);
+    // Available space inside parens: width - "Tool(" - ")" - 1 (margin)
+    let paren_overhead = canonical.len() + 2; // "Tool(" + ")"
+    let available = (width as usize).saturating_sub(paren_overhead + 1);
     match canonical {
         "Bash" => {
             let command = json_str(args, "command").unwrap_or_default();
             let cmd_lines: Vec<&str> = command.lines().collect();
             if cmd_lines.len() <= 1 {
-                vec![format!("Bash({})", truncate_str(&command, 60))]
+                vec![format!("Bash({})", truncate_str(&command, available))]
             } else {
                 let mut result = vec!["Bash".to_string()];
                 let show = cmd_lines.len().min(max_lines);
@@ -709,14 +736,15 @@ pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize) -> Ve
                 let mut result = vec![format!("Edit({})", short_filename(&file_path))];
                 let show_old = old_lines.len().min(max_lines / 2);
                 let show_new = new_lines.len().min(max_lines - show_old);
+                let content_width = (width as usize).saturating_sub(6); // "  - " prefix + margin
                 for line in &old_lines[..show_old] {
-                    result.push(format!("  \x1b[31m- {}\x1b[33m", truncate_str(line, 100)));
+                    result.push(format!("  \x1b[31m- {}\x1b[33m", truncate_str(line, content_width)));
                 }
                 if old_lines.len() > show_old {
                     result.push(format!("  ... ({} more removed)", old_lines.len() - show_old));
                 }
                 for line in &new_lines[..show_new] {
-                    result.push(format!("  \x1b[32m+ {}\x1b[33m", truncate_str(line, 100)));
+                    result.push(format!("  \x1b[32m+ {}\x1b[33m", truncate_str(line, content_width)));
                 }
                 if new_lines.len() > show_new {
                     result.push(format!("  ... ({} more added)", new_lines.len() - show_new));
@@ -726,17 +754,17 @@ pub fn build_tool_header_lines(name: &str, args: &Value, max_lines: usize) -> Ve
         }
         "Read" => {
             let file_path = json_str(args, "file_path").unwrap_or_default();
-            vec![format!("Read({})", short_filename(&file_path))]
+            vec![format!("Read({})", truncate_str(&file_path, available))]
         }
         "Write" => {
             let file_path = json_str(args, "file_path").unwrap_or_default();
             let content = json_str(args, "content").unwrap_or_default();
             let line_count = content.lines().count();
-            vec![format!("Write({}) — {} lines", short_filename(&file_path), line_count)]
+            vec![format!("Write({}) — {} lines", truncate_str(&file_path, available.saturating_sub(15)), line_count)]
         }
-        "Grep" => vec![format_search_args("Grep", args)],
-        "Glob" => vec![format_search_args("Glob", args)],
-        other => vec![format!("{}({})", other, summarize_args(args))],
+        "Grep" => vec![format_search_args("Grep", args, width)],
+        "Glob" => vec![format_search_args("Glob", args, width)],
+        other => vec![format!("{}({})", other, truncate_str(&summarize_args(args), available))],
     }
 }
 

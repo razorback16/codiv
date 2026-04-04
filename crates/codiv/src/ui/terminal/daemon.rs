@@ -371,7 +371,8 @@ fn handle_single_message(
             // the full args from the ConfirmationRequest and can show the complete header.
             let args: serde_json::Value =
                 serde_json::from_str(&tool_args).unwrap_or(serde_json::Value::Null);
-            let header_lines = crate::ui::blocks::build_tool_header_lines(&tool_name, &args, 10);
+            let width = ds.tracker.width();
+            let header_lines = crate::ui::blocks::build_tool_header_lines(&tool_name, &args, 10, width);
 
             // Move cursor up to overwrite the placeholder header line
             if ds.tracker.pending_tool().is_some() {

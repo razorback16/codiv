@@ -59,8 +59,13 @@ pub(crate) async fn handle_agent_request(
                 session_id: sid.clone(),
                 name: Some(initial_name.clone()),
             };
-            if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                let _ = client_tx.send(frame).await;
+            match codiv_common::messages::frame_message(&msg) {
+                Ok(frame) => {
+                    if client_tx.send(frame).await.is_err() {
+                        tracing::warn!("failed to send SessionCreated: client disconnected");
+                    }
+                }
+                Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
             }
             // Mark for deferred name generation after agent completes
             if let Some(session) = daemon.sessions.get_mut(&client_id) {
@@ -99,12 +104,14 @@ pub(crate) async fn handle_agent_request(
     let permission_ctx = match permission_ctx {
         Some(ctx) => Some(ctx),
         None => {
-            let cfg = daemon.config.read().unwrap();
+            let cfg = daemon.config.read().expect("daemon config RwLock poisoned");
             let ctx = Arc::new(PermissionContext::new(
                 cfg.permissions.mode,
                 client_tx.clone(),
                 cfg.models.clone(),
+                Arc::clone(&daemon.config),
             ));
+            drop(cfg);
             if let Some(session) = daemon.sessions.get_mut(&client_id) {
                 session.permissions.permission_ctx = Some(Arc::clone(&ctx));
             }
@@ -144,8 +151,13 @@ pub(crate) async fn handle_agent_request(
             cache_read_tokens: 0,
             context_window: agent.model_config.context_window(),
         };
-        if let Ok(frame) = codiv_common::messages::frame_message(&meta_msg) {
-            let _ = client_tx.send(frame).await;
+        match codiv_common::messages::frame_message(&meta_msg) {
+            Ok(frame) => {
+                if client_tx.send(frame).await.is_err() {
+                    tracing::warn!("failed to send AgentMeta: client disconnected");
+                }
+            }
+            Err(e) => tracing::error!("failed to frame AgentMeta: {}", e),
         }
         match agent
             .run_streaming(&rid, &client_tx, thinking, permission_ctx)
@@ -188,8 +200,13 @@ pub(crate) async fn handle_agent_request(
                     request_id: rid,
                     summary: response,
                 };
-                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                    let _ = client_tx.send(frame).await;
+                match codiv_common::messages::frame_message(&msg) {
+                    Ok(frame) => {
+                        if client_tx.send(frame).await.is_err() {
+                            tracing::warn!("failed to send AgentComplete: client disconnected");
+                        }
+                    }
+                    Err(e) => tracing::error!("failed to frame AgentComplete: {}", e),
                 }
                 let _ = agent_return_tx.send((agent, persist_events));
             }
@@ -199,8 +216,13 @@ pub(crate) async fn handle_agent_request(
                     request_id: rid.clone(),
                     message: e.clone(),
                 };
-                if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-                    let _ = client_tx.send(frame).await;
+                match codiv_common::messages::frame_message(&msg) {
+                    Ok(frame) => {
+                        if client_tx.send(frame).await.is_err() {
+                            tracing::warn!("failed to send Error: client disconnected");
+                        }
+                    }
+                    Err(e) => tracing::error!("failed to frame Error: {}", e),
                 }
                 let error_events = vec![ConversationEvent::Error {
                     request_id: rid,
@@ -255,8 +277,13 @@ pub(crate) async fn handle_cancel_request(
             request_id,
             summary: String::new(),
         };
-        if let Ok(frame) = codiv_common::messages::frame_message(&msg) {
-            let _ = client_tx.send(frame).await;
+        match codiv_common::messages::frame_message(&msg) {
+            Ok(frame) => {
+                if client_tx.send(frame).await.is_err() {
+                    tracing::warn!("failed to send AgentComplete (cancel): client disconnected");
+                }
+            }
+            Err(e) => tracing::error!("failed to frame AgentComplete: {}", e),
         }
     }
 }

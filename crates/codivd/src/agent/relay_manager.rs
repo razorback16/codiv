@@ -17,7 +17,6 @@ pub enum RelayOutcome {
     Completed {
         output: String,
         exit_code: i32,
-        cwd: String,
     },
     Cancelled,
     TimedOut,
@@ -112,7 +111,6 @@ impl RelayManager {
         request_id: String,
         command: String,
         execution_timeout_ms: u64,
-        cwd_ref: &Arc<std::sync::RwLock<String>>,
     ) -> Result<String, String> {
         let lease_id = uuid_v4();
         let execution_id = uuid_v4();
@@ -185,14 +183,10 @@ impl RelayManager {
             }
         };
 
-        // Update cwd from successful completion.
-        if let RelayOutcome::Completed { ref cwd, .. } = outcome {
-            if let Ok(mut cwd_guard) = cwd_ref.write() {
-                *cwd_guard = cwd.clone();
-            }
-        }
-
         // Release the lease.
+        // Note: cwd updates from command completion are handled by the daemon
+        // event loop when it processes CommandCompleted messages, updating
+        // ClientSession.cwd as the single source of truth.
         let reason = match &outcome {
             RelayOutcome::Completed { .. } => ReleaseReason::Completed,
             _ => ReleaseReason::Cancelled,
@@ -246,9 +240,9 @@ impl RelayManager {
                 execution_id,
                 output,
                 exit_code,
-                cwd,
+                cwd: _,
             } => {
-                self.on_command_completed(lease_id, execution_id, output, *exit_code, cwd)
+                self.on_command_completed(lease_id, execution_id, output, *exit_code)
                     .await;
                 true
             }
@@ -334,7 +328,6 @@ impl RelayManager {
         execution_id: &str,
         output: &str,
         exit_code: i32,
-        cwd: &str,
     ) {
         let mut ops = self.ops.lock().await;
         if let Some(op) = ops.get_mut(lease_id) {
@@ -350,7 +343,6 @@ impl RelayManager {
                         let _ = tx.send(RelayOutcome::Completed {
                             output: output.to_string(),
                             exit_code,
-                            cwd: cwd.to_string(),
                         });
                     }
                 }

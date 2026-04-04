@@ -41,11 +41,8 @@ pub async fn llm_evaluate_risk(
         args = serde_json::to_string_pretty(args).unwrap_or_default()
     );
 
-    // NOTE: This function may be called via block_in_place + block_on from a
-    // sync context. tokio::time::timeout can fail to fire in that situation
-    // because the timer driver doesn't advance while block_on is blocking.
-    // We call the LLM directly without an async timeout here; the caller
-    // (permissions.rs) applies its own thread-level timeout instead.
+    // The caller (permissions.rs) applies a 10-second timeout via tokio::time::timeout
+    // around the spawned task, so no timeout is needed here.
     match call_evaluator_llm(&assignment, &provider_config, &prompt).await {
         Ok(response) => {
             let response = response.trim().to_uppercase();

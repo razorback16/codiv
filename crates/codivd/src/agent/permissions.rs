@@ -7,7 +7,7 @@ use codiv_common::permissions::{PermissionDecision, PermissionMode};
 use codiv_common::tools::tool_names;
 use tokio::sync::{mpsc, oneshot};
 
-use super::config::ModelCatalog;
+use super::config::{AppConfig, ModelCatalog};
 use super::permission_evaluator::evaluate_permission;
 use super::risk_classifier::classify_risk;
 
@@ -25,6 +25,9 @@ pub struct PermissionContext {
     pub catalog: ModelCatalog,
     /// Recent conversation context for the LLM evaluator.
     pub context_summary: RwLock<String>,
+    /// Shared config snapshot, updated by the daemon's file watcher.
+    /// Avoids reloading config from disk on every tool call.
+    pub config: Arc<RwLock<AppConfig>>,
 }
 
 /// Result of a user confirmation.
@@ -41,6 +44,7 @@ impl PermissionContext {
         mode: PermissionMode,
         client_tx: mpsc::Sender<Vec<u8>>,
         catalog: ModelCatalog,
+        config: Arc<RwLock<AppConfig>>,
     ) -> Self {
         Self {
             mode: RwLock::new(mode),
@@ -49,29 +53,43 @@ impl PermissionContext {
             pending_meta: std::sync::Mutex::new(HashMap::new()),
             catalog,
             context_summary: RwLock::new(String::new()),
+            config,
         }
     }
 
     pub fn current_mode(&self) -> PermissionMode {
-        *self.mode.read().unwrap()
+        *self.mode.read().unwrap_or_else(|e| {
+            tracing::warn!("PermissionContext mode RwLock poisoned, recovering");
+            e.into_inner()
+        })
     }
 
     pub fn set_mode(&self, mode: PermissionMode) {
-        *self.mode.write().unwrap() = mode;
+        *self.mode.write().unwrap_or_else(|e| {
+            tracing::warn!("PermissionContext mode RwLock poisoned, recovering");
+            e.into_inner()
+        }) = mode;
     }
 
     /// Update the conversation context summary for the LLM evaluator.
     pub fn set_context(&self, summary: String) {
-        *self.context_summary.write().unwrap() = summary;
+        *self.context_summary.write().unwrap_or_else(|e| {
+            tracing::warn!("PermissionContext context_summary RwLock poisoned, recovering");
+            e.into_inner()
+        }) = summary;
     }
 
     pub fn context_summary(&self) -> String {
-        self.context_summary.read().unwrap().clone()
+        self.context_summary.read().unwrap_or_else(|e| {
+            tracing::warn!("PermissionContext context_summary RwLock poisoned, recovering");
+            e.into_inner()
+        }).clone()
     }
 }
 
-/// Wrap a tool closure with permission checking.
-/// Returns a new closure that checks permissions before invoking the original.
+/// Wrap a sync tool closure with permission checking.
+/// Bridges to async via `block_in_place` + `Handle::block_on` for confirmation
+/// and LLM evaluator calls, reusing the existing tokio runtime.
 pub fn wrap_with_permissions(
     tool_name: String,
     original: Box<dyn Fn(Value) -> Result<String, String> + Send + Sync>,
@@ -80,9 +98,12 @@ pub fn wrap_with_permissions(
     Box::new(move |args: Value| {
         let command_prefix = super::permission_evaluator::extract_args_pattern(&tool_name, &args);
 
-        // Check config.toml persistent permissions
+        // Check cached config permissions (shared with daemon's file watcher)
         {
-            let cfg = crate::agent::config::AppConfig::load();
+            let cfg = ctx.config.read().unwrap_or_else(|e| {
+                tracing::warn!("AppConfig RwLock poisoned in permission check, recovering");
+                e.into_inner()
+            });
             if let Some(d) = cfg.permissions.lookup(&tool_name, command_prefix.as_deref()) {
                 if d == "allow" { return original(args); }
                 if d == "deny" { return Err("Denied by saved permission rule".into()); }
@@ -97,99 +118,85 @@ pub fn wrap_with_permissions(
             PermissionDecision::Allow => original(args),
             PermissionDecision::Deny => Err("Denied by permission policy".into()),
             PermissionDecision::Prompt => {
-                // Use block_in_place to bridge async confirmation into sync closure
+                // Bridge async confirmation into sync closure using the existing runtime
                 let result = tokio::task::block_in_place(|| {
-                    let rt = tokio::runtime::Handle::current();
-                    rt.block_on(request_confirmation(&ctx, &tool_name, &args, risk))
+                    tokio::runtime::Handle::current()
+                        .block_on(request_confirmation(&ctx, &tool_name, &args, risk))
                 });
-                match result {
-                    Ok(confirmation) if confirmation.approved => {
-                        send_permission_outcome(&ctx, &tool_name, true, "Allowed");
-                        original(args)
-                    }
-                    Ok(confirmation) => {
-                        let is_timeout = confirmation.comment.as_deref()
-                            .map(|c| c.contains("Timed out"))
-                            .unwrap_or(false);
-                        let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
-                        send_permission_outcome(&ctx, &tool_name, false, reason);
-                        let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
-                        Err(msg)
-                    }
-                    Err(e) => {
-                        send_permission_outcome(&ctx, &tool_name, false, "Confirmation channel error");
-                        Err(format!("Confirmation failed: {}", e))
-                    }
-                }
+                handle_confirmation_result(result, &ctx, &tool_name, &args, &original)
             }
             PermissionDecision::LlmEvaluate => {
-                // Use a std thread with a channel-based timeout to avoid
-                // blocking the tokio runtime indefinitely. The LLM evaluator
-                // call has no internal timeout, so we enforce a 10-second
-                // deadline here via a bounded channel recv_timeout.
-                let eval_tool = tool_name.clone();
-                let eval_args = args.clone();
-                let eval_catalog = ctx.catalog.clone();
-                let eval_context = ctx.context_summary();
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::Builder::new()
-                    .name("llm-evaluator".into())
-                    .spawn(move || {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("failed to build evaluator runtime");
-                        let decision = rt.block_on(super::llm_evaluator::llm_evaluate_risk(
-                            &eval_tool,
-                            &eval_args,
-                            &eval_catalog,
-                            &eval_context,
-                        ));
-                        let _ = tx.send(decision);
-                    })
-                    .expect("spawn llm-evaluator thread");
-                let llm_decision = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-                    Ok(decision) => decision,
-                    Err(_) => {
-                        tracing::warn!("LLM evaluator timed out after 10s, defaulting to Prompt");
-                        PermissionDecision::Prompt
+                // Run LLM evaluator on the existing runtime via block_in_place
+                let llm_decision = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    let eval_tool = tool_name.clone();
+                    let eval_args = args.clone();
+                    let eval_catalog = ctx.catalog.clone();
+                    let eval_context = ctx.context_summary();
+                    match handle.block_on(tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        tokio::spawn(async move {
+                            super::llm_evaluator::llm_evaluate_risk(
+                                &eval_tool,
+                                &eval_args,
+                                &eval_catalog,
+                                &eval_context,
+                            ).await
+                        }),
+                    )) {
+                        Ok(Ok(decision)) => decision,
+                        _ => {
+                            tracing::warn!("LLM evaluator timed out after 10s, defaulting to Prompt");
+                            PermissionDecision::Prompt
+                        }
                     }
-                };
+                });
                 match llm_decision {
                     PermissionDecision::Allow => {
                         send_permission_outcome(&ctx, &tool_name, true, "Allowed by AI evaluator");
                         original(args)
                     }
                     _ => {
-                        // LLM said Prompt — fall through to user confirmation
+                        // LLM said Prompt -- fall through to user confirmation
                         let result = tokio::task::block_in_place(|| {
-                            let rt = tokio::runtime::Handle::current();
-                            rt.block_on(request_confirmation(&ctx, &tool_name, &args, risk))
+                            tokio::runtime::Handle::current()
+                                .block_on(request_confirmation(&ctx, &tool_name, &args, risk))
                         });
-                        match result {
-                            Ok(confirmation) if confirmation.approved => {
-                                send_permission_outcome(&ctx, &tool_name, true, "Allowed");
-                                original(args)
-                            }
-                            Ok(confirmation) => {
-                                let is_timeout = confirmation.comment.as_deref()
-                                    .map(|c| c.contains("Timed out"))
-                                    .unwrap_or(false);
-                                let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
-                                send_permission_outcome(&ctx, &tool_name, false, reason);
-                                let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
-                                Err(msg)
-                            }
-                            Err(e) => {
-                                send_permission_outcome(&ctx, &tool_name, false, "Confirmation channel error");
-                                Err(format!("Confirmation failed: {}", e))
-                            }
-                        }
+                        handle_confirmation_result(result, &ctx, &tool_name, &args, &original)
                     }
                 }
             }
         }
     })
+}
+
+/// Shared helper for processing confirmation results (used by both sync and async paths).
+fn handle_confirmation_result(
+    result: Result<ConfirmationResult, String>,
+    ctx: &PermissionContext,
+    tool_name: &str,
+    args: &Value,
+    original: &dyn Fn(Value) -> Result<String, String>,
+) -> Result<String, String> {
+    match result {
+        Ok(confirmation) if confirmation.approved => {
+            send_permission_outcome(ctx, tool_name, true, "Allowed");
+            original(args.clone())
+        }
+        Ok(confirmation) => {
+            let is_timeout = confirmation.comment.as_deref()
+                .map(|c| c.contains("Timed out"))
+                .unwrap_or(false);
+            let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
+            send_permission_outcome(ctx, tool_name, false, reason);
+            let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
+            Err(msg)
+        }
+        Err(e) => {
+            send_permission_outcome(ctx, tool_name, false, "Confirmation channel error");
+            Err(format!("Confirmation failed: {}", e))
+        }
+    }
 }
 
 /// Send a confirmation request to the client and wait for response.
@@ -263,8 +270,8 @@ async fn request_confirmation(
 }
 
 /// Wrap an async tool closure with permission checking.
-/// Async equivalent of `wrap_with_permissions` — calls `request_confirmation()`
-/// directly without `block_in_place`.
+/// This is the primary permission path — runs entirely on the existing
+/// tokio runtime without creating nested runtimes or blocking threads.
 pub fn wrap_with_permissions_async<F, Fut>(
     tool_name: String,
     original: F,
@@ -282,13 +289,17 @@ where
         Box::pin(async move {
             let command_prefix = super::permission_evaluator::extract_args_pattern(&tool_name, &args);
 
-            // Check config.toml persistent permissions
-            {
-                let cfg = crate::agent::config::AppConfig::load();
-                if let Some(d) = cfg.permissions.lookup(&tool_name, command_prefix.as_deref()) {
-                    if d == "allow" { return original(args).await; }
-                    if d == "deny" { return Err("Denied by saved permission rule".into()); }
-                }
+            // Check cached config permissions (shared with daemon's file watcher)
+            let config_decision = {
+                let cfg = ctx.config.read().unwrap_or_else(|e| {
+                    tracing::warn!("AppConfig RwLock poisoned in async permission check, recovering");
+                    e.into_inner()
+                });
+                cfg.permissions.lookup(&tool_name, command_prefix.as_deref()).map(|s| s.to_string())
+            };
+            if let Some(ref d) = config_decision {
+                if d == "allow" { return original(args).await; }
+                if d == "deny" { return Err("Denied by saved permission rule".into()); }
             }
 
             let risk = classify_risk(&tool_name, &args);
@@ -300,47 +311,24 @@ where
                 PermissionDecision::Deny => Err("Denied by permission policy".into()),
                 PermissionDecision::Prompt => {
                     let result = request_confirmation(&ctx, &tool_name, &args, risk).await;
-                    match result {
-                        Ok(confirmation) if confirmation.approved => {
-                            send_permission_outcome(&ctx, &tool_name, true, "Allowed");
-                            original(args).await
-                        }
-                        Ok(confirmation) => {
-                            let is_timeout = confirmation.comment.as_deref()
-                                .map(|c| c.contains("Timed out"))
-                                .unwrap_or(false);
-                            let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
-                            send_permission_outcome(&ctx, &tool_name, false, reason);
-                            let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
-                            Err(msg)
-                        }
-                        Err(e) => {
-                            send_permission_outcome(&ctx, &tool_name, false, "Confirmation channel error");
-                            Err(format!("Confirmation failed: {}", e))
-                        }
-                    }
+                    handle_confirmation_result_async(result, &ctx, &tool_name, &args, original.as_ref()).await
                 }
                 PermissionDecision::LlmEvaluate => {
-                    // Run LLM evaluator in a blocking task to avoid blocking the async runtime.
+                    // Run LLM evaluator as a spawned task on the existing runtime
                     let eval_tool = tool_name.clone();
                     let eval_args = args.clone();
                     let eval_catalog = ctx.catalog.clone();
                     let eval_context = ctx.context_summary();
-                    let llm_decision = tokio::task::spawn_blocking(move || {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("failed to build evaluator runtime");
-                        rt.block_on(super::llm_evaluator::llm_evaluate_risk(
-                            &eval_tool,
-                            &eval_args,
-                            &eval_catalog,
-                            &eval_context,
-                        ))
-                    });
                     let llm_decision = match tokio::time::timeout(
                         std::time::Duration::from_secs(10),
-                        llm_decision,
+                        tokio::spawn(async move {
+                            super::llm_evaluator::llm_evaluate_risk(
+                                &eval_tool,
+                                &eval_args,
+                                &eval_catalog,
+                                &eval_context,
+                            ).await
+                        }),
                     ).await {
                         Ok(Ok(decision)) => decision,
                         _ => {
@@ -355,31 +343,46 @@ where
                         }
                         _ => {
                             let result = request_confirmation(&ctx, &tool_name, &args, risk).await;
-                            match result {
-                                Ok(confirmation) if confirmation.approved => {
-                                    send_permission_outcome(&ctx, &tool_name, true, "Allowed");
-                                    original(args).await
-                                }
-                                Ok(confirmation) => {
-                                    let is_timeout = confirmation.comment.as_deref()
-                                        .map(|c| c.contains("Timed out"))
-                                        .unwrap_or(false);
-                                    let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
-                                    send_permission_outcome(&ctx, &tool_name, false, reason);
-                                    let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
-                                    Err(msg)
-                                }
-                                Err(e) => {
-                                    send_permission_outcome(&ctx, &tool_name, false, "Confirmation channel error");
-                                    Err(format!("Confirmation failed: {}", e))
-                                }
-                            }
+                            handle_confirmation_result_async(result, &ctx, &tool_name, &args, original.as_ref()).await
                         }
                     }
                 }
             }
         })
     })
+}
+
+/// Async helper for processing confirmation results.
+async fn handle_confirmation_result_async<F, Fut>(
+    result: Result<ConfirmationResult, String>,
+    ctx: &PermissionContext,
+    tool_name: &str,
+    args: &Value,
+    original: &F,
+) -> Result<String, String>
+where
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    match result {
+        Ok(confirmation) if confirmation.approved => {
+            send_permission_outcome(ctx, tool_name, true, "Allowed");
+            original(args.clone()).await
+        }
+        Ok(confirmation) => {
+            let is_timeout = confirmation.comment.as_deref()
+                .map(|c| c.contains("Timed out"))
+                .unwrap_or(false);
+            let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
+            send_permission_outcome(ctx, tool_name, false, reason);
+            let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
+            Err(msg)
+        }
+        Err(e) => {
+            send_permission_outcome(ctx, tool_name, false, "Confirmation channel error");
+            Err(format!("Confirmation failed: {}", e))
+        }
+    }
 }
 
 /// Send a permission outcome message to the client (best-effort).
