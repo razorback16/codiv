@@ -115,6 +115,12 @@ fn parse_osc_color_response(data: &str, osc_num: &str) -> Option<String> {
     None
 }
 
+/// Maximum size for `PendingCommand::accumulated` (1 MB). When exceeded, the
+/// front is truncated to keep the most recent output (sentinel detection needs
+/// the tail). This prevents unbounded memory growth for long-running commands
+/// like `ping`, `tail -f`, or large builds.
+const MAX_ACCUMULATED_BYTES: usize = 1_048_576;
+
 pub(crate) fn process_pty_bytes(
     bytes: &[u8],
     pending: &mut PendingCommand,
@@ -128,6 +134,20 @@ pub(crate) fn process_pty_bytes(
     }
     let text = String::from_utf8_lossy(bytes);
     pending.accumulated.push_str(&text);
+
+    // Cap accumulated output to prevent unbounded memory growth.
+    // Truncate from the front so the sentinel (always at the end) remains visible.
+    if pending.accumulated.len() > MAX_ACCUMULATED_BYTES {
+        let excess = pending.accumulated.len() - MAX_ACCUMULATED_BYTES;
+        // Find a char boundary at or after the excess offset to avoid splitting
+        // a multi-byte UTF-8 sequence.
+        let drain_to = match pending.accumulated.is_char_boundary(excess) {
+            true => excess,
+            false => pending.accumulated.ceil_char_boundary(excess),
+        };
+        pending.accumulated.drain(..drain_to);
+    }
+
     pending.last_activity = Instant::now();
 
     if pending.ai_execution_id.is_none() {
