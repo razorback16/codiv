@@ -13,7 +13,6 @@ use chrono::{Duration, Utc};
 use oauth2::PkceCodeChallenge;
 use serde::Serialize;
 
-use super::storage::write_oauth_tokens_to_config;
 use super::types::{AccessToken, OAuthConfig, OAuthTokenResponse, OAuthTokens, RefreshToken};
 
 /// Parameters produced by build_*_auth_url functions.
@@ -208,7 +207,12 @@ pub async fn exchange_standard_code(
 /// Convert an OAuthTokenResponse into OAuthTokens, computing expiry.
 ///
 /// Fallback: if expires_in is absent, assumes 1 hour from now.
-pub fn token_response_to_oauth_tokens(resp: OAuthTokenResponse) -> OAuthTokens {
+/// When `old_refresh_token` is provided and the response omits a refresh token,
+/// the old one is carried forward (prevents silent token loss on refresh).
+pub fn token_response_to_oauth_tokens(
+    resp: OAuthTokenResponse,
+    old_refresh_token: Option<String>,
+) -> OAuthTokens {
     let expires_at = resp
         .expires_at
         .or_else(|| {
@@ -217,9 +221,14 @@ pub fn token_response_to_oauth_tokens(resp: OAuthTokenResponse) -> OAuthTokens {
         })
         .unwrap_or_else(|| Utc::now() + Duration::hours(1));
 
+    let refresh_token = resp
+        .refresh_token
+        .or(old_refresh_token)
+        .map(RefreshToken::new);
+
     OAuthTokens::new(
         AccessToken::new(resp.access_token),
-        resp.refresh_token.map(RefreshToken::new),
+        refresh_token,
         expires_at,
     )
 }
@@ -261,7 +270,8 @@ pub async fn refresh_oauth_token(
     }
 
     let token_resp = resp.json::<OAuthTokenResponse>().await?;
-    Ok(token_response_to_oauth_tokens(token_resp))
+    // Carry forward the old refresh token if the server omits one in the response
+    Ok(token_response_to_oauth_tokens(token_resp, Some(refresh_token.to_string())))
 }
 
 /// Check stored OAuth tokens for `provider_id`. If they will expire within 5 minutes,
@@ -288,12 +298,12 @@ pub async fn maybe_refresh_stored_token(provider_id: &str, config: &OAuthConfig)
         Ok(new_tokens) => {
             let new_access = new_tokens.access_token.as_str().to_string();
             if let Err(e) = super::storage::write_oauth_tokens_to_config(provider_id, &new_tokens) {
-                eprintln!("warning: failed to write refreshed tokens for {provider_id}: {e}");
+                tracing::warn!("failed to write refreshed tokens for {provider_id}: {e}");
             }
             Some(new_access)
         }
         Err(e) => {
-            eprintln!("warning: token refresh failed for {provider_id}: {e}");
+            tracing::warn!("token refresh failed for {provider_id}: {e}");
             None
         }
     }
@@ -323,41 +333,6 @@ pub async fn fetch_oauth_profile_uuid(access_token: &str) -> Option<String> {
         .and_then(|a| a.get("uuid"))
         .and_then(|u| u.as_str())
         .map(|s| s.to_string())
-}
-
-/// Run the full OAuth code flow for a provider.
-///
-/// This function handles only the HTTP/PKCE layer — NOT interactive prompts.
-/// The caller (login CLI) must:
-///   1. Display the auth_url to the user (returned via the `on_url` callback)
-///   2. Prompt the user to paste the authorization code
-///   3. Pass the code to this function
-///
-/// Returns the stored OAuthTokens on success.
-pub async fn run_oauth_code_flow(
-    config: &OAuthConfig,
-    provider_id: &str,
-    on_url: impl FnOnce(&str),
-    code: &str,
-) -> Result<OAuthTokens> {
-    // Build auth URL and invoke callback so caller can display/open it
-    let params = if config.use_pkce {
-        build_anthropic_auth_url(config)?
-    } else {
-        build_standard_auth_url(config)?
-    };
-    on_url(&params.auth_url);
-
-    // Exchange the code for tokens
-    let token_resp = if config.use_pkce {
-        exchange_anthropic_code(config, code, params.code_verifier.as_deref()).await?
-    } else {
-        exchange_standard_code(config, code, None).await?
-    };
-
-    let tokens = token_response_to_oauth_tokens(token_resp);
-    write_oauth_tokens_to_config(provider_id, &tokens)?;
-    Ok(tokens)
 }
 
 #[cfg(test)]
@@ -490,7 +465,7 @@ mod tests {
             token_type: "Bearer".to_string(),
             scope: None,
         };
-        let tokens = token_response_to_oauth_tokens(resp);
+        let tokens = token_response_to_oauth_tokens(resp, None);
         let now = Utc::now();
         let diff = tokens.expires_at - now;
         // Should be approximately 1 hour (within 5 seconds of test execution)
@@ -511,7 +486,7 @@ mod tests {
             token_type: "Bearer".to_string(),
             scope: None,
         };
-        let tokens = token_response_to_oauth_tokens(resp);
+        let tokens = token_response_to_oauth_tokens(resp, None);
         let now = Utc::now();
         let diff = tokens.expires_at - now;
         assert!(diff.num_minutes() >= 59 && diff.num_minutes() <= 61);

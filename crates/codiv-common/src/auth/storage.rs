@@ -39,7 +39,9 @@ pub fn write_api_key_to_config(provider_id: &str, api_key: &str) -> Result<()> {
     if !doc.contains_table("providers") {
         doc["providers"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let providers = doc["providers"].as_table_mut().expect("providers must be table");
+    let providers = doc["providers"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.toml: 'providers' exists but is not a table"))?;
     if !providers.contains_key(provider_id) {
         providers[provider_id] = toml_edit::Item::Table(toml_edit::Table::new());
     }
@@ -62,17 +64,23 @@ pub fn write_oauth_tokens_to_config(provider_id: &str, tokens: &OAuthTokens) -> 
         if !doc.contains_table("auth") {
             doc["auth"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        let auth = doc["auth"].as_table_mut().expect("auth must be table");
+        let auth = doc["auth"]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("config.toml: 'auth' exists but is not a table"))?;
         // Ensure [auth.tokens] exists
         if !auth.contains_key("tokens") {
             auth["tokens"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        let tokens_table = auth["tokens"].as_table_mut().expect("tokens must be table");
+        let tokens_table = auth["tokens"]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("config.toml: 'auth.tokens' exists but is not a table"))?;
         // Ensure [auth.tokens.{provider_id}] exists
         if !tokens_table.contains_key(provider_id) {
             tokens_table[provider_id] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        let entry = tokens_table[provider_id].as_table_mut().expect("entry must be table");
+        let entry = tokens_table[provider_id]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("config.toml: 'auth.tokens.{provider_id}' exists but is not a table"))?;
         entry["access_token"] = value(tokens.access_token.as_str());
         if let Some(rt) = &tokens.refresh_token {
             entry["refresh_token"] = value(rt.as_str());
@@ -86,7 +94,9 @@ pub fn write_oauth_tokens_to_config(provider_id: &str, tokens: &OAuthTokens) -> 
         if !doc.contains_table("providers") {
             doc["providers"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        let providers = doc["providers"].as_table_mut().expect("providers must be table");
+        let providers = doc["providers"]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("config.toml: 'providers' exists but is not a table"))?;
         if !providers.contains_key(provider_id) {
             providers[provider_id] = toml_edit::Item::Table(toml_edit::Table::new());
         }
@@ -103,15 +113,21 @@ pub fn write_oauth_account_uuid(provider_id: &str, uuid: &str) -> Result<()> {
     if !doc.contains_table("auth") {
         doc["auth"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let auth = doc["auth"].as_table_mut().expect("auth must be table");
+    let auth = doc["auth"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.toml: 'auth' exists but is not a table"))?;
     if !auth.contains_key("tokens") {
         auth["tokens"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let tokens_table = auth["tokens"].as_table_mut().expect("tokens must be table");
+    let tokens_table = auth["tokens"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.toml: 'auth.tokens' exists but is not a table"))?;
     if !tokens_table.contains_key(provider_id) {
         tokens_table[provider_id] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let entry = tokens_table[provider_id].as_table_mut().expect("entry must be table");
+    let entry = tokens_table[provider_id]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.toml: 'auth.tokens.{provider_id}' exists but is not a table"))?;
     entry["account_uuid"] = value(uuid);
 
     save_doc(&doc)

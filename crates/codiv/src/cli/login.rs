@@ -162,7 +162,7 @@ fn run_oauth_flow(
         .with_context(|| format!("Token exchange failed for {}", display_name))?;
 
     // Step 4: Store tokens
-    let tokens = token_response_to_oauth_tokens(token_resp);
+    let tokens = token_response_to_oauth_tokens(token_resp, None);
     write_oauth_tokens_to_config(provider_id, &tokens)
         .with_context(|| format!("Failed to save tokens for {}", display_name))?;
 

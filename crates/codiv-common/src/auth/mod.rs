@@ -15,7 +15,7 @@ pub use storage::{
 };
 
 pub use flows::{
-    AuthParams, run_oauth_code_flow,
+    AuthParams,
     build_anthropic_auth_url, build_standard_auth_url,
     exchange_anthropic_code, exchange_standard_code,
     token_response_to_oauth_tokens,
