@@ -23,7 +23,6 @@ pub(crate) fn send_agent_request(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) enum NoticeKind {
     Error,
     Warning,

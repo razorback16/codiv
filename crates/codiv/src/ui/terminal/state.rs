@@ -27,14 +27,11 @@ pub(crate) struct PendingCommand {
 /// A pending shell lease request from the daemon.
 pub(crate) struct PendingLease {
     pub(crate) lease_id: String,
-    pub(crate) request_id: String,
 }
 
 /// An active shell lease held by the daemon.
 pub(crate) struct ActiveLease {
     pub(crate) lease_id: String,
-    #[allow(dead_code)]
-    pub(crate) request_id: String,
     /// The command to execute within this lease (set by ExecuteLeasedCommand).
     pub(crate) current_command: Option<ActiveLeasedCommand>,
 }
@@ -104,12 +101,13 @@ mod tests {
 }
 
 /// Tracks a pending permission confirmation prompt from the daemon.
-#[allow(dead_code)]
 pub(crate) struct PendingConfirmation {
     pub(crate) request_id: String,
+    #[allow(dead_code)]
     pub(crate) description: String,
     pub(crate) risk: codiv_common::messages::RiskLevel,
     pub(crate) tool_name: String,
+    #[allow(dead_code)]
     pub(crate) tool_args: String,
     pub(crate) prompt_lines: u16,
     pub(crate) selected_index: usize,
@@ -207,7 +205,6 @@ pub(crate) struct ModalState {
 // ---------------------------------------------------------------------------
 
 /// Consolidated UI state for the terminal event loop.
-#[allow(dead_code)]
 pub(crate) struct TerminalState {
     // Timing
     pub last_heartbeat_sent: Instant,
@@ -257,7 +254,6 @@ pub(crate) struct TerminalState {
 }
 
 impl TerminalState {
-    #[allow(dead_code)]
     pub fn new(
         initial_cwd: String,
         has_client: bool,

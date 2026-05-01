@@ -124,8 +124,6 @@ pub struct OAuthConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_refresh_url: Option<Url>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_headers: Option<HashMap<String, String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_auth_params: Option<HashMap<String, String>>,
 }
 
@@ -227,7 +225,6 @@ mod tests {
             redirect_uri: None,
             use_pkce: false,
             token_refresh_url: None,
-            custom_headers: None,
             extra_auth_params: None,
         };
         let method = AuthMethod::OAuthCode(config);
