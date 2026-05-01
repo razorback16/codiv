@@ -171,7 +171,13 @@ pub(crate) async fn handle_command_result(
 
     // Persist ShellCommand event (truncate large output)
     let truncated_output = if output.len() > 10000 {
-        let mut t = output[..10000].to_string();
+        // Find the largest index <= 10000 that falls on a UTF-8 char
+        // boundary to avoid panicking on multi-byte characters.
+        let mut end = 10000;
+        while end > 0 && !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut t = output[..end].to_string();
         t.push_str("\n... (truncated)");
         t
     } else {
@@ -215,16 +221,30 @@ pub(crate) async fn cleanup_stale_sessions(daemon: &mut Daemon) {
         .collect();
 
     for id in stale {
-        info!("cleaning stale session {}", id);
-        // Cancel all pending relay operations before removing the session
+        // If the session has an active agent task, abort it before removal
+        // to prevent the agent's return channel send from silently failing
+        // and losing results.
         if let Some(session) = daemon.sessions.get(&id) {
+            if session.agent_state.agent_task.is_some() {
+                info!(
+                    "aborting active agent task for stale session {} before cleanup",
+                    id
+                );
+            }
+        }
+        if let Some(mut session) = daemon.sessions.remove(&id) {
+            info!("cleaning stale session {}", id);
+            // Cancel all pending relay operations
             if let Some(ref relay) = session.relay.relay_manager {
                 relay
                     .cancel_all(codiv_common::messages::CancelReason::SessionStale)
                     .await;
             }
+            // Abort the agent task so it doesn't try to send on a dropped channel
+            if let Some(task) = session.agent_state.agent_task.take() {
+                task.abort();
+            }
         }
-        daemon.sessions.remove(&id);
         daemon.ipc.disconnect(id);
     }
 }
