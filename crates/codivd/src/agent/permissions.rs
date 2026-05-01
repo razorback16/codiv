@@ -87,101 +87,93 @@ impl PermissionContext {
     }
 }
 
-/// Wrap a sync tool closure with permission checking.
-/// Bridges to async via `block_in_place` + `Handle::block_on` for confirmation
-/// and LLM evaluator calls, reusing the existing tokio runtime.
-pub fn wrap_with_permissions(
-    tool_name: String,
-    original: Box<dyn Fn(Value) -> Result<String, String> + Send + Sync>,
-    ctx: Arc<PermissionContext>,
-) -> Box<dyn Fn(Value) -> Result<String, String> + Send + Sync> {
-    Box::new(move |args: Value| {
-        let command_prefix = super::permission_evaluator::extract_args_pattern(&tool_name, &args);
+// ---------------------------------------------------------------------------
+// Shared permission check logic
+// ---------------------------------------------------------------------------
 
-        // Check cached config permissions (shared with daemon's file watcher)
-        {
-            let cfg = ctx.config.read().unwrap_or_else(|e| {
-                tracing::warn!("AppConfig RwLock poisoned in permission check, recovering");
-                e.into_inner()
-            });
-            if let Some(d) = cfg.permissions.lookup(&tool_name, command_prefix.as_deref()) {
-                if d == "allow" { return original(args); }
-                if d == "deny" { return Err("Denied by saved permission rule".into()); }
-            }
-        }
-
-        let risk = classify_risk(&tool_name, &args);
-        let mode = ctx.current_mode();
-        let decision = evaluate_permission(mode, &tool_name, &args, risk);
-
-        match decision {
-            PermissionDecision::Allow => original(args),
-            PermissionDecision::Deny => Err("Denied by permission policy".into()),
-            PermissionDecision::Prompt => {
-                // Bridge async confirmation into sync closure using the existing runtime
-                let result = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(request_confirmation(&ctx, &tool_name, &args, risk))
-                });
-                handle_confirmation_result(result, &ctx, &tool_name, &args, &original)
-            }
-            PermissionDecision::LlmEvaluate => {
-                // Run LLM evaluator on the existing runtime via block_in_place
-                let llm_decision = tokio::task::block_in_place(|| {
-                    let handle = tokio::runtime::Handle::current();
-                    let eval_tool = tool_name.clone();
-                    let eval_args = args.clone();
-                    let eval_catalog = ctx.catalog.clone();
-                    let eval_context = ctx.context_summary();
-                    match handle.block_on(tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tokio::spawn(async move {
-                            super::llm_evaluator::llm_evaluate_risk(
-                                &eval_tool,
-                                &eval_args,
-                                &eval_catalog,
-                                &eval_context,
-                            ).await
-                        }),
-                    )) {
-                        Ok(Ok(decision)) => decision,
-                        _ => {
-                            tracing::warn!("LLM evaluator timed out after 10s, defaulting to Prompt");
-                            PermissionDecision::Prompt
-                        }
-                    }
-                });
-                match llm_decision {
-                    PermissionDecision::Allow => {
-                        send_permission_outcome(&ctx, &tool_name, true, "Allowed by AI evaluator");
-                        original(args)
-                    }
-                    _ => {
-                        // LLM said Prompt -- fall through to user confirmation
-                        let result = tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current()
-                                .block_on(request_confirmation(&ctx, &tool_name, &args, risk))
-                        });
-                        handle_confirmation_result(result, &ctx, &tool_name, &args, &original)
-                    }
-                }
-            }
-        }
-    })
+/// Outcome of the shared permission check — tells the caller what to do.
+enum PermissionCheckOutcome {
+    /// Execute the tool immediately.
+    Allow,
+    /// Deny the tool with the given error message.
+    Deny(String),
+    /// Prompt the user for confirmation (carries the risk level for the request).
+    Prompt(RiskLevel),
+    /// Run the LLM evaluator, then possibly prompt.
+    LlmEvaluate(RiskLevel),
 }
 
-/// Shared helper for processing confirmation results (used by both sync and async paths).
-fn handle_confirmation_result(
-    result: Result<ConfirmationResult, String>,
+/// Check config permissions and risk classification to determine the permission
+/// outcome. This is the shared decision logic used by both sync and async wrappers.
+fn check_permission(
     ctx: &PermissionContext,
     tool_name: &str,
     args: &Value,
-    original: &dyn Fn(Value) -> Result<String, String>,
-) -> Result<String, String> {
+) -> PermissionCheckOutcome {
+    let command_prefix = super::permission_evaluator::extract_args_pattern(tool_name, args);
+
+    // Check cached config permissions (shared with daemon's file watcher)
+    {
+        let cfg = ctx.config.read().unwrap_or_else(|e| {
+            tracing::warn!("AppConfig RwLock poisoned in permission check, recovering");
+            e.into_inner()
+        });
+        if let Some(d) = cfg.permissions.lookup(tool_name, command_prefix.as_deref()) {
+            if d == "allow" { return PermissionCheckOutcome::Allow; }
+            if d == "deny" { return PermissionCheckOutcome::Deny("Denied by saved permission rule".into()); }
+        }
+    }
+
+    let risk = classify_risk(tool_name, args);
+    let mode = ctx.current_mode();
+    let decision = evaluate_permission(mode, tool_name, args, risk);
+
+    match decision {
+        PermissionDecision::Allow => PermissionCheckOutcome::Allow,
+        PermissionDecision::Deny => PermissionCheckOutcome::Deny("Denied by permission policy".into()),
+        PermissionDecision::Prompt => PermissionCheckOutcome::Prompt(risk),
+        PermissionDecision::LlmEvaluate => PermissionCheckOutcome::LlmEvaluate(risk),
+    }
+}
+
+/// Run the LLM evaluator asynchronously. Returns the evaluator's decision,
+/// falling back to `Prompt` on timeout or error.
+async fn run_llm_evaluator(ctx: &PermissionContext, tool_name: &str, args: &Value) -> PermissionDecision {
+    let eval_tool = tool_name.to_string();
+    let eval_args = args.clone();
+    let eval_catalog = ctx.catalog.clone();
+    let eval_context = ctx.context_summary();
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::spawn(async move {
+            super::llm_evaluator::llm_evaluate_risk(
+                &eval_tool,
+                &eval_args,
+                &eval_catalog,
+                &eval_context,
+            ).await
+        }),
+    ).await {
+        Ok(Ok(decision)) => decision,
+        _ => {
+            tracing::warn!("LLM evaluator timed out after 10s, defaulting to Prompt");
+            PermissionDecision::Prompt
+        }
+    }
+}
+
+/// Process a confirmation result. Returns `Ok(true)` if approved,
+/// `Err(msg)` if denied or on error. Sends the appropriate permission
+/// outcome notification. Shared by both sync and async paths.
+fn process_confirmation(
+    result: Result<ConfirmationResult, String>,
+    ctx: &PermissionContext,
+    tool_name: &str,
+) -> Result<bool, String> {
     match result {
         Ok(confirmation) if confirmation.approved => {
             send_permission_outcome(ctx, tool_name, true, "Allowed");
-            original(args.clone())
+            Ok(true)
         }
         Ok(confirmation) => {
             let is_timeout = confirmation.comment.as_deref()
@@ -197,6 +189,50 @@ fn handle_confirmation_result(
             Err(format!("Confirmation failed: {}", e))
         }
     }
+}
+
+/// Wrap a sync tool closure with permission checking.
+/// Bridges to async via `block_in_place` + `Handle::block_on` for confirmation
+/// and LLM evaluator calls, reusing the existing tokio runtime.
+pub fn wrap_with_permissions(
+    tool_name: String,
+    original: Box<dyn Fn(Value) -> Result<String, String> + Send + Sync>,
+    ctx: Arc<PermissionContext>,
+) -> Box<dyn Fn(Value) -> Result<String, String> + Send + Sync> {
+    Box::new(move |args: Value| {
+        match check_permission(&ctx, &tool_name, &args) {
+            PermissionCheckOutcome::Allow => original(args),
+            PermissionCheckOutcome::Deny(msg) => Err(msg),
+            PermissionCheckOutcome::Prompt(risk) => {
+                let result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current()
+                        .block_on(request_confirmation(&ctx, &tool_name, &args, risk))
+                });
+                process_confirmation(result, &ctx, &tool_name)?;
+                original(args)
+            }
+            PermissionCheckOutcome::LlmEvaluate(risk) => {
+                let llm_decision = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current()
+                        .block_on(run_llm_evaluator(&ctx, &tool_name, &args))
+                });
+                match llm_decision {
+                    PermissionDecision::Allow => {
+                        send_permission_outcome(&ctx, &tool_name, true, "Allowed by AI evaluator");
+                        original(args)
+                    }
+                    _ => {
+                        let result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current()
+                                .block_on(request_confirmation(&ctx, &tool_name, &args, risk))
+                        });
+                        process_confirmation(result, &ctx, &tool_name)?;
+                        original(args)
+                    }
+                }
+            }
+        }
+    })
 }
 
 /// Send a confirmation request to the client and wait for response.
@@ -287,55 +323,16 @@ where
         let ctx = Arc::clone(&ctx);
         let original = Arc::clone(&original);
         Box::pin(async move {
-            let command_prefix = super::permission_evaluator::extract_args_pattern(&tool_name, &args);
-
-            // Check cached config permissions (shared with daemon's file watcher)
-            let config_decision = {
-                let cfg = ctx.config.read().unwrap_or_else(|e| {
-                    tracing::warn!("AppConfig RwLock poisoned in async permission check, recovering");
-                    e.into_inner()
-                });
-                cfg.permissions.lookup(&tool_name, command_prefix.as_deref()).map(|s| s.to_string())
-            };
-            if let Some(ref d) = config_decision {
-                if d == "allow" { return original(args).await; }
-                if d == "deny" { return Err("Denied by saved permission rule".into()); }
-            }
-
-            let risk = classify_risk(&tool_name, &args);
-            let mode = ctx.current_mode();
-            let decision = evaluate_permission(mode, &tool_name, &args, risk);
-
-            match decision {
-                PermissionDecision::Allow => original(args).await,
-                PermissionDecision::Deny => Err("Denied by permission policy".into()),
-                PermissionDecision::Prompt => {
+            match check_permission(&ctx, &tool_name, &args) {
+                PermissionCheckOutcome::Allow => original(args).await,
+                PermissionCheckOutcome::Deny(msg) => Err(msg),
+                PermissionCheckOutcome::Prompt(risk) => {
                     let result = request_confirmation(&ctx, &tool_name, &args, risk).await;
-                    handle_confirmation_result_async(result, &ctx, &tool_name, &args, original.as_ref()).await
+                    process_confirmation(result, &ctx, &tool_name)?;
+                    original(args).await
                 }
-                PermissionDecision::LlmEvaluate => {
-                    // Run LLM evaluator as a spawned task on the existing runtime
-                    let eval_tool = tool_name.clone();
-                    let eval_args = args.clone();
-                    let eval_catalog = ctx.catalog.clone();
-                    let eval_context = ctx.context_summary();
-                    let llm_decision = match tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        tokio::spawn(async move {
-                            super::llm_evaluator::llm_evaluate_risk(
-                                &eval_tool,
-                                &eval_args,
-                                &eval_catalog,
-                                &eval_context,
-                            ).await
-                        }),
-                    ).await {
-                        Ok(Ok(decision)) => decision,
-                        _ => {
-                            tracing::warn!("LLM evaluator timed out after 10s, defaulting to Prompt");
-                            PermissionDecision::Prompt
-                        }
-                    };
+                PermissionCheckOutcome::LlmEvaluate(risk) => {
+                    let llm_decision = run_llm_evaluator(&ctx, &tool_name, &args).await;
                     match llm_decision {
                         PermissionDecision::Allow => {
                             send_permission_outcome(&ctx, &tool_name, true, "Allowed by AI evaluator");
@@ -343,46 +340,14 @@ where
                         }
                         _ => {
                             let result = request_confirmation(&ctx, &tool_name, &args, risk).await;
-                            handle_confirmation_result_async(result, &ctx, &tool_name, &args, original.as_ref()).await
+                            process_confirmation(result, &ctx, &tool_name)?;
+                            original(args).await
                         }
                     }
                 }
             }
         })
     })
-}
-
-/// Async helper for processing confirmation results.
-async fn handle_confirmation_result_async<F, Fut>(
-    result: Result<ConfirmationResult, String>,
-    ctx: &PermissionContext,
-    tool_name: &str,
-    args: &Value,
-    original: &F,
-) -> Result<String, String>
-where
-    F: Fn(Value) -> Fut,
-    Fut: std::future::Future<Output = Result<String, String>>,
-{
-    match result {
-        Ok(confirmation) if confirmation.approved => {
-            send_permission_outcome(ctx, tool_name, true, "Allowed");
-            original(args.clone()).await
-        }
-        Ok(confirmation) => {
-            let is_timeout = confirmation.comment.as_deref()
-                .map(|c| c.contains("Timed out"))
-                .unwrap_or(false);
-            let reason = if is_timeout { "Denied because of timeout" } else { "Denied" };
-            send_permission_outcome(ctx, tool_name, false, reason);
-            let msg = confirmation.comment.unwrap_or_else(|| "Action rejected by user".to_string());
-            Err(msg)
-        }
-        Err(e) => {
-            send_permission_outcome(ctx, tool_name, false, "Confirmation channel error");
-            Err(format!("Confirmation failed: {}", e))
-        }
-    }
 }
 
 /// Send a permission outcome message to the client (best-effort).
