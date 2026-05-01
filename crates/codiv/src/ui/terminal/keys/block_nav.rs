@@ -18,14 +18,14 @@ pub(crate) fn handle_block_nav(
             } else {
                 state.tracker.focus_last();
             }
-            scroll_to_focused(parser, &mut state.ui.scroll_offset, &mut state.tracker);
+            scroll_to_focused(parser, &mut state.ui.scroll_offset, &state.tracker);
             true
         }
         (KeyCode::Down, m) if m.contains(KeyModifiers::SHIFT) => {
             if state.tracker.focused_index().is_some() {
                 state.tracker.focus_next();
             }
-            scroll_to_focused(parser, &mut state.ui.scroll_offset, &mut state.tracker);
+            scroll_to_focused(parser, &mut state.ui.scroll_offset, &state.tracker);
             true
         }
         (KeyCode::Enter, _)

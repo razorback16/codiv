@@ -9,6 +9,12 @@ use codiv_tools::tools::{edit, glob, grep, read, write};
 use super::permissions::PermissionContext;
 use super::relay_manager::RelayManager;
 
+type AsyncToolExecutor = Arc<
+    dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 fn make_tool_with_permissions<T: schemars::JsonSchema>(
     name: &str,
     description: &str,
@@ -42,11 +48,7 @@ where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
 {
-    let final_execute: Arc<
-        dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
-            + Send
-            + Sync,
-    > = match permission_ctx {
+    let final_execute: AsyncToolExecutor = match permission_ctx {
         Some(ctx) => {
             let wrapped = super::permissions::wrap_with_permissions_async(
                 name.to_string(),
@@ -135,7 +137,6 @@ pub fn build_tools(
             )
         },
         {
-            let cwd = cwd;
             make_tool_with_permissions::<grep::GrepInput>(
                 "grep",
                 "Search file contents using regex. Returns matching lines with file paths and line numbers.",

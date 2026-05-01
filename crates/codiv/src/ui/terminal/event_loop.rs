@@ -205,46 +205,46 @@ pub(crate) fn event_loop(
                             }
 
                             // --- Cancel AI streaming on Escape ---
-                            if state.stream.agent_streaming && !key_handled {
-                                if key.code == KeyCode::Esc {
-                                    if let Some(ref rid) = state.stream.active_request_id {
-                                        if let Some(ref mut c) = client {
-                                            if let Some(frame) = ipc_messages::build_cancel_request(rid) {
-                                                c.send(&frame);
-                                            }
+                            if state.stream.agent_streaming && !key_handled
+                                && key.code == KeyCode::Esc
+                            {
+                                if let Some(ref rid) = state.stream.active_request_id {
+                                    if let Some(ref mut c) = client {
+                                        if let Some(frame) = ipc_messages::build_cancel_request(rid) {
+                                            c.send(&frame);
                                         }
                                     }
-                                    // Finalize thinking block if in progress
-                                    finalize_thinking(
-                                        parser,
-                                        &mut state.stream.thinking_start,
-                                        &mut state.stream.thinking_buffer,
-                                        &mut state.stream.thinking_scrollback,
-                                        &mut state.tracker,
-                                        theme.ansi_thinking,
-                                    );
-                                    // Flush any in-progress AI content
-                                    let final_bytes = state.stream.md_stream.finish();
-                                    if !final_bytes.is_empty() {
-                                        parser.process(&final_bytes);
-                                    }
-                                    // Close AI response block if one was open
-                                    if let Some(start) = state.stream.ai_start_scrollback.take() {
-                                        let ai_end = get_scrollback_line(parser);
-                                        let line_count = (ai_end.saturating_sub(start)) as u16;
-                                        if line_count > 0 {
-                                            let lines = std::mem::take(&mut state.stream.ai_rendered_lines);
-                                            state.tracker.record_ai_response(start, line_count, lines);
-                                        } else {
-                                            state.stream.ai_rendered_lines.clear();
-                                        }
-                                    }
-                                    state.stream.agent_streaming = false;
-                                    state.stream.active_request_id = None;
-                                    state.stream.md_stream.reset();
-                                    parser_push_notice(parser, NoticeKind::Notice, "[cancelled]");
-                                    key_handled = true;
                                 }
+                                // Finalize thinking block if in progress
+                                finalize_thinking(
+                                    parser,
+                                    &mut state.stream.thinking_start,
+                                    &mut state.stream.thinking_buffer,
+                                    &mut state.stream.thinking_scrollback,
+                                    &mut state.tracker,
+                                    theme.ansi_thinking,
+                                );
+                                // Flush any in-progress AI content
+                                let final_bytes = state.stream.md_stream.finish();
+                                if !final_bytes.is_empty() {
+                                    parser.process(&final_bytes);
+                                }
+                                // Close AI response block if one was open
+                                if let Some(start) = state.stream.ai_start_scrollback.take() {
+                                    let ai_end = get_scrollback_line(parser);
+                                    let line_count = (ai_end.saturating_sub(start)) as u16;
+                                    if line_count > 0 {
+                                        let lines = std::mem::take(&mut state.stream.ai_rendered_lines);
+                                        state.tracker.record_ai_response(start, line_count, lines);
+                                    } else {
+                                        state.stream.ai_rendered_lines.clear();
+                                    }
+                                }
+                                state.stream.agent_streaming = false;
+                                state.stream.active_request_id = None;
+                                state.stream.md_stream.reset();
+                                parser_push_notice(parser, NoticeKind::Notice, "[cancelled]");
+                                key_handled = true;
                             }
 
                             // --- Forward keystrokes to PTY when a command is executing ---
@@ -318,7 +318,7 @@ pub(crate) fn event_loop(
                     state.stream.thinking_start.is_some(),
                     state.tracker.pending_tool().is_some(),
                 );
-                if state.ui.anim.tick() || current_hint(&state).is_some() {
+                if state.ui.anim.tick() || current_hint(state).is_some() {
                     state.ui.needs_render = true;
                 }
             }

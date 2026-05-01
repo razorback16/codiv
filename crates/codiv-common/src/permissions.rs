@@ -1,21 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Permission mode controls how tool calls are gated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {
     /// Hybrid rule-based + LLM evaluator. Low/Medium: allow, High: LLM evaluate, Critical: prompt user.
+    #[default]
     Auto,
     /// Read-only free, writes need approval. Low (read-only): allow, Medium/High/Critical: prompt user.
     Manual,
     /// Everything except Critical allowed. Low/Medium/High: allow, Critical: prompt user.
     Bypass,
-}
-
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl std::fmt::Display for PermissionMode {

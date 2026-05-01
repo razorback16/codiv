@@ -71,7 +71,7 @@ fn run(args: LoginArgs) -> Result<()> {
 
     match method {
         AuthMethod::ApiKey => run_api_key_flow(&provider_id, display_name),
-        AuthMethod::OAuthCode(config) => run_oauth_flow(config, &provider_id, display_name),
+        AuthMethod::OAuthCode(config) => run_oauth_flow(*config, &provider_id, display_name),
     }
 }
 

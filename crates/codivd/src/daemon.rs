@@ -79,7 +79,7 @@ impl Daemon {
 
         let ipc = IpcServer::new().await?;
         let store = SessionStore::open().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("sqlite: {}", e))
+            std::io::Error::other(format!("sqlite: {}", e))
         })?;
         let (agent_done_tx, agent_done_rx) = tokio::sync::mpsc::channel(16);
         let (name_update_tx, name_update_rx) = tokio::sync::mpsc::channel(16);
@@ -144,7 +144,7 @@ impl Daemon {
                 }
                 Some(_) = self.config_change_rx.recv() => {
                     // Notify all connected clients
-                    for (&cid, _) in &self.sessions {
+                    for &cid in self.sessions.keys() {
                         self.ipc.send(cid, &DaemonMessage::Notice {
                             message: "Configuration reloaded".to_string(),
                         }).await;

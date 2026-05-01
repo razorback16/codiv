@@ -6,9 +6,10 @@ use std::time::Duration;
 use tracing::info;
 
 pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: ClientId) {
-    let cfg = daemon.config.read().unwrap();
-    let models = cfg.models.clone();
-    drop(cfg);
+    let models = {
+        let cfg = daemon.config.read().unwrap();
+        cfg.models.clone()
+    };
 
     let session = match daemon.sessions.get_mut(&client_id) {
         Some(s) => s,

@@ -382,14 +382,9 @@ fn handle_single_message(
             let mut prompt_lines: u16 = 0;
 
             // Render multi-line yellow header
-            for (i, line) in header_lines.iter().enumerate() {
-                if i == 0 {
-                    let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
-                    parser.process(header_line.as_bytes());
-                } else {
-                    let content_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
-                    parser.process(content_line.as_bytes());
-                }
+            for line in header_lines.iter() {
+                let formatted_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
+                parser.process(formatted_line.as_bytes());
                 prompt_lines += 1;
             }
 
