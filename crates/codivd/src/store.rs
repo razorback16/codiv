@@ -127,33 +127,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Append multiple events, starting at `start_seq`.
-    #[allow(dead_code)]
-    pub fn append_events(
-        &self,
-        session_id: &str,
-        start_seq: u32,
-        events: &[ConversationEvent],
-    ) -> Result<(), rusqlite::Error> {
-        self.conn.execute_batch("BEGIN")?;
-        let result = (|| {
-            for (i, event) in events.iter().enumerate() {
-                self.append_event(session_id, start_seq + i as u32, event)?;
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(())
-            }
-            Err(e) => {
-                self.conn.execute_batch("ROLLBACK").ok();
-                Err(e)
-            }
-        }
-    }
-
     /// Load all events for a session, optionally up to (inclusive) a given seq.
     pub fn load_events(
         &self,
@@ -190,28 +163,6 @@ impl SessionStore {
         Ok(events)
     }
 
-    /// Fork a session: copy events from `parent_id` up to `fork_at_seq`
-    /// into a new session.
-    #[allow(dead_code)]
-    pub fn fork_session(
-        &self,
-        parent_id: &str,
-        fork_at_seq: u32,
-        new_id: &str,
-        cwd: &str,
-    ) -> Result<(), rusqlite::Error> {
-        self.conn.execute(
-            "INSERT INTO sessions (id, parent_id, fork_at_seq, cwd) VALUES (?1, ?2, ?3, ?4)",
-            params![new_id, parent_id, fork_at_seq, cwd],
-        )?;
-        self.conn.execute(
-            "INSERT INTO events (session_id, seq, event_type, payload, created_at)
-             SELECT ?1, seq, event_type, payload, created_at
-             FROM events WHERE session_id = ?2 AND seq <= ?3",
-            params![new_id, parent_id, fork_at_seq],
-        )?;
-        Ok(())
-    }
 }
 
 /// Map a `ConversationEvent` variant to a string tag for the `event_type` column.
@@ -269,21 +220,4 @@ mod tests {
         assert_eq!(loaded.len(), 2);
     }
 
-    #[test]
-    fn fork_copies_events() {
-        let store = mem_store();
-        store.create_session("s1", "/tmp").unwrap();
-        let ev = ConversationEvent::UserPrompt {
-            text: "hi".into(),
-            request_id: "r1".into(),
-        };
-        store.append_event("s1", 0, &ev).unwrap();
-        store.append_event("s1", 1, &ConversationEvent::AssistantText {
-            request_id: "r1".into(),
-            text: "yo".into(),
-        }).unwrap();
-        store.fork_session("s1", 0, "s2", "/tmp").unwrap();
-        let forked = store.load_events("s2", None).unwrap();
-        assert_eq!(forked.len(), 1); // only seq 0
-    }
 }
