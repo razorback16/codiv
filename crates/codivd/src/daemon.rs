@@ -67,6 +67,10 @@ pub struct Daemon {
     _config_watcher: crate::agent::config::ConfigWatcherGuard,
     config_change_rx: tokio::sync::mpsc::Receiver<()>,
     _token_refresh_task: tokio::task::JoinHandle<()>,
+    /// Set to true when a client requests shutdown via `ClientMessage::Shutdown`.
+    /// The event loop checks this after dispatch and breaks out, allowing
+    /// `async_main` to run PID-file cleanup before exiting.
+    shutdown_requested: bool,
 }
 
 impl Daemon {
@@ -95,6 +99,7 @@ impl Daemon {
             _config_watcher,
             config_change_rx,
             _token_refresh_task: crate::agent::config::spawn_token_refresh_task(),
+            shutdown_requested: false,
         })
     }
 
@@ -122,6 +127,9 @@ impl Daemon {
                 Some(msg) = self.ipc.msg_rx.recv() => {
                     self.collect_returned_agents();
                     self.dispatch(msg.client_id, msg.message).await;
+                    if self.shutdown_requested {
+                        break;
+                    }
                 }
                 Some(_) = self.agent_done_rx.recv() => {
                     self.collect_returned_agents();
@@ -218,7 +226,8 @@ impl Daemon {
 
             ClientMessage::Shutdown { reason } => {
                 info!("shutdown requested: {}", reason);
-                std::process::exit(0);
+                self.shutdown_requested = true;
+                return;
             }
 
             ClientMessage::Confirmation {
