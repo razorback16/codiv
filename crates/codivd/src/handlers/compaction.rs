@@ -6,9 +6,10 @@ use std::time::Duration;
 use tracing::info;
 
 pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: ClientId) {
-    let cfg = daemon.config.read().unwrap();
-    let models = cfg.models.clone();
-    drop(cfg);
+    let models = {
+        let cfg = daemon.config.read().unwrap();
+        cfg.models.clone()
+    };
 
     let session = match daemon.sessions.get_mut(&client_id) {
         Some(s) => s,
@@ -73,10 +74,11 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
                 session.persistence.session_id = None;
                 session.persistence.event_seq = 0;
                 // Create fresh agent with Summary as first history event
-                let cfg = daemon.config.read().unwrap();
                 let cwd = session.ipc.cwd.clone();
-                let mut new_agent = create_agent(cwd, &cfg);
-                drop(cfg);
+                let mut new_agent = {
+                    let cfg = daemon.config.read().unwrap();
+                    create_agent(cwd, &cfg)
+                };
                 new_agent.history.push(ConversationEvent::Summary {
                     text: summary.clone(),
                     compacted_event_count: count,
