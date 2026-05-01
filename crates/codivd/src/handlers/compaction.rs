@@ -11,7 +11,7 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
         cfg.models.clone()
     };
 
-    let session = match daemon.sessions.get_mut(&client_id) {
+    let session = match daemon.persistence.sessions.get_mut(&client_id) {
         Some(s) => s,
         None => return,
     };
@@ -53,7 +53,7 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
                 text: summary.clone(),
                 compacted_event_count: count,
             };
-            daemon.persist_event(client_id, &event);
+            daemon.persistence.persist_event(client_id, &event);
 
             // Send AgentComplete to finalize the AI response block (critical)
             let complete_msg = DaemonMessage::AgentComplete {
@@ -70,7 +70,7 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
             }
 
             // Create NEW session — old session is archived
-            if let Some(session) = daemon.sessions.get_mut(&client_id) {
+            if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
                 session.persistence.session_id = None;
                 session.persistence.event_seq = 0;
                 // Create fresh agent with Summary as first history event
@@ -87,14 +87,14 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
             }
 
             // Create the new SQLite session and persist the Summary event
-            let new_sid = daemon.ensure_session(client_id);
-            daemon.persist_event(client_id, &event);
+            let new_sid = daemon.persistence.ensure_session(client_id);
+            daemon.persistence.persist_event(client_id, &event);
 
             // Send SessionCreated BEFORE AgentMeta so the token_usage.reset()
             // in the TUI happens first, then AgentMeta records the new baseline.
             if let Some(ref sid) = new_sid {
                 let name = "Compacted conversation".to_string();
-                if let Err(e) = daemon.store.update_session_name(sid, &name) {
+                if let Err(e) = daemon.persistence.store.update_session_name(sid, &name) {
                     tracing::error!("failed to set compacted session name: {}", e);
                 }
                 let session_msg = DaemonMessage::SessionCreated {
@@ -112,7 +112,7 @@ pub(crate) async fn handle_compact_request(daemon: &mut Daemon, client_id: Clien
             }
 
             // Send AgentMeta with token usage (after SessionCreated so reset happens first)
-            let context_window = if let Some(session) = daemon.sessions.get(&client_id) {
+            let context_window = if let Some(session) = daemon.persistence.sessions.get(&client_id) {
                 session
                     .agent_state
                     .agent

@@ -18,6 +18,13 @@ pub fn execute(value: Value) -> Result<String, String> {
     let input: EditInput =
         serde_json::from_value(value).map_err(|e| format!("invalid edit input: {e}"))?;
 
+    if !std::path::Path::new(&input.file_path).is_absolute() {
+        return Err(format!(
+            "Error: path must be absolute, got: {}",
+            input.file_path
+        ));
+    }
+
     tracing::debug!(file_path = %input.file_path, "edit");
 
     let content = std::fs::read_to_string(&input.file_path)

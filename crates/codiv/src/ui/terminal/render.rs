@@ -65,15 +65,15 @@ pub(super) fn current_hint(state: &TerminalState) -> Option<Cow<'_, str>> {
     let timeout = HINT_TIMEOUT;
 
     // Priority 1: Notice hints (config reload, etc.)
-    if let Some((ref msg, at)) = state.notice_hint {
+    if let Some((ref msg, at)) = state.hints.notice_hint {
         if at.elapsed() < timeout {
             return Some(Cow::Borrowed(msg.as_str()));
         }
     }
 
     // Priority 2: Transient drag hint (within 5s, supported terminal)
-    if state.term_supports_option_select {
-        if let Some(t) = state.last_mouse_drag {
+    if state.hints.term_supports_option_select {
+        if let Some(t) = state.hints.last_mouse_drag {
             if t.elapsed() < timeout {
                 return Some(Cow::Borrowed("Option+drag: select text"));
             }
@@ -81,7 +81,7 @@ pub(super) fn current_hint(state: &TerminalState) -> Option<Cow<'_, str>> {
     }
 
     // Remaining hints are gated by hint_shown_at
-    let shown_at = state.hint_shown_at?;
+    let shown_at = state.hints.hint_shown_at?;
     if shown_at.elapsed() >= timeout {
         return None;
     }
@@ -97,7 +97,7 @@ pub(super) fn current_hint(state: &TerminalState) -> Option<Cow<'_, str>> {
     if total_weight == 0 {
         return None;
     }
-    let pick = (state.hint_seed % total_weight as u32) as u16;
+    let pick = (state.hints.hint_seed % total_weight as u32) as u16;
     let mut acc = 0u16;
     for hint in &hints {
         acc += hint.weight as u16;
@@ -112,10 +112,10 @@ pub(super) fn current_hint(state: &TerminalState) -> Option<Cow<'_, str>> {
 fn collect_hints(state: &TerminalState) -> Vec<HintEntry> {
     let mut hints = Vec::new();
 
-    if state.input.content().len() >= HINT_INPUT_THRESHOLD {
+    if state.input.line.content().len() >= HINT_INPUT_THRESHOLD {
         // Typing trigger: thinking + permission hints
         hints.push(HintEntry {
-            text: if state.thinking_enabled {
+            text: if state.settings.thinking_enabled {
                 "Ctrl+T: thinking on".into()
             } else {
                 "Ctrl+T: thinking off".into()
@@ -123,7 +123,7 @@ fn collect_hints(state: &TerminalState) -> Vec<HintEntry> {
             weight: 50,
         });
         hints.push(HintEntry {
-            text: match state.permission_mode {
+            text: match state.settings.permission_mode {
                 PermissionMode::Auto => "\u{21E7}Tab: Auto",
                 PermissionMode::Manual => "\u{21E7}Tab: Manual",
                 PermissionMode::Bypass => "\u{21E7}Tab: Bypass",
@@ -133,7 +133,7 @@ fn collect_hints(state: &TerminalState) -> Vec<HintEntry> {
     } else {
         // Empty input trigger: mode switch hint
         hints.push(HintEntry {
-            text: match state.input_mode {
+            text: match state.input.mode {
                 InputMode::Ai => "Tab or ! to switch to terminal",
                 InputMode::Command => "Tab or ? to switch to AI",
             }.into(),
@@ -159,10 +159,10 @@ pub(crate) fn render_frame(
     let has_inline_picker = state.modal.pending_session_picker.is_some() || state.modal.pending_confirmation.is_some();
     let has_focused_block = state.tracker.focused().is_some();
     if state.ui.scroll_offset == 0 && !is_executing && !state.stream.agent_streaming && !in_alt_screen && !has_inline_picker && !has_focused_block {
-        let lines: Vec<String> = if state.input.has_paste_blocks() {
-            state.input.display_lines()
+        let lines: Vec<String> = if state.input.line.has_paste_blocks() {
+            state.input.line.display_lines()
         } else {
-            state.input.lines().map(|s| s.to_string()).collect()
+            state.input.line.lines().map(|s| s.to_string()).collect()
         };
         let line_count = lines.len() as u16;
         let screen_rows = parser.screen().size().0;
@@ -219,17 +219,17 @@ pub(crate) fn render_frame(
         // Position cursor at the correct (row, col).
         // When paste blocks are present, use display coordinates so the cursor
         // accounts for the expanded marker text width.
-        let (crow, ccol) = if state.input.has_paste_blocks() {
-            state.input.display_cursor_row_col()
+        let (crow, ccol) = if state.input.line.has_paste_blocks() {
+            state.input.line.display_cursor_row_col()
         } else {
-            state.input.cursor_row_col()
+            state.input.line.cursor_row_col()
         };
         let cursor_row_1based = first_row + crow as u16 + 1;
         parser.process(format!("\x1b[{};{}H", cursor_row_1based, ccol + 1).as_bytes());
 
         if !state.ui.prompt_is_live {
             // First time prompt goes live — show hint
-            state.hint_shown_at = Some(std::time::Instant::now());
+            state.hints.hint_shown_at = Some(std::time::Instant::now());
         }
         state.ui.prompt_is_live = true;
     } else {
@@ -282,22 +282,22 @@ pub(crate) fn render_frame(
                 daemon_timestamp: state.last_daemon_timestamp,
                 is_executing,
                 git_info: state.shell.git_info.as_ref(),
-                model_alias: &state.model_alias,
-                token_usage: &state.token_usage,
+                model_alias: &state.model.alias,
+                token_usage: &state.model.token_usage,
                 anim: &state.ui.anim,
-                thinking_enabled: state.thinking_enabled,
-                permission_mode: state.permission_mode,
-                session_name: state.session_name.as_deref(),
+                thinking_enabled: state.settings.thinking_enabled,
+                permission_mode: state.settings.permission_mode,
+                session_name: state.session.name.as_deref(),
                 theme,
             };
             render_status_bar(frame, status_area, &status_info);
 
             // --- Render completion popup ---
-            if state.completion_popup.is_visible() {
+            if state.input.completion_popup.is_visible() {
                 let (cursor_row, _cursor_col) = parser.screen().cursor_position();
-                let anchor_x = completion_anchor_x(term_area.left(), state.input.cursor_position());
+                let anchor_x = completion_anchor_x(term_area.left(), state.input.line.cursor_position());
                 let anchor_y = term_area.top() + cursor_row;
-                state.completion_popup.render(frame, anchor_x, anchor_y, theme);
+                state.input.completion_popup.render(frame, anchor_x, anchor_y, theme);
             }
 
             // --- Render block selection overlay ---
@@ -362,11 +362,11 @@ fn render_prompt_gutter(
     // Live prompt: draw `>` at the anchor row.
     if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
         if let Some(anchor) = state.ui.prompt_anchor_row {
-            let (live_char, live_fg) = match state.input_mode {
+            let (live_char, live_fg) = match state.input.mode {
                 InputMode::Command => ('$', theme.gutter_cmd),
                 InputMode::Ai => ('>', theme.gutter_ai),
             };
-            let prompt_lines = state.input.line_count() as u16;
+            let prompt_lines = state.input.line.line_count() as u16;
             for i in 0..prompt_lines {
                 let row = term_area.top() + anchor + i;
                 if row < term_area.bottom() {
@@ -501,7 +501,7 @@ fn render_block_selection_overlay(
         }
     } else if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
         if let Some(anchor) = state.ui.prompt_anchor_row {
-            let prompt_lines = state.input.line_count() as u16;
+            let prompt_lines = state.input.line.line_count() as u16;
             let first_prompt_row = term_area.top() + anchor;
             let top_rule = first_prompt_row.saturating_sub(1);
             let bottom_rule = first_prompt_row + prompt_lines;
@@ -532,7 +532,7 @@ fn render_horizontal_rules(buf: &mut Buffer, rows: &[u16], term_area: Rect, them
 fn render_contextual_hint(buf: &mut Buffer, state: &TerminalState, theme: &Theme, term_area: Rect) {
     if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
         if let (Some(anchor), Some(hint)) = (state.ui.prompt_anchor_row, current_hint(state)) {
-            let prompt_lines = state.input.line_count() as u16;
+            let prompt_lines = state.input.line.line_count() as u16;
             let bottom_rule = term_area.top() + anchor + prompt_lines;
             let hint_row = bottom_rule + 1;
             if hint_row >= term_area.top() && hint_row < term_area.bottom() {

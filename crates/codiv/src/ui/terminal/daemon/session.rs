@@ -271,7 +271,7 @@ pub(super) fn handle_session_replay(
     }
 
     state.tracker.set_replay_mode(false);
-    state.token_usage = replay_token_usage;
+    state.model.token_usage = replay_token_usage;
 
     // Render all blocks at once
     rerender_all(parser, &mut state.tracker, &mut state.ui.scroll_offset);

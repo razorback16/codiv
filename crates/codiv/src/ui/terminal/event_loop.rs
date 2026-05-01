@@ -34,7 +34,7 @@ pub(crate) fn event_loop(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Start background initialization (non-blocking) so the first Tab
     // press is fast without freezing the UI at startup.
-    state.completion_engine.start_init(bash);
+    state.input.completion_engine.start_init(bash);
 
     // Spawn crossterm reader thread for channelized terminal input.
     let crossterm_rx = terminal_io::spawn_crossterm_reader();
@@ -56,7 +56,7 @@ pub(crate) fn event_loop(
 
         // --- Poll completion engine background init when the coprocess is free ---
         if state.cmd.pending_command.is_none() {
-            state.completion_engine.poll_init(bash);
+            state.input.completion_engine.poll_init(bash);
         }
 
         // --- Detect alternate-screen transitions (vim, etc.) ---
@@ -87,7 +87,7 @@ pub(crate) fn event_loop(
             &state.cmd.pending_command,
             daemon_connected,
             state.last_heartbeat_sent,
-            state.completion_engine.is_ready(),
+            state.input.completion_engine.is_ready(),
         );
 
         // --- Select on all event sources ---
@@ -159,7 +159,7 @@ pub(crate) fn event_loop(
                                 // Forward paste text to the running command's PTY.
                                 bash.send_bytes(text.as_bytes());
                             } else if !state.stream.agent_streaming {
-                                state.input.insert_paste(text.clone());
+                                state.input.line.insert_paste(text.clone());
                                 state.ui.scroll_offset = 0;
                                 parser.screen_mut().set_scrollback(0);
                             }
@@ -529,7 +529,7 @@ pub(crate) fn event_loop(
                 {
                     new_client.send(&snapshot);
                 }
-                if let Some(ref sid) = state.session_id {
+                if let Some(ref sid) = state.session.id {
                     if let Some(frame) = ipc_messages::build_load_session(sid) {
                         new_client.send(&frame);
                     }

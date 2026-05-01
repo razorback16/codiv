@@ -27,11 +27,14 @@ pub(crate) struct PendingCommand {
 /// A pending shell lease request from the daemon.
 pub(crate) struct PendingLease {
     pub(crate) lease_id: String,
+    pub(crate) request_id: String,
 }
 
 /// An active shell lease held by the daemon.
 pub(crate) struct ActiveLease {
     pub(crate) lease_id: String,
+    #[allow(dead_code)]
+    pub(crate) request_id: String,
     /// The command to execute within this lease (set by ExecuteLeasedCommand).
     pub(crate) current_command: Option<ActiveLeasedCommand>,
 }
@@ -101,13 +104,12 @@ mod tests {
 }
 
 /// Tracks a pending permission confirmation prompt from the daemon.
+#[allow(dead_code)]
 pub(crate) struct PendingConfirmation {
     pub(crate) request_id: String,
-    #[allow(dead_code)]
     pub(crate) description: String,
     pub(crate) risk: codiv_common::messages::RiskLevel,
     pub(crate) tool_name: String,
-    #[allow(dead_code)]
     pub(crate) tool_args: String,
     pub(crate) prompt_lines: u16,
     pub(crate) selected_index: usize,
@@ -201,10 +203,51 @@ pub(crate) struct ModalState {
 }
 
 // ---------------------------------------------------------------------------
+// Additional sub-state structs
+// ---------------------------------------------------------------------------
+
+/// AI model metadata state.
+pub(crate) struct ModelState {
+    pub alias: String,
+    pub token_usage: TokenUsage,
+}
+
+/// User input state.
+pub(crate) struct InputState {
+    pub line: InputLine,
+    pub mode: InputMode,
+    pub completion_engine: CompletionEngine,
+    pub completion_popup: CompletionPopup,
+}
+
+/// Session tracking state.
+pub(crate) struct SessionState {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub last_permission_outcome: Option<(String, bool, String)>,
+}
+
+/// Runtime settings and modes.
+pub(crate) struct SettingsState {
+    pub thinking_enabled: bool,
+    pub permission_mode: PermissionMode,
+}
+
+/// Contextual hint state.
+pub(crate) struct HintState {
+    pub hint_shown_at: Option<Instant>,
+    pub last_mouse_drag: Option<Instant>,
+    pub term_supports_option_select: bool,
+    pub hint_seed: u32,
+    pub notice_hint: Option<(String, Instant)>,
+}
+
+// ---------------------------------------------------------------------------
 // TerminalState
 // ---------------------------------------------------------------------------
 
 /// Consolidated UI state for the terminal event loop.
+#[allow(dead_code)]
 pub(crate) struct TerminalState {
     // Timing
     pub last_heartbeat_sent: Instant,
@@ -217,43 +260,23 @@ pub(crate) struct TerminalState {
     pub shell: ShellState,
     pub ui: UiState,
     pub modal: ModalState,
-
-    // AI / daemon metadata
-    pub model_alias: String,
-    pub token_usage: TokenUsage,
-
-    // Input
-    pub input: InputLine,
-    pub input_mode: InputMode,
-    pub completion_engine: CompletionEngine,
-    pub completion_popup: CompletionPopup,
+    pub model: ModelState,
+    pub input: InputState,
+    pub session: SessionState,
+    pub settings: SettingsState,
+    pub hints: HintState,
 
     // Block registry and tool result modal
     pub tracker: BlockRegistry,
     pub tool_result_modal: ToolResultModal,
     pub was_alt_screen: bool,
 
-    // Settings / modes
-    pub thinking_enabled: bool,
-    pub permission_mode: PermissionMode,
-
-    // Session
-    pub last_permission_outcome: Option<(String, bool, String)>,
-    pub session_id: Option<String>,
-    pub session_name: Option<String>,
-
     /// When set, a compaction is in progress; holds the compacted event count.
     pub pending_compaction_count: Option<usize>,
-
-    // Contextual hint (shown for 5s after trigger)
-    pub hint_shown_at: Option<Instant>,
-    pub last_mouse_drag: Option<Instant>,
-    pub term_supports_option_select: bool,
-    pub hint_seed: u32,
-    pub notice_hint: Option<(String, Instant)>,
 }
 
 impl TerminalState {
+    #[allow(dead_code)]
     pub fn new(
         initial_cwd: String,
         has_client: bool,
@@ -303,20 +326,43 @@ impl TerminalState {
                 pending_confirmation: None,
                 pending_session_picker: None,
             },
-
-            // AI / daemon metadata
-            model_alias: String::new(),
-            token_usage: TokenUsage::default(),
-
-            // Input
-            input: InputLine::new(),
-            input_mode: if has_client {
-                InputMode::Ai
-            } else {
-                InputMode::Command
+            model: ModelState {
+                alias: String::new(),
+                token_usage: TokenUsage::default(),
             },
-            completion_engine: CompletionEngine::new(),
-            completion_popup: CompletionPopup::new(),
+            input: InputState {
+                line: InputLine::new(),
+                mode: if has_client {
+                    InputMode::Ai
+                } else {
+                    InputMode::Command
+                },
+                completion_engine: CompletionEngine::new(),
+                completion_popup: CompletionPopup::new(),
+            },
+            session: SessionState {
+                id: None,
+                name: None,
+                last_permission_outcome: None,
+            },
+            settings: SettingsState {
+                thinking_enabled: false,
+                permission_mode: PermissionMode::default(),
+            },
+            hints: HintState {
+                hint_shown_at: None,
+                last_mouse_drag: None,
+                term_supports_option_select: {
+                    let tp = std::env::var("TERM_PROGRAM").unwrap_or_default();
+                    let lc = std::env::var("LC_TERMINAL").unwrap_or_default();
+                    matches!(
+                        tp.as_str(),
+                        "iTerm.app" | "Apple_Terminal" | "WezTerm" | "Alacritty" | "kitty"
+                    ) || matches!(lc.as_str(), "iTerm2")
+                },
+                hint_seed: 0,
+                notice_hint: None,
+            },
 
             // Block registry and tool result modal
             tracker: {
@@ -327,30 +373,7 @@ impl TerminalState {
             tool_result_modal: ToolResultModal::new(),
             was_alt_screen: false,
 
-            // Settings / modes
-            thinking_enabled: false,
-            permission_mode: PermissionMode::default(),
-
-            // Session
-            last_permission_outcome: None,
-            session_id: None,
-            session_name: None,
-
             pending_compaction_count: None,
-
-            // Contextual hint (shown for 5s after trigger)
-            hint_shown_at: None,
-            last_mouse_drag: None,
-            term_supports_option_select: {
-                let tp = std::env::var("TERM_PROGRAM").unwrap_or_default();
-                let lc = std::env::var("LC_TERMINAL").unwrap_or_default();
-                matches!(
-                    tp.as_str(),
-                    "iTerm.app" | "Apple_Terminal" | "WezTerm" | "Alacritty" | "kitty"
-                ) || matches!(lc.as_str(), "iTerm2")
-            },
-            hint_seed: 0,
-            notice_hint: None,
         }
     }
 }

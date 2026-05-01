@@ -2,7 +2,7 @@ use crate::ipc::server::{ClientId, IpcServer};
 use crate::session::ClientSession;
 use crate::store::SessionStore;
 use codiv_common::conversation::ConversationEvent;
-use codiv_common::messages::{ClientMessage, DaemonMessage};
+use codiv_common::messages::{CancelReason, ClientMessage, DaemonMessage};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -50,19 +50,123 @@ pub(crate) fn truncated_name(prompt: &str) -> String {
     }
 }
 
+// -------------------------------------------------------------------
+// SessionPersistence facade — wraps store + sessions map
+// -------------------------------------------------------------------
+
+/// Facade that owns the SQLite store and the in-memory sessions map.
+/// Provides ergonomic methods for session lookup, mutation, and event
+/// persistence so callers don't have to juggle both fields manually.
+pub(crate) struct SessionPersistence {
+    pub(crate) store: SessionStore,
+    pub(crate) sessions: HashMap<ClientId, ClientSession>,
+}
+
+impl SessionPersistence {
+    #[allow(dead_code)]
+    pub(crate) fn get_session(&self, client_id: &ClientId) -> Option<&ClientSession> {
+        self.sessions.get(client_id)
+    }
+
+    pub(crate) fn get_session_mut(&mut self, client_id: &ClientId) -> Option<&mut ClientSession> {
+        self.sessions.get_mut(client_id)
+    }
+
+    pub(crate) fn insert_session(&mut self, client_id: ClientId, session: ClientSession) {
+        self.sessions.insert(client_id, session);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn remove_session(&mut self, client_id: &ClientId) -> Option<ClientSession> {
+        self.sessions.remove(client_id)
+    }
+
+    pub(crate) fn iter_sessions(&self) -> impl Iterator<Item = (&ClientId, &ClientSession)> {
+        self.sessions.iter()
+    }
+
+    pub(crate) fn iter_sessions_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&ClientId, &mut ClientSession)> {
+        self.sessions.iter_mut()
+    }
+
+    /// Ensure the client has a SQLite session. Returns the session_id.
+    pub(crate) fn ensure_session(&mut self, client_id: ClientId) -> Option<String> {
+        let session = self.sessions.get_mut(&client_id)?;
+        if let Some(ref id) = session.persistence.session_id {
+            return Some(id.clone());
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let cwd = session.ipc.cwd.clone();
+        if let Err(e) = self.store.create_session(&id, &cwd) {
+            tracing::error!("failed to create session in sqlite: {}", e);
+            return None;
+        }
+        session.persistence.session_id = Some(id.clone());
+        Some(id)
+    }
+
+    /// Persist a single event and bump the session's seq counter.
+    pub(crate) fn persist_event(&mut self, client_id: ClientId, event: &ConversationEvent) {
+        let session = match self.sessions.get_mut(&client_id) {
+            Some(s) => s,
+            None => return,
+        };
+        if session.persistence.session_id.is_none() {
+            return;
+        }
+        let seq = session.next_seq();
+        let sid = session.persistence.session_id.as_deref().unwrap();
+        if let Err(e) = self.store.append_event(sid, seq, event) {
+            tracing::error!("failed to persist event seq={}: {}", seq, e);
+        }
+    }
+
+    /// Persist multiple events and bump the session's seq counter.
+    pub(crate) fn persist_events(&mut self, client_id: ClientId, events: &[ConversationEvent]) {
+        for event in events {
+            self.persist_event(client_id, event);
+        }
+    }
+}
+
+// -------------------------------------------------------------------
+// AgentLifecycle facade — wraps agent done/name-update channels
+// -------------------------------------------------------------------
+
+/// Facade that owns the channels used for agent task completion
+/// notification and background session name generation.
+pub(crate) struct AgentLifecycle {
+    pub(crate) agent_done_tx: tokio::sync::mpsc::Sender<()>,
+    pub(crate) agent_done_rx: tokio::sync::mpsc::Receiver<()>,
+    pub(crate) name_update_tx:
+        tokio::sync::mpsc::Sender<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
+    pub(crate) name_update_rx:
+        tokio::sync::mpsc::Receiver<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
+}
+
+impl AgentLifecycle {
+    fn new() -> Self {
+        let (agent_done_tx, agent_done_rx) = tokio::sync::mpsc::channel(16);
+        let (name_update_tx, name_update_rx) = tokio::sync::mpsc::channel(16);
+        Self {
+            agent_done_tx,
+            agent_done_rx,
+            name_update_tx,
+            name_update_rx,
+        }
+    }
+}
+
+// -------------------------------------------------------------------
+// Daemon
+// -------------------------------------------------------------------
+
 pub struct Daemon {
     pub(crate) ipc: IpcServer,
-    pub(crate) sessions: HashMap<ClientId, ClientSession>,
-    pub(crate) store: SessionStore,
-    /// Notifies the event loop when a spawned agent task completes so
-    /// `collect_returned_agents` runs immediately (not on next IPC message).
-    pub(crate) agent_done_tx: tokio::sync::mpsc::Sender<()>,
-    agent_done_rx: tokio::sync::mpsc::Receiver<()>,
-    /// Channel for background name-gen tasks to send results back to the
-    /// event loop so the name can be persisted to SQLite.
-    name_update_tx: tokio::sync::mpsc::Sender<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
-    name_update_rx:
-        tokio::sync::mpsc::Receiver<(String, String, tokio::sync::mpsc::Sender<Vec<u8>>)>,
+    pub(crate) persistence: SessionPersistence,
+    pub(crate) lifecycle: AgentLifecycle,
     pub(crate) config: Arc<RwLock<crate::agent::config::AppConfig>>,
     _config_watcher: crate::agent::config::ConfigWatcherGuard,
     config_change_rx: tokio::sync::mpsc::Receiver<()>,
@@ -85,16 +189,14 @@ impl Daemon {
         let store = SessionStore::open().map_err(|e| {
             std::io::Error::other(format!("sqlite: {}", e))
         })?;
-        let (agent_done_tx, agent_done_rx) = tokio::sync::mpsc::channel(16);
-        let (name_update_tx, name_update_rx) = tokio::sync::mpsc::channel(16);
+        let lifecycle = AgentLifecycle::new();
         Ok(Self {
             ipc,
-            sessions: HashMap::new(),
-            store,
-            agent_done_tx,
-            agent_done_rx,
-            name_update_tx,
-            name_update_rx,
+            persistence: SessionPersistence {
+                store,
+                sessions: HashMap::new(),
+            },
+            lifecycle,
             config,
             _config_watcher,
             config_change_rx,
@@ -112,16 +214,18 @@ impl Daemon {
             tokio::select! {
                 _ = sigterm.recv() => {
                     info!("received SIGTERM, shutting down");
+                    self.graceful_shutdown().await;
                     break;
                 }
                 _ = tokio::signal::ctrl_c() => {
                     info!("received SIGINT, shutting down");
+                    self.graceful_shutdown().await;
                     break;
                 }
                 result = self.ipc.listener.accept() => {
                     if let Ok((stream, _)) = result {
                         let client_id = self.ipc.register_client(stream);
-                        self.sessions.insert(client_id, ClientSession::new());
+                        self.persistence.insert_session(client_id, ClientSession::new());
                     }
                 }
                 Some(msg) = self.ipc.msg_rx.recv() => {
@@ -131,11 +235,11 @@ impl Daemon {
                         break;
                     }
                 }
-                Some(_) = self.agent_done_rx.recv() => {
+                Some(_) = self.lifecycle.agent_done_rx.recv() => {
                     self.collect_returned_agents();
                 }
-                Some((session_id, name, client_tx)) = self.name_update_rx.recv() => {
-                    if let Err(e) = self.store.update_session_name(&session_id, &name) {
+                Some((session_id, name, client_tx)) = self.lifecycle.name_update_rx.recv() => {
+                    if let Err(e) = self.persistence.store.update_session_name(&session_id, &name) {
                         tracing::error!("failed to persist generated session name: {}", e);
                     }
                     let msg = DaemonMessage::SessionNameUpdated {
@@ -152,7 +256,7 @@ impl Daemon {
                 }
                 Some(_) = self.config_change_rx.recv() => {
                     // Notify all connected clients
-                    for &cid in self.sessions.keys() {
+                    for (&cid, _) in self.persistence.iter_sessions() {
                         self.ipc.send(cid, &DaemonMessage::Notice {
                             message: "Configuration reloaded".to_string(),
                         }).await;
@@ -160,7 +264,7 @@ impl Daemon {
                     // Sync permission mode and invalidate cached agents so the
                     // next request picks up the new provider/model config.
                     if let Ok(cfg) = self.config.read() {
-                        for (_, session) in self.sessions.iter_mut() {
+                        for (_, session) in self.persistence.iter_sessions_mut() {
                             if let Some(ref pctx) = session.permissions.permission_ctx {
                                 pctx.set_mode(cfg.permissions.mode);
                             }
@@ -174,6 +278,28 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Graceful shutdown: cancel relays and abort agent tasks
+    // -------------------------------------------------------------------
+
+    async fn graceful_shutdown(&mut self) {
+        info!("graceful shutdown: cancelling active relays and aborting agent tasks");
+        for (cid, session) in self.persistence.iter_sessions_mut() {
+            // Cancel all pending relay operations
+            if let Some(ref relay) = session.relay.relay_manager {
+                info!("shutting down relay for client {}", cid);
+                relay.cancel_all(CancelReason::UserAbort).await;
+            }
+            // Abort active agent task
+            if let Some(handle) = session.agent_state.agent_task.take() {
+                info!("aborting agent task for client {}", cid);
+                handle.abort();
+            }
+            session.agent_state.agent_return_rx = None;
+        }
+        info!("graceful shutdown complete");
     }
 
     // -------------------------------------------------------------------
@@ -203,7 +329,7 @@ impl Daemon {
                 path,
                 cwd,
             } => {
-                if let Some(session) = self.sessions.get_mut(&client_id) {
+                if let Some(session) = self.persistence.get_session_mut(&client_id) {
                     session.ipc.env_vars = env_vars;
                     session.ipc.path = path;
                     session.ipc.cwd = cwd;
@@ -212,7 +338,7 @@ impl Daemon {
             }
 
             ClientMessage::Heartbeat { timestamp: _ } => {
-                if let Some(session) = self.sessions.get_mut(&client_id) {
+                if let Some(session) = self.persistence.get_session_mut(&client_id) {
                     session.ipc.last_heartbeat = std::time::Instant::now();
                 }
                 let ts = SystemTime::now()
@@ -302,49 +428,6 @@ impl Daemon {
     }
 
     // -------------------------------------------------------------------
-    // Persistence helpers (used by handlers via &mut Daemon)
-    // -------------------------------------------------------------------
-
-    /// Ensure the client has a SQLite session. Returns the session_id.
-    pub(crate) fn ensure_session(&mut self, client_id: ClientId) -> Option<String> {
-        let session = self.sessions.get_mut(&client_id)?;
-        if let Some(ref id) = session.persistence.session_id {
-            return Some(id.clone());
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        let cwd = session.ipc.cwd.clone();
-        if let Err(e) = self.store.create_session(&id, &cwd) {
-            tracing::error!("failed to create session in sqlite: {}", e);
-            return None;
-        }
-        session.persistence.session_id = Some(id.clone());
-        Some(id)
-    }
-
-    /// Persist a single event and bump the session's seq counter.
-    pub(crate) fn persist_event(&mut self, client_id: ClientId, event: &ConversationEvent) {
-        let session = match self.sessions.get_mut(&client_id) {
-            Some(s) => s,
-            None => return,
-        };
-        if session.persistence.session_id.is_none() {
-            return;
-        }
-        let seq = session.next_seq();
-        let sid = session.persistence.session_id.as_deref().unwrap();
-        if let Err(e) = self.store.append_event(sid, seq, event) {
-            tracing::error!("failed to persist event seq={}: {}", seq, e);
-        }
-    }
-
-    /// Persist multiple events and bump the session's seq counter.
-    pub(crate) fn persist_events(&mut self, client_id: ClientId, events: &[ConversationEvent]) {
-        for event in events {
-            self.persist_event(client_id, event);
-        }
-    }
-
-    // -------------------------------------------------------------------
     // Agent lifecycle
     // -------------------------------------------------------------------
 
@@ -360,7 +443,7 @@ impl Daemon {
             tokio::sync::mpsc::Sender<Vec<u8>>,
         )> = Vec::new();
 
-        for (&cid, session) in self.sessions.iter_mut() {
+        for (&cid, session) in self.persistence.sessions.iter_mut() {
             if let Some(ref mut rx) = session.agent_state.agent_return_rx {
                 match rx.try_recv() {
                     Ok((agent, events)) => {
@@ -395,7 +478,7 @@ impl Daemon {
                 ConversationEvent::TokenUsage { input_tokens, .. } => Some(*input_tokens),
                 _ => None,
             }) {
-                if let Some(session) = self.sessions.get_mut(&cid) {
+                if let Some(session) = self.persistence.sessions.get_mut(&cid) {
                     session.agent_state.last_input_tokens = input_tokens;
                     let cfg = self.config.read().unwrap();
                     if let Some(ref agent) = session.agent_state.agent {
@@ -412,7 +495,7 @@ impl Daemon {
                     }
                 }
             }
-            self.persist_events(cid, &events);
+            self.persistence.persist_events(cid, &events);
         }
 
         // Spawn deferred background name generation tasks
@@ -423,7 +506,7 @@ impl Daemon {
             );
         }
         for (sid, prompt, client_tx) in name_gen_requests {
-            let name_update_tx = self.name_update_tx.clone();
+            let name_update_tx = self.lifecycle.name_update_tx.clone();
             let models = self.config.read().unwrap().models.clone();
             tokio::spawn(async move {
                 // Use a timeout so name generation never blocks the inference

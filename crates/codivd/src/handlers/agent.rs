@@ -4,6 +4,7 @@ use crate::ipc::server::ClientId;
 use codiv_common::conversation::ConversationEvent;
 use codiv_common::messages::DaemonMessage;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::info;
 
 pub(crate) async fn handle_agent_request(
@@ -15,7 +16,7 @@ pub(crate) async fn handle_agent_request(
 ) {
     // Auto-compaction check: compact before spawning agent if threshold exceeded
     let should_compact = daemon
-        .sessions
+        .persistence.sessions
         .get(&client_id)
         .map(|s| s.agent_state.needs_compaction)
         .unwrap_or(false);
@@ -28,55 +29,54 @@ pub(crate) async fn handle_agent_request(
         None => return,
     };
 
-    let rid = request_id.clone();
-
-    // Ensure SQLite session exists
-    let session_id = daemon.ensure_session(client_id);
-
-    // Persist the UserPrompt event
+    // Ensure SQLite session exists and persist the user prompt
+    let session_id = daemon.persistence.ensure_session(client_id);
     let user_event = ConversationEvent::UserPrompt {
         text: prompt.clone(),
         request_id: request_id.clone(),
     };
-    daemon.persist_event(client_id, &user_event);
+    daemon.persistence.persist_event(client_id, &user_event);
 
     // If this is the first prompt, set initial name + send SessionCreated.
-    // Background LLM name generation is deferred until the agent
-    // completes (in collect_returned_agents) so it doesn't compete
-    // with the main LLM call.
     if let Some(ref sid) = session_id {
-        let session = daemon.sessions.get(&client_id);
-        let is_first = session
-            .map(|s| s.persistence.event_seq == 1)
-            .unwrap_or(false);
-        if is_first {
-            let initial_name = truncated_name(&prompt);
-            if let Err(e) = daemon.store.update_session_name(sid, &initial_name) {
-                tracing::error!("failed to set initial session name: {}", e);
-            }
-            // Send SessionCreated to client
-            let msg = DaemonMessage::SessionCreated {
-                session_id: sid.clone(),
-                name: Some(initial_name.clone()),
-            };
-            match codiv_common::messages::frame_message(&msg) {
-                Ok(frame) => {
-                    if client_tx.send(frame).await.is_err() {
-                        tracing::warn!("failed to send SessionCreated: client disconnected");
-                    }
-                }
-                Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
-            }
-            // Mark for deferred name generation after agent completes
-            if let Some(session) = daemon.sessions.get_mut(&client_id) {
-                session.persistence.pending_name_gen = Some(prompt.clone());
-            }
-        }
+        send_session_created(daemon, client_id, sid, &prompt, &client_tx).await;
     }
 
-    // Take the agent out of the session so we can move it into the task.
-    // If none exists yet, create one.
-    let session = daemon.sessions.get_mut(&client_id);
+    // Take (or create) the agent and prepare it for the request.
+    let mut agent = ensure_agent(daemon, client_id);
+    agent.add_user_message(&prompt, &request_id);
+
+    // Create or reuse permission context for this session
+    let permission_ctx = ensure_permission_ctx(daemon, client_id, &client_tx);
+
+    // Set up the RelayManager for this agent request
+    {
+        let session = daemon.persistence.sessions.get_mut(&client_id).unwrap();
+        let relay = session
+            .relay
+            .relay_manager
+            .get_or_insert_with(|| {
+                Arc::new(crate::agent::relay_manager::RelayManager::new(
+                    client_tx.clone(),
+                ))
+            })
+            .clone();
+        agent.relay_manager = Some(relay);
+    }
+
+    // Spawn the agent task and store the return channel on the session.
+    let (agent_task_handle, agent_return_rx) =
+        spawn_agent_task(agent, request_id, client_tx, thinking, permission_ctx, daemon.lifecycle.agent_done_tx.clone());
+
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
+        session.agent_state.agent_return_rx = Some(agent_return_rx);
+        session.agent_state.agent_task = Some(agent_task_handle);
+    }
+}
+
+/// Take the existing agent from the session (or create a new one) and set its cwd.
+fn ensure_agent(daemon: &mut Daemon, client_id: ClientId) -> crate::agent::agent::Agent {
+    let session = daemon.persistence.sessions.get_mut(&client_id);
     let (cwd, taken_agent) = match session {
         Some(s) => {
             let cwd = s.ipc.cwd.clone();
@@ -93,56 +93,95 @@ pub(crate) async fn handle_agent_request(
 
     // Ensure agent uses the session's latest cwd.
     agent.cwd = cwd;
-    agent.add_user_message(&prompt, &request_id);
+    agent
+}
 
-    // Create or reuse permission context for this session
-    let permission_ctx = if let Some(s) = daemon.sessions.get(&client_id) {
-        s.permissions.permission_ctx.clone()
-    } else {
-        None
-    };
-    let permission_ctx = match permission_ctx {
-        Some(ctx) => Some(ctx),
-        None => {
-            let cfg = daemon.config.read().expect("daemon config RwLock poisoned");
-            let ctx = Arc::new(PermissionContext::new(
-                cfg.permissions.mode,
-                client_tx.clone(),
-                cfg.models.clone(),
-                Arc::clone(&daemon.config),
-            ));
-            drop(cfg);
-            if let Some(session) = daemon.sessions.get_mut(&client_id) {
-                session.permissions.permission_ctx = Some(Arc::clone(&ctx));
-            }
-            Some(ctx)
-        }
-    };
-
-    // Set up the RelayManager for this agent request
-    {
-        let session = daemon.sessions.get_mut(&client_id).unwrap();
-        let relay = session
-            .relay
-            .relay_manager
-            .get_or_insert_with(|| {
-                Arc::new(crate::agent::relay_manager::RelayManager::new(
-                    client_tx.clone(),
-                ))
-            })
-            .clone();
-        agent.relay_manager = Some(relay);
+/// If this is the first prompt in the session, persist an initial name,
+/// send `SessionCreated` to the client, and mark the session for deferred
+/// LLM name generation.
+async fn send_session_created(
+    daemon: &mut Daemon,
+    client_id: ClientId,
+    session_id: &str,
+    prompt: &str,
+    client_tx: &mpsc::Sender<Vec<u8>>,
+) {
+    let is_first = daemon
+        .persistence.sessions
+        .get(&client_id)
+        .map(|s| s.persistence.event_seq == 1)
+        .unwrap_or(false);
+    if !is_first {
+        return;
     }
 
-    // We need to put the agent back after the spawn completes.
-    // Use a channel to return it along with collected tool events.
-    let (agent_return_tx, agent_return_rx) = tokio::sync::oneshot::channel::<(
-        crate::agent::agent::Agent,
-        Vec<ConversationEvent>,
-    )>();
+    let initial_name = truncated_name(prompt);
+    if let Err(e) = daemon.persistence.store.update_session_name(session_id, &initial_name) {
+        tracing::error!("failed to set initial session name: {}", e);
+    }
 
-    let done_tx = daemon.agent_done_tx.clone();
-    let agent_task_handle = tokio::spawn(async move {
+    let msg = DaemonMessage::SessionCreated {
+        session_id: session_id.to_string(),
+        name: Some(initial_name.clone()),
+    };
+    match codiv_common::messages::frame_message(&msg) {
+        Ok(frame) => {
+            if client_tx.send(frame).await.is_err() {
+                tracing::warn!("failed to send SessionCreated: client disconnected");
+            }
+        }
+        Err(e) => tracing::error!("failed to frame SessionCreated: {}", e),
+    }
+
+    // Mark for deferred name generation after agent completes
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
+        session.persistence.pending_name_gen = Some(prompt.to_string());
+    }
+}
+
+/// Create or reuse the permission context for this session.
+fn ensure_permission_ctx(
+    daemon: &mut Daemon,
+    client_id: ClientId,
+    client_tx: &mpsc::Sender<Vec<u8>>,
+) -> Option<Arc<PermissionContext>> {
+    if let Some(ref s) = daemon.persistence.sessions.get(&client_id) {
+        if s.permissions.permission_ctx.is_some() {
+            return s.permissions.permission_ctx.clone();
+        }
+    }
+
+    let cfg = daemon.config.read().expect("daemon config RwLock poisoned");
+    let ctx = Arc::new(PermissionContext::new(
+        cfg.permissions.mode,
+        client_tx.clone(),
+        cfg.models.clone(),
+        Arc::clone(&daemon.config),
+    ));
+    drop(cfg);
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
+        session.permissions.permission_ctx = Some(Arc::clone(&ctx));
+    }
+    Some(ctx)
+}
+
+/// Spawn the agent task onto the tokio runtime. Returns the task handle and
+/// a oneshot receiver that will deliver the agent + collected events back.
+fn spawn_agent_task(
+    mut agent: crate::agent::agent::Agent,
+    request_id: String,
+    client_tx: mpsc::Sender<Vec<u8>>,
+    thinking: bool,
+    permission_ctx: Option<Arc<PermissionContext>>,
+    done_tx: mpsc::Sender<()>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::oneshot::Receiver<(crate::agent::agent::Agent, Vec<ConversationEvent>)>,
+) {
+    let (agent_return_tx, agent_return_rx) = tokio::sync::oneshot::channel();
+    let rid = request_id;
+
+    let handle = tokio::spawn(async move {
         // Send model alias before streaming starts (tokens unknown yet).
         let meta_msg = DaemonMessage::AgentMeta {
             model_alias: agent.model_config.model_alias(),
@@ -235,11 +274,7 @@ pub(crate) async fn handle_agent_request(
         let _ = done_tx.send(()).await;
     });
 
-    // Store the receiver on the session so collect_returned_agents picks it up.
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
-        session.agent_state.agent_return_rx = Some(agent_return_rx);
-        session.agent_state.agent_task = Some(agent_task_handle);
-    }
+    (handle, agent_return_rx)
 }
 
 pub(crate) async fn handle_cancel_request(
@@ -248,7 +283,7 @@ pub(crate) async fn handle_cancel_request(
     request_id: String,
 ) {
     info!("cancel request: {}", request_id);
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
         // Cancel all pending relay operations before aborting the task.
         if let Some(ref relay) = session.relay.relay_manager {
             relay
@@ -262,7 +297,7 @@ pub(crate) async fn handle_cancel_request(
 
         // Rebuild agent from persisted events so context is preserved.
         if let Some(ref sid) = session.persistence.session_id {
-            let events = daemon.store.load_events(sid, None).unwrap_or_default();
+            let events = daemon.persistence.store.load_events(sid, None).unwrap_or_default();
             let cwd = session.ipc.cwd.clone();
             let cfg = daemon.config.read().unwrap();
             let mut agent = create_agent(cwd, &cfg);

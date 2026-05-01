@@ -9,7 +9,7 @@ pub(crate) async fn handle_shell_lease_message(
     client_id: ClientId,
     msg: ClientMessage,
 ) {
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
         // Update session cwd from completion messages
         match &msg {
             ClientMessage::CommandCompleted { cwd, .. }

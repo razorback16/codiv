@@ -23,7 +23,7 @@ pub(crate) fn handle_mouse(
         MouseEventKind::Down(MouseButton::Left) => {
             if state.ui.prompt_is_live && state.ui.scroll_offset == 0 {
                 if let Some(anchor) = state.ui.prompt_anchor_row {
-                    let prompt_line_count = state.input.line_count() as u16;
+                    let prompt_line_count = state.input.line.line_count() as u16;
                     let prompt_end_row = anchor + prompt_line_count - 1;
                     let content_left = super::super::PROMPT_GUTTER_WIDTH;
                     let click_row = mouse.row;
@@ -33,13 +33,13 @@ pub(crate) fn handle_mouse(
                     {
                         let row = (click_row - anchor) as usize;
                         let col = (click_col - content_left) as usize;
-                        state.input.set_cursor_to_row_col(row, col);
+                        state.input.line.set_cursor_to_row_col(row, col);
                     }
                 }
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            state.last_mouse_drag = Some(Instant::now());
+            state.hints.last_mouse_drag = Some(Instant::now());
         }
         _ => {}
     }

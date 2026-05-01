@@ -77,6 +77,19 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Look up a single session's name by its ID.
+    pub fn get_session_name_by_id(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![id], |row| row.get::<_, Option<String>>(0))?;
+        match rows.next() {
+            Some(Ok(name)) => Ok(name),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<SessionInfo>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, parent_id, cwd, created_at, updated_at
@@ -198,6 +211,22 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "s1");
         assert_eq!(sessions[0].name.as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn get_session_name_by_id() {
+        let store = mem_store();
+        store.create_session("s1", "/tmp").unwrap();
+        // No name set yet — should return Ok(None)
+        assert_eq!(store.get_session_name_by_id("s1").unwrap(), None);
+        // Set a name and verify
+        store.update_session_name("s1", "my session").unwrap();
+        assert_eq!(
+            store.get_session_name_by_id("s1").unwrap(),
+            Some("my session".to_string())
+        );
+        // Non-existent session returns Ok(None)
+        assert_eq!(store.get_session_name_by_id("nonexistent").unwrap(), None);
     }
 
     #[test]

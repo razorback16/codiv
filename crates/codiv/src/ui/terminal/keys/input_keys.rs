@@ -54,31 +54,31 @@ pub(crate) fn handle_input_keys(
             parser.process(b"^C\r\n");
             state.ui.prompt_is_live = false;
             state.ui.prompt_anchor_row = None;
-            state.input.clear();
+            state.input.line.clear();
             state.ui.scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
 
         (KeyCode::Char('d'), m)
-            if m.contains(KeyModifiers::CONTROL) && state.input.content().is_empty() =>
+            if m.contains(KeyModifiers::CONTROL) && state.input.line.content().is_empty() =>
         {
             return InputKeyResult::Exit;
         }
 
         // --- Ctrl+T: toggle thinking mode ---
         (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
-            state.thinking_enabled = !state.thinking_enabled;
-            state.hint_shown_at = Some(Instant::now());
-            state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
+            state.settings.thinking_enabled = !state.settings.thinking_enabled;
+            state.hints.hint_shown_at = Some(Instant::now());
+            state.hints.hint_seed = state.hints.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
         }
 
         // --- Shift+Tab (BackTab): cycle permission mode ---
         (KeyCode::BackTab, _) => {
-            state.permission_mode = state.permission_mode.next();
-            state.hint_shown_at = Some(Instant::now());
-            state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
+            state.settings.permission_mode = state.settings.permission_mode.next();
+            state.hints.hint_shown_at = Some(Instant::now());
+            state.hints.hint_seed = state.hints.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
             if let Some(ref mut c) = client {
-                if let Some(frame) = ipc_messages::build_set_permission_mode(state.permission_mode) {
+                if let Some(frame) = ipc_messages::build_set_permission_mode(state.settings.permission_mode) {
                     c.send(&frame);
                 }
             }
@@ -89,19 +89,19 @@ pub(crate) fn handle_input_keys(
         // Without it, terminals typically send Ctrl+J (linefeed). Handle both.
         (KeyCode::Char('j'), m)
             if m.contains(KeyModifiers::CONTROL)
-                && state.input_mode == InputMode::Ai
+                && state.input.mode == InputMode::Ai
                 && state.cmd.pending_command.is_none() =>
         {
-            state.input.insert_newline();
+            state.input.line.insert_newline();
             state.ui.scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
         (KeyCode::Enter, m)
             if m.contains(KeyModifiers::SHIFT)
-                && state.input_mode == InputMode::Ai
+                && state.input.mode == InputMode::Ai
                 && state.cmd.pending_command.is_none() =>
         {
-            state.input.insert_newline();
+            state.input.line.insert_newline();
             state.ui.scroll_offset = 0;
             parser.screen_mut().set_scrollback(0);
         }
@@ -109,8 +109,8 @@ pub(crate) fn handle_input_keys(
         // --- Enter: submit input ---
         (KeyCode::Enter, _) if state.cmd.pending_command.is_none() => {
             // Capture the visual line count BEFORE submit expands paste markers.
-            let visual_line_count = state.input.line_count();
-            let raw_input = state.input.submit();
+            let visual_line_count = state.input.line.line_count();
+            let raw_input = state.input.line.submit();
 
             // Empty input — spring back, don't create a prompt block
             if raw_input.trim().is_empty() {
@@ -158,7 +158,7 @@ pub(crate) fn handle_input_keys(
                 // One blank line separator after the prompt
                 parser.process(b"\r\n");
 
-                state.tracker.record_prompt(&raw_input, scrollback_line, state.input_mode, rendered_lines);
+                state.tracker.record_prompt(&raw_input, scrollback_line, state.input.mode, rendered_lines);
                 state.ui.prompt_is_live = false;
                 state.ui.prompt_anchor_row = None;
                 let action = classify_input(&raw_input);
@@ -192,10 +192,10 @@ pub(crate) fn handle_input_keys(
                         *parser = vt100::Parser::new(rows, cols, MAX_SCROLLBACK);
                         state.ui.scroll_offset = 0;
                         state.ui.prompt_is_live = false;
-                        state.input.clear_history();
-                        state.completion_engine = CompletionEngine::new();
-                        state.completion_engine.start_init(bash);
-                        state.completion_popup.dismiss();
+                        state.input.line.clear_history();
+                        state.input.completion_engine = CompletionEngine::new();
+                        state.input.completion_engine.start_init(bash);
+                        state.input.completion_popup.dismiss();
                         state.tracker.clear();
                         state.tool_result_modal.close();
                         parser_push_notice(
@@ -242,7 +242,7 @@ pub(crate) fn handle_input_keys(
                     }
 
                     InputAction::Submit => {
-                        match state.input_mode {
+                        match state.input.mode {
                             InputMode::Command => {
                                 match bash.start_command(&raw_input) {
                                     Some(sentinel) => {
@@ -276,7 +276,7 @@ pub(crate) fn handle_input_keys(
                                         c,
                                         &raw_input,
                                         &state.shell.cwd,
-                                        state.thinking_enabled,
+                                        state.settings.thinking_enabled,
                                         &state.shell.cached_env_vars,
                                     ) {
                                         state.stream.agent_streaming = true;
@@ -305,9 +305,9 @@ pub(crate) fn handle_input_keys(
 
         // --- Tab: mode switch or completion ---
         (KeyCode::Tab, _) if state.cmd.pending_command.is_none() => {
-            if state.input.content().is_empty() {
+            if state.input.line.content().is_empty() {
                 // Toggle mode
-                state.input_mode = match state.input_mode {
+                state.input.mode = match state.input.mode {
                     InputMode::Command => {
                         if client.is_none() {
                             let hint = daemon_launcher::daemon_start_hint();
@@ -324,13 +324,13 @@ pub(crate) fn handle_input_keys(
                     }
                     InputMode::Ai => InputMode::Command,
                 };
-                state.hint_shown_at = Some(Instant::now());
-                state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
-            } else if state.input_mode == InputMode::Command {
+                state.hints.hint_shown_at = Some(Instant::now());
+                state.hints.hint_seed = state.hints.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
+            } else if state.input.mode == InputMode::Command {
                 // Existing tab-completion logic
-                let line = state.input.content().to_string();
-                let cursor = state.input.cursor_byte_offset();
-                if let Some(result) = state.completion_engine.complete(bash, &line, cursor) {
+                let line = state.input.line.content().to_string();
+                let cursor = state.input.line.cursor_byte_offset();
+                if let Some(result) = state.input.completion_engine.complete(bash, &line, cursor) {
                     match result.candidates.len() {
                         0 => {}
                         1 => {
@@ -341,7 +341,7 @@ pub(crate) fn handle_input_keys(
                                 } else {
                                     " "
                                 };
-                            state.input.replace_range(
+                            state.input.line.replace_range(
                                 result.replace_start,
                                 result.replace_end,
                                 &format!("{}{}", candidate, suffix),
@@ -352,13 +352,13 @@ pub(crate) fn handle_input_keys(
                                 terminal_input::longest_common_prefix(&result.candidates);
                             let prefix = &line[result.replace_start..result.replace_end];
                             if common.len() > prefix.len() {
-                                state.input.replace_range(
+                                state.input.line.replace_range(
                                     result.replace_start,
                                     result.replace_end,
                                     &common,
                                 );
                             }
-                            state.completion_popup.open(
+                            state.input.completion_popup.open(
                                 result.candidates,
                                 result.replace_start,
                                 result.replace_end,
@@ -366,14 +366,14 @@ pub(crate) fn handle_input_keys(
                         }
                     }
                 }
-            } else if state.input_mode == InputMode::Ai {
-                let line = state.input.content().to_string();
+            } else if state.input.mode == InputMode::Ai {
+                let line = state.input.line.content().to_string();
                 if line.starts_with('/') {
                     let candidates = complete_slash_command(&line);
                     match candidates.len() {
                         0 => {}
                         1 => {
-                            state.input.replace_range(
+                            state.input.line.replace_range(
                                 0,
                                 line.len(),
                                 &format!("{} ", candidates[0]),
@@ -382,9 +382,9 @@ pub(crate) fn handle_input_keys(
                         _ => {
                             let common = terminal_input::longest_common_prefix(&candidates);
                             if common.len() > line.len() {
-                                state.input.replace_range(0, line.len(), &common);
+                                state.input.line.replace_range(0, line.len(), &common);
                             }
-                            state.completion_popup.open(candidates, 0, line.len());
+                            state.input.completion_popup.open(candidates, 0, line.len());
                         }
                     }
                 }
@@ -393,36 +393,36 @@ pub(crate) fn handle_input_keys(
 
         // --- History navigation ---
         (KeyCode::Up, _) => {
-            if state.input_mode != InputMode::Ai || !state.input.move_up() {
-                state.input.history_up();
+            if state.input.mode != InputMode::Ai || !state.input.line.move_up() {
+                state.input.line.history_up();
             }
         }
         (KeyCode::Down, _) => {
-            if state.input_mode != InputMode::Ai || !state.input.move_down() {
-                state.input.history_down();
+            if state.input.mode != InputMode::Ai || !state.input.line.move_down() {
+                state.input.line.history_down();
             }
         }
 
         // --- Cursor movement ---
         (KeyCode::Left, _) => {
-            state.input.move_left();
+            state.input.line.move_left();
         }
         (KeyCode::Right, _) => {
-            state.input.move_right();
+            state.input.line.move_right();
         }
         (KeyCode::Home, _) => {
-            state.input.home();
+            state.input.line.home();
         }
         (KeyCode::End, _) => {
-            state.input.end();
+            state.input.line.end();
         }
 
         // --- Editing ---
         (KeyCode::Backspace, _) => {
-            state.input.backspace();
+            state.input.line.backspace();
         }
         (KeyCode::Delete, _) => {
-            state.input.delete();
+            state.input.line.delete();
         }
 
         // --- Scrolling ---
@@ -440,12 +440,12 @@ pub(crate) fn handle_input_keys(
         (KeyCode::Char(ch), modifiers) => {
             if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
                 // Unhandled modifier combo — ignore.
-            } else if ch == '!' && state.input.content().is_empty() && state.input_mode == InputMode::Ai {
+            } else if ch == '!' && state.input.line.content().is_empty() && state.input.mode == InputMode::Ai {
                 // Quick switch: '!' on empty input switches to Command mode
-                state.input_mode = InputMode::Command;
-                state.hint_shown_at = Some(Instant::now());
-                state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
-            } else if ch == '?' && state.input.content().is_empty() && state.input_mode == InputMode::Command {
+                state.input.mode = InputMode::Command;
+                state.hints.hint_shown_at = Some(Instant::now());
+                state.hints.hint_seed = state.hints.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
+            } else if ch == '?' && state.input.line.content().is_empty() && state.input.mode == InputMode::Command {
                 // Quick switch: '?' on empty input switches to AI mode
                 if client.is_none() {
                     let hint = daemon_launcher::daemon_start_hint();
@@ -458,15 +458,15 @@ pub(crate) fn handle_input_keys(
                         ),
                     );
                 }
-                state.input_mode = InputMode::Ai;
-                state.hint_shown_at = Some(Instant::now());
-                state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
+                state.input.mode = InputMode::Ai;
+                state.hints.hint_shown_at = Some(Instant::now());
+                state.hints.hint_seed = state.hints.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
             } else {
-                let was_below = state.input.content().len() < HINT_INPUT_THRESHOLD;
-                state.input.insert(ch);
-                if was_below && state.input.content().len() >= HINT_INPUT_THRESHOLD {
-                    state.hint_shown_at = Some(Instant::now());
-                    state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
+                let was_below = state.input.line.content().len() < HINT_INPUT_THRESHOLD;
+                state.input.line.insert(ch);
+                if was_below && state.input.line.content().len() >= HINT_INPUT_THRESHOLD {
+                    state.hints.hint_shown_at = Some(Instant::now());
+                    state.hints.hint_seed = state.hints.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
                 }
                 state.ui.scroll_offset = 0;
                 parser.screen_mut().set_scrollback(0);

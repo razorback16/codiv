@@ -220,6 +220,158 @@ pub async fn stream_from_config(
     }
 }
 
+// ---------------------------------------------------------------------------
+// StreamAccumulator — collects streaming state across chunk callbacks
+// ---------------------------------------------------------------------------
+
+/// Accumulates text, reasoning, and tool-call events during an LLM stream.
+struct StreamAccumulator {
+    full_text: String,
+    chunk_count: u32,
+    collected_events: Vec<ConversationEvent>,
+    reasoning_buffer: String,
+    reasoning_start: Option<Instant>,
+    tool_call_names: HashMap<String, String>,
+    request_id: String,
+}
+
+impl StreamAccumulator {
+    fn new(request_id: &str) -> Self {
+        Self {
+            full_text: String::new(),
+            chunk_count: 0,
+            collected_events: Vec::new(),
+            reasoning_buffer: String::new(),
+            reasoning_start: None,
+            tool_call_names: HashMap::new(),
+            request_id: request_id.to_string(),
+        }
+    }
+
+    async fn handle_text_delta(&mut self, text: String, tx: &mpsc::Sender<Vec<u8>>) -> Result<(), DynError> {
+        self.full_text.push_str(&text);
+        send_ipc(
+            tx,
+            &DaemonMessage::AgentStreamChunk {
+                request_id: self.request_id.clone(),
+                chunk: StreamChunk::Text(text),
+            },
+        )
+        .await
+    }
+
+    async fn handle_reasoning_delta(&mut self, text: String, tx: &mpsc::Sender<Vec<u8>>) -> Result<(), DynError> {
+        self.reasoning_start.get_or_insert(Instant::now());
+        self.reasoning_buffer.push_str(&text);
+        send_ipc(
+            tx,
+            &DaemonMessage::AgentStreamChunk {
+                request_id: self.request_id.clone(),
+                chunk: StreamChunk::Reasoning(text),
+            },
+        )
+        .await
+    }
+
+    async fn handle_tool_call_delta(&self, id: String, delta: String, tx: &mpsc::Sender<Vec<u8>>) -> Result<(), DynError> {
+        let tool_name = self.tool_call_names.get(&id).cloned().unwrap_or_default();
+        send_ipc(
+            tx,
+            &DaemonMessage::AgentStreamChunk {
+                request_id: self.request_id.clone(),
+                chunk: StreamChunk::ToolCallDelta { tool_call_id: id, tool_name, delta },
+            },
+        )
+        .await
+    }
+
+    fn handle_tool_call_start(&mut self, info: aisdk::core::tools::ToolDetails) {
+        // Flush pre-tool-call reasoning as its own event
+        if !self.reasoning_buffer.is_empty() {
+            let duration = self.reasoning_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+            self.collected_events.push(ConversationEvent::AssistantReasoning {
+                request_id: self.request_id.clone(),
+                text: std::mem::take(&mut self.reasoning_buffer),
+                duration_secs: duration,
+            });
+            self.reasoning_start = None;
+        }
+        // Register name so ToolCallDelta can include it in IPC
+        self.tool_call_names.insert(info.id.clone(), info.name.clone());
+    }
+
+    async fn handle_tool_call_available(&mut self, info: aisdk::core::ToolCallInfo, tx: &mpsc::Sender<Vec<u8>>) -> Result<(), DynError> {
+        let arguments = serde_json::to_string(&info.input).unwrap_or_default();
+        self.collected_events.push(ConversationEvent::ToolCall {
+            request_id: self.request_id.clone(),
+            tool_call_id: info.tool.id.clone(),
+            tool_name: info.tool.name.clone(),
+            arguments: arguments.clone(),
+        });
+        // For edit tools, capture the file content NOW (before the tool
+        // executes) so the client can compute an accurate diff.
+        let pre_edit_content = if info.tool.name == "edit" {
+            info.input.get("file_path")
+                .and_then(|v| v.as_str())
+                .and_then(|p| std::fs::read_to_string(p).ok())
+        } else {
+            None
+        };
+        send_ipc(
+            tx,
+            &DaemonMessage::AgentStreamChunk {
+                request_id: self.request_id.clone(),
+                chunk: StreamChunk::ToolCall {
+                    name: info.tool.name,
+                    arguments,
+                    pre_edit_content,
+                },
+            },
+        )
+        .await
+    }
+
+    async fn handle_tool_call_end(&mut self, info: aisdk::core::ToolResultInfo, tx: &mpsc::Sender<Vec<u8>>) -> Result<(), DynError> {
+        let output = match &info.output {
+            Ok(v) => match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => serde_json::to_string(&other).unwrap_or_default(),
+            },
+            Err(e) => format!("Error: {e}"),
+        };
+        let output = truncate_tool_output(&output, MAX_TOOL_OUTPUT_BYTES);
+        self.collected_events.push(ConversationEvent::ToolResult {
+            request_id: self.request_id.clone(),
+            tool_call_id: info.tool.id.clone(),
+            tool_name: info.tool.name.clone(),
+            result: output.clone(),
+        });
+        send_ipc(
+            tx,
+            &DaemonMessage::AgentStreamChunk {
+                request_id: self.request_id.clone(),
+                chunk: StreamChunk::ToolResult {
+                    name: info.tool.name,
+                    result: output,
+                },
+            },
+        )
+        .await
+    }
+
+    /// Flush any remaining reasoning into a final event.
+    fn flush_reasoning(&mut self) {
+        if !self.reasoning_buffer.is_empty() {
+            let duration = self.reasoning_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+            self.collected_events.push(ConversationEvent::AssistantReasoning {
+                request_id: self.request_id.clone(),
+                text: std::mem::take(&mut self.reasoning_buffer),
+                duration_secs: duration,
+            });
+        }
+    }
+}
+
 async fn run_stream<M>(
     model: M,
     system_prompt: &str,
@@ -267,123 +419,29 @@ where
         builder = builder.with_tool(tool);
     }
     let mut response = builder.build().stream_text().await?;
-    let mut full_text = String::new();
-    let mut chunk_count: u32 = 0;
-    let mut collected_events: Vec<ConversationEvent> = Vec::new();
-    let mut reasoning_buffer = String::new();
-    let mut reasoning_start: Option<Instant> = None;
-    let mut tool_call_names: HashMap<String, String> = HashMap::new();
+    let mut acc = StreamAccumulator::new(request_id);
 
     while let Some(chunk) = response.stream.next().await {
-        chunk_count += 1;
+        acc.chunk_count += 1;
 
         match chunk {
             LanguageModelStreamChunkType::TextDelta(text) => {
-                full_text.push_str(&text);
-                send_ipc(
-                    tx,
-                    &DaemonMessage::AgentStreamChunk {
-                        request_id: request_id.to_string(),
-                        chunk: StreamChunk::Text(text),
-                    },
-                )
-                .await?;
+                acc.handle_text_delta(text, tx).await?;
             }
             LanguageModelStreamChunkType::ReasoningDelta(text) => {
-                reasoning_start.get_or_insert(Instant::now());
-                reasoning_buffer.push_str(&text);
-                send_ipc(
-                    tx,
-                    &DaemonMessage::AgentStreamChunk {
-                        request_id: request_id.to_string(),
-                        chunk: StreamChunk::Reasoning(text),
-                    },
-                )
-                .await?;
+                acc.handle_reasoning_delta(text, tx).await?;
             }
             LanguageModelStreamChunkType::ToolCallDelta { id, delta } => {
-                let tool_name = tool_call_names.get(&id).cloned().unwrap_or_default();
-                send_ipc(
-                    tx,
-                    &DaemonMessage::AgentStreamChunk {
-                        request_id: request_id.to_string(),
-                        chunk: StreamChunk::ToolCallDelta { tool_call_id: id, tool_name, delta },
-                    },
-                )
-                .await?;
+                acc.handle_tool_call_delta(id, delta, tx).await?;
             }
             LanguageModelStreamChunkType::ToolCallStart(info) => {
-                // Flush pre-tool-call reasoning as its own event
-                if !reasoning_buffer.is_empty() {
-                    let duration = reasoning_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
-                    collected_events.push(ConversationEvent::AssistantReasoning {
-                        request_id: request_id.to_string(),
-                        text: std::mem::take(&mut reasoning_buffer),
-                        duration_secs: duration,
-                    });
-                    reasoning_start = None;
-                }
-                // Register name so ToolCallDelta can include it in IPC
-                tool_call_names.insert(info.id.clone(), info.name.clone());
+                acc.handle_tool_call_start(info);
             }
             LanguageModelStreamChunkType::ToolCallAvailable(info) => {
-                let arguments = serde_json::to_string(&info.input).unwrap_or_default();
-                collected_events.push(ConversationEvent::ToolCall {
-                    request_id: request_id.to_string(),
-                    tool_call_id: info.tool.id.clone(),
-                    tool_name: info.tool.name.clone(),
-                    arguments: arguments.clone(),
-                });
-                // For edit tools, capture the file content NOW (before the tool
-                // executes) so the client can compute an accurate diff. Without
-                // this, the client may read the file after the edit has already
-                // been applied due to IPC batching.
-                let pre_edit_content = if info.tool.name == "edit" {
-                    info.input.get("file_path")
-                        .and_then(|v| v.as_str())
-                        .and_then(|p| std::fs::read_to_string(p).ok())
-                } else {
-                    None
-                };
-                send_ipc(
-                    tx,
-                    &DaemonMessage::AgentStreamChunk {
-                        request_id: request_id.to_string(),
-                        chunk: StreamChunk::ToolCall {
-                            name: info.tool.name,
-                            arguments,
-                            pre_edit_content,
-                        },
-                    },
-                )
-                .await?;
+                acc.handle_tool_call_available(info, tx).await?;
             }
             LanguageModelStreamChunkType::ToolCallEnd(info) => {
-                let output = match &info.output {
-                    Ok(v) => match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => serde_json::to_string(&other).unwrap_or_default(),
-                    },
-                    Err(e) => format!("Error: {e}"),
-                };
-                let output = truncate_tool_output(&output, MAX_TOOL_OUTPUT_BYTES);
-                collected_events.push(ConversationEvent::ToolResult {
-                    request_id: request_id.to_string(),
-                    tool_call_id: info.tool.id.clone(),
-                    tool_name: info.tool.name.clone(),
-                    result: output.clone(),
-                });
-                send_ipc(
-                    tx,
-                    &DaemonMessage::AgentStreamChunk {
-                        request_id: request_id.to_string(),
-                        chunk: StreamChunk::ToolResult {
-                            name: info.tool.name,
-                            result: output,
-                        },
-                    },
-                )
-                .await?;
+                acc.handle_tool_call_end(info, tx).await?;
             }
             LanguageModelStreamChunkType::Failed(err) => {
                 tracing::error!("stream failed: {err}");
@@ -397,18 +455,11 @@ where
     }
 
     // Flush accumulated reasoning into a single event.
-    if !reasoning_buffer.is_empty() {
-        let duration = reasoning_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
-        collected_events.push(ConversationEvent::AssistantReasoning {
-            request_id: request_id.to_string(),
-            text: reasoning_buffer,
-            duration_secs: duration,
-        });
-    }
+    acc.flush_reasoning();
 
     tracing::info!(
         "stream ended for request {}: {} chunks, {} bytes of text",
-        request_id, chunk_count, full_text.len()
+        request_id, acc.chunk_count, acc.full_text.len()
     );
 
     if let Some(reason) = response.stop_reason().await {
@@ -420,7 +471,7 @@ where
     let output_tokens = usage.output_tokens.unwrap_or(0);
     let cache_read_tokens = usage.cached_tokens.unwrap_or(0);
 
-    Ok((full_text, input_tokens, output_tokens, cache_read_tokens, collected_events))
+    Ok((acc.full_text, input_tokens, output_tokens, cache_read_tokens, acc.collected_events))
 }
 
 pub(super) async fn send_ipc(tx: &mpsc::Sender<Vec<u8>>, msg: &DaemonMessage) -> Result<(), DynError> {

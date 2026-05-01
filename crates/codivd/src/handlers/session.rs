@@ -3,6 +3,12 @@ use crate::ipc::server::ClientId;
 use codiv_common::messages::DaemonMessage;
 use tracing::info;
 
+/// Maximum bytes of shell command output to persist per event.
+const MAX_COMMAND_OUTPUT_BYTES: usize = 10_000;
+
+/// Seconds without a heartbeat before a session is considered stale.
+const STALE_SESSION_TIMEOUT_SECS: u64 = 120;
+
 pub(crate) async fn handle_new_session(daemon: &mut Daemon, client_id: ClientId) {
     let client_tx = match daemon.ipc.client_sender(client_id) {
         Some(tx) => tx,
@@ -10,7 +16,7 @@ pub(crate) async fn handle_new_session(daemon: &mut Daemon, client_id: ClientId)
     };
 
     // Create a fresh agent
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
         let cwd = session.ipc.cwd.clone();
         let cfg = daemon.config.read().unwrap();
         let agent = create_agent(cwd.clone(), &cfg);
@@ -21,7 +27,7 @@ pub(crate) async fn handle_new_session(daemon: &mut Daemon, client_id: ClientId)
     }
 
     // Create a new SQLite session
-    let sid = daemon.ensure_session(client_id);
+    let sid = daemon.persistence.ensure_session(client_id);
 
     if let Some(sid) = sid {
         let msg = DaemonMessage::SessionCreated {
@@ -51,21 +57,18 @@ pub(crate) async fn handle_load_session(
 
     // Load all events for the target session
     let events = daemon
-        .store
+        .persistence.store
         .load_events(&target_sid, None)
         .unwrap_or_default();
 
-    // Look up session info for the name
+    // Look up session name directly by ID
     let session_name = daemon
-        .store
-        .list_sessions(100)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|s| s.id == target_sid)
-        .and_then(|s| s.name);
+        .persistence.store
+        .get_session_name_by_id(&target_sid)
+        .unwrap_or(None);
 
     // Update the client session to point at the loaded session
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
         // Clear agent history and reload from events
         let cwd = session.ipc.cwd.clone();
         let cfg = daemon.config.read().unwrap();
@@ -112,11 +115,11 @@ pub(crate) async fn handle_list_sessions(daemon: &mut Daemon, client_id: ClientI
     };
 
     let current_sid = daemon
-        .sessions
+        .persistence.sessions
         .get(&client_id)
         .and_then(|s| s.persistence.session_id.as_deref());
     let sessions: Vec<_> = daemon
-        .store
+        .persistence.store
         .list_sessions(50)
         .unwrap_or_default()
         .into_iter()
@@ -140,15 +143,15 @@ pub(crate) async fn handle_command_result(
     use std::sync::Arc;
 
     // Ensure a session exists so we can persist the shell command
-    daemon.ensure_session(client_id);
+    daemon.persistence.ensure_session(client_id);
 
     // Name the session if this is the first event (command-initiated session)
-    if let Some(session) = daemon.sessions.get(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get(&client_id) {
         if session.persistence.event_seq == 0 {
             if let Some(sid) = session.persistence.session_id.clone() {
                 let base_cmd = command.split_whitespace().next().unwrap_or(&command);
                 let name = format!("command {}", base_cmd);
-                if let Err(e) = daemon.store.update_session_name(&sid, &name) {
+                if let Err(e) = daemon.persistence.store.update_session_name(&sid, &name) {
                     tracing::error!("failed to set command session name: {}", e);
                 }
                 if let Some(client_tx) = daemon.ipc.client_sender(client_id) {
@@ -170,10 +173,8 @@ pub(crate) async fn handle_command_result(
     }
 
     // Persist ShellCommand event (truncate large output)
-    let truncated_output = if output.len() > 10000 {
-        // Find the largest index <= 10000 that falls on a UTF-8 char
-        // boundary to avoid panicking on multi-byte characters.
-        let mut end = 10000;
+    let truncated_output = if output.len() > MAX_COMMAND_OUTPUT_BYTES {
+        let mut end = MAX_COMMAND_OUTPUT_BYTES;
         while end > 0 && !output.is_char_boundary(end) {
             end -= 1;
         }
@@ -189,9 +190,9 @@ pub(crate) async fn handle_command_result(
         exit_code,
         cwd: cwd.clone(),
     };
-    daemon.persist_event(client_id, &event);
+    daemon.persistence.persist_event(client_id, &event);
 
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
         // Keep session cwd in sync with the client's actual cwd.
         session.ipc.cwd = cwd.clone();
 
@@ -214,9 +215,9 @@ pub(crate) async fn handle_command_result(
 /// Clean up sessions that have not sent a heartbeat within `timeout_secs`.
 pub(crate) async fn cleanup_stale_sessions(daemon: &mut Daemon) {
     let stale: Vec<ClientId> = daemon
-        .sessions
+        .persistence.sessions
         .iter()
-        .filter(|(_, s)| s.is_stale(120))
+        .filter(|(_, s)| s.is_stale(STALE_SESSION_TIMEOUT_SECS))
         .map(|(id, _)| *id)
         .collect();
 
@@ -224,7 +225,7 @@ pub(crate) async fn cleanup_stale_sessions(daemon: &mut Daemon) {
         // If the session has an active agent task, abort it before removal
         // to prevent the agent's return channel send from silently failing
         // and losing results.
-        if let Some(session) = daemon.sessions.get(&id) {
+        if let Some(session) = daemon.persistence.sessions.get(&id) {
             if session.agent_state.agent_task.is_some() {
                 info!(
                     "aborting active agent task for stale session {} before cleanup",
@@ -232,7 +233,7 @@ pub(crate) async fn cleanup_stale_sessions(daemon: &mut Daemon) {
                 );
             }
         }
-        if let Some(mut session) = daemon.sessions.remove(&id) {
+        if let Some(mut session) = daemon.persistence.sessions.remove(&id) {
             info!("cleaning stale session {}", id);
             // Cancel all pending relay operations
             if let Some(ref relay) = session.relay.relay_manager {

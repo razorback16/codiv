@@ -14,7 +14,7 @@ pub(crate) async fn handle_confirmation(
     add_to_denylist: bool,
     comment: Option<String>,
 ) {
-    if let Some(session) = daemon.sessions.get(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get(&client_id) {
         if let Some(ref pctx) = session.permissions.permission_ctx {
             // Extract metadata for this request
             let meta = {
@@ -59,7 +59,7 @@ pub(crate) async fn handle_set_permission_mode(
     mode: codiv_common::permissions::PermissionMode,
 ) {
     info!("permission mode change requested: {}", mode);
-    if let Some(session) = daemon.sessions.get_mut(&client_id) {
+    if let Some(session) = daemon.persistence.sessions.get_mut(&client_id) {
         match session.permissions.permission_ctx {
             Some(ref pctx) => {
                 pctx.set_mode(mode);

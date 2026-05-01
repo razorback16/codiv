@@ -80,7 +80,7 @@ pub(crate) fn handle_daemon_message(
         | ipc_messages::DaemonMessage::ReleaseShellLease { .. }
         | ipc_messages::DaemonMessage::CancelLeasedCommand { .. } => {}
         ipc_messages::DaemonMessage::Notice { message } => {
-            state.notice_hint = Some((message, Instant::now()));
+            state.hints.notice_hint = Some((message, Instant::now()));
             state.ui.needs_render = true;
         }
         ipc_messages::DaemonMessage::CompactionStarted {
@@ -101,8 +101,8 @@ pub(crate) fn handle_daemon_message(
                 md_stream: &mut state.stream.md_stream,
                 agent_streaming: &mut state.stream.agent_streaming,
                 last_daemon_timestamp: &mut state.last_daemon_timestamp,
-                model_alias: &mut state.model_alias,
-                token_usage: &mut state.token_usage,
+                model_alias: &mut state.model.alias,
+                token_usage: &mut state.model.token_usage,
                 tracker: &mut state.tracker,
                 ai_start_scrollback: &mut state.stream.ai_start_scrollback,
                 ai_rendered_lines: &mut state.stream.ai_rendered_lines,
@@ -110,10 +110,10 @@ pub(crate) fn handle_daemon_message(
                 thinking_start: &mut state.stream.thinking_start,
                 thinking_scrollback: &mut state.stream.thinking_scrollback,
                 pending_confirmation: &mut state.modal.pending_confirmation,
-                permission_mode: &mut state.permission_mode,
-                last_permission_outcome: &mut state.last_permission_outcome,
-                session_id: &mut state.session_id,
-                session_name: &mut state.session_name,
+                permission_mode: &mut state.settings.permission_mode,
+                last_permission_outcome: &mut state.session.last_permission_outcome,
+                session_id: &mut state.session.id,
+                session_name: &mut state.session.name,
                 active_request_id: &mut state.stream.active_request_id,
                 pending_compaction_count: &mut state.pending_compaction_count,
             };
