@@ -400,13 +400,7 @@ fn send_permission_outcome(ctx: &PermissionContext, tool_name: &str, granted: bo
     }
 }
 
-/// Simple UUID v4 generator (no external crate needed).
+/// Generate a random UUID v4 string.
 fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let nanos = now.as_nanos();
-    let random: u64 = (nanos as u64) ^ (std::process::id() as u64).wrapping_mul(0x517cc1b727220a95);
-    format!("{:016x}-{:016x}", nanos as u64, random)
+    uuid::Uuid::new_v4().to_string()
 }

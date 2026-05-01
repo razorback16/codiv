@@ -134,7 +134,9 @@ pub fn add_permission_to_config(entry: &str, list: &str) {
     if !arr.iter().any(|v| v.as_str() == Some(entry)) {
         arr.push(entry);
     }
-    let _ = std::fs::write(&config_path, doc.to_string());
+    if let Err(e) = std::fs::write(&config_path, doc.to_string()) {
+        tracing::warn!("Failed to write permission config to {}: {e}", config_path.display());
+    }
 }
 
 impl AppConfig {
