@@ -350,7 +350,6 @@ mod tests {
             redirect_uri: Some("https://console.anthropic.com/oauth/code/callback".to_string()),
             use_pkce: true,
             token_refresh_url: None,
-            custom_headers: None,
             extra_auth_params: Some({
                 let mut m = HashMap::new();
                 m.insert("code".to_string(), "true".to_string());
@@ -373,7 +372,6 @@ mod tests {
             redirect_uri: Some("http://localhost:1455/auth/callback".to_string()),
             use_pkce: true,
             token_refresh_url: None,
-            custom_headers: None,
             extra_auth_params: None,
         }
     }

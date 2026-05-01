@@ -14,14 +14,12 @@ crossbeam-channel = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
 oauth2 = "5.0.0"
-open = "5.3.3"
 reqwest = { version = "0.12", features = ["json"] }
 anyhow = "1"
 hex = "0.4"
 tokio = { version = "1", features = ["rt", "macros"] }
 toml_edit = "0.22"
 toml = "0.8"
-serde_urlencoded = "0.7.1"
 tracing = "0.1"
 
 [dev-dependencies]

@@ -31,10 +31,11 @@ pub struct PermissionContext {
 }
 
 /// Result of a user confirmation.
-#[allow(dead_code)]
 pub struct ConfirmationResult {
     pub approved: bool,
+    #[allow(dead_code)]
     pub add_to_allowlist: bool,
+    #[allow(dead_code)]
     pub add_to_denylist: bool,
     pub comment: Option<String>,
 }

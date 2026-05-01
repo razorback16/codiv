@@ -382,14 +382,9 @@ fn handle_single_message(
             let mut prompt_lines: u16 = 0;
 
             // Render multi-line yellow header
-            for (i, line) in header_lines.iter().enumerate() {
-                if i == 0 {
-                    let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
-                    parser.process(header_line.as_bytes());
-                } else {
-                    let content_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
-                    parser.process(content_line.as_bytes());
-                }
+            for line in &header_lines {
+                let header_line = format!("{}{}\x1b[0m\r\n", theme.ansi_tool_pending, line);
+                parser.process(header_line.as_bytes());
                 prompt_lines += 1;
             }
 
@@ -466,13 +461,12 @@ fn handle_single_message(
             *ds.last_permission_outcome = Some((tool_name, granted, reason));
         }
         ipc_messages::DaemonMessage::Error {
-            request_id,
+            request_id: _,
             message,
         } => {
             *ds.agent_streaming = false;
             *ds.active_request_id = None;
             ds.md_stream.reset();
-            let _ = request_id; // suppress unused warning
             parser_push_notice(parser, NoticeKind::Error, &format!("[error] {}", message));
         }
         ipc_messages::DaemonMessage::AgentMeta {
@@ -531,12 +525,11 @@ pub(crate) fn handle_lease_message(
     match msg {
         ipc_messages::DaemonMessage::AcquireShellLease {
             lease_id,
-            request_id,
+            request_id: _,
         } => {
             if state.cmd.pending_command.is_none() && state.shell.shell_relay.active_lease.is_none() {
                 state.shell.shell_relay.active_lease = Some(super::state::ActiveLease {
                     lease_id: lease_id.clone(),
-                    request_id: request_id.clone(),
                     current_command: None,
                 });
                 if let Some(frame) = ipc_messages::build_shell_lease_acquired(lease_id) {
@@ -545,7 +538,7 @@ pub(crate) fn handle_lease_message(
             } else {
                 let queue_len = state.shell.shell_relay.pending_leases.len() + 1;
                 state.shell.shell_relay.pending_leases.push_back(
-                    super::state::PendingLease { lease_id: lease_id.clone(), request_id: request_id.clone() },
+                    super::state::PendingLease { lease_id: lease_id.clone() },
                 );
                 if let Some(frame) = ipc_messages::build_shell_lease_queued(lease_id, queue_len) {
                     frames.push(frame);
@@ -973,7 +966,6 @@ fn promote_pending_lease_frames(state: &mut TerminalState) -> Vec<Vec<u8>> {
         let lease_id = pending.lease_id.clone();
         state.shell.shell_relay.active_lease = Some(super::state::ActiveLease {
             lease_id: lease_id.clone(),
-            request_id: pending.request_id,
             current_command: None,
         });
         if let Some(frame) = ipc_messages::build_shell_lease_acquired(&lease_id) {

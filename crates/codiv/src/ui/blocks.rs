@@ -110,8 +110,6 @@ pub enum ToolResultAction {
 // ---------------------------------------------------------------------------
 
 struct PendingToolCall {
-    #[allow(dead_code)]
-    name: String,
     arguments: String,
 }
 
@@ -196,7 +194,6 @@ impl BlockRegistry {
         // Do NOT set pending_tool_name here — only record_tool_call_delta does that,
         // because only that path writes a spinner placeholder to overwrite.
         self.pending_tool_calls.push_back(PendingToolCall {
-            name: name.to_string(),
             arguments: arguments.to_string(),
         });
     }
