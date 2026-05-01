@@ -229,12 +229,6 @@ impl ConfigWatcherGuard {
 // ---------------------------------------------------------------------------
 
 impl ModelCatalog {
-    /// Load a `ModelCatalog` (delegates to `AppConfig::load()`).
-    #[allow(dead_code)]
-    pub fn load() -> Self {
-        AppConfig::load().models
-    }
-
     pub fn assignment_for(&self, role: &AgentRole) -> ModelAssignment {
         let key = match role {
             AgentRole::TeamLead => "team_lead",

@@ -88,8 +88,6 @@ pub struct RelayOp {
 pub struct RelayManager {
     client_tx: mpsc::Sender<Vec<u8>>,
     ops: Mutex<HashMap<String, RelayOp>>,
-    /// Reverse index: execution_id → lease_id for fast dispatch.
-    exec_index: Mutex<HashMap<String, String>>,
 }
 
 impl RelayManager {
@@ -97,7 +95,6 @@ impl RelayManager {
         Self {
             client_tx,
             ops: Mutex::new(HashMap::new()),
-            exec_index: Mutex::new(HashMap::new()),
         }
     }
 
@@ -161,8 +158,6 @@ impl RelayManager {
                     execution_timeout_ms,
                 });
             }
-            let mut idx = self.exec_index.lock().await;
-            idx.insert(execution_id.clone(), lease_id.clone());
         }
 
         // Send ExecuteLeasedCommand.
@@ -456,7 +451,6 @@ impl RelayManager {
             }
         }
         ops.clear();
-        self.exec_index.lock().await.clear();
     }
 
     // --- Internal helpers ---
@@ -474,9 +468,6 @@ impl RelayManager {
         if let Some(op) = ops.remove(lease_id) {
             if let Some(handle) = op.timeout_task {
                 handle.abort();
-            }
-            if let Some(ref cmd) = op.command {
-                self.exec_index.lock().await.remove(&cmd.execution_id);
             }
         }
     }
