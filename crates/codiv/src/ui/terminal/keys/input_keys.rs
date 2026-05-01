@@ -142,7 +142,7 @@ pub(crate) fn handle_input_keys(
                 if let Some(anchor) = state.ui.prompt_anchor_row {
                     // Write expanded lines (with erase-to-EOL to clear old content).
                     for (i, rline) in rendered_lines.iter().enumerate() {
-                        let row = anchor as u16 + i as u16 + 1;
+                        let row = anchor + i as u16 + 1;
                         parser.process(format!("\x1b[{};1H{}\x1b[K", row, rline).as_bytes());
                     }
                     // Clear any leftover old lines if the collapsed view was taller.
@@ -150,7 +150,7 @@ pub(crate) fn handle_input_keys(
                         let row = anchor + i as u16 + 1;
                         parser.process(format!("\x1b[{};1H\x1b[K", row).as_bytes());
                     }
-                    let last_prompt_row = anchor as u16 + full_line_count as u16;
+                    let last_prompt_row = anchor + full_line_count as u16;
                     parser.process(
                         format!("\x1b[{};1H", last_prompt_row + 1).as_bytes(),
                     );
@@ -393,16 +393,12 @@ pub(crate) fn handle_input_keys(
 
         // --- History navigation ---
         (KeyCode::Up, _) => {
-            if state.input_mode == InputMode::Ai && !state.input.move_up() {
-                state.input.history_up();
-            } else if state.input_mode != InputMode::Ai {
+            if state.input_mode != InputMode::Ai || !state.input.move_up() {
                 state.input.history_up();
             }
         }
         (KeyCode::Down, _) => {
-            if state.input_mode == InputMode::Ai && !state.input.move_down() {
-                state.input.history_down();
-            } else if state.input_mode != InputMode::Ai {
+            if state.input_mode != InputMode::Ai || !state.input.move_down() {
                 state.input.history_down();
             }
         }

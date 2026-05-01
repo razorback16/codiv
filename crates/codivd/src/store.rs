@@ -149,8 +149,7 @@ impl SessionStore {
             Ok(json)
         })?;
         let mut events = Vec::new();
-        let mut seq_counter: i64 = 0;
-        for row in rows {
+        for (seq_counter, row) in (0_i64..).zip(rows) {
             let json = row?;
             match serde_json::from_str::<ConversationEvent>(&json) {
                 Ok(ev) => events.push(ev),
@@ -158,7 +157,6 @@ impl SessionStore {
                     warn!(seq = seq_counter, %e, "failed to deserialize event, skipping");
                 }
             }
-            seq_counter += 1;
         }
         Ok(events)
     }

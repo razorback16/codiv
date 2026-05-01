@@ -351,7 +351,7 @@ pub async fn simple_text_completion(
     // Pass system via .system() and user content via .messages() to avoid
     // aisdk's resolve_message duplicating the system message when both
     // .system() and .prompt() are used together.
-    let messages = vec![Message::User(prompt.to_string().into()).into()];
+    let messages = vec![Message::User(prompt.to_string().into())];
     with_provider_model!(assignment, provider_config, |model, _is_openai_compat| {
         let mut response = LanguageModelRequest::builder()
             .model(model)
@@ -383,7 +383,7 @@ pub async fn streaming_text_completion(
     tx: &mpsc::Sender<Vec<u8>>,
 ) -> Result<(String, usize, usize, usize), DynError> {
     use aisdk::core::messages::Message;
-    let messages = vec![Message::User(prompt.to_string().into()).into()];
+    let messages = vec![Message::User(prompt.to_string().into())];
     with_provider_model!(assignment, provider_config, |model, _is_openai_compat| {
         let mut response = LanguageModelRequest::builder()
             .model(model)
@@ -666,6 +666,7 @@ const INITIAL_BACKOFF_MS: u64 = 1000;
 /// Retries transient errors (server errors, rate limits) up to `MAX_RETRIES`
 /// times with exponential backoff. Non-retryable errors fail immediately with
 /// a user-friendly message.
+#[allow(clippy::too_many_arguments)]
 pub async fn stream_from_config(
     assignment: &ModelAssignment,
     provider_config: &ProviderConfig,
@@ -720,6 +721,7 @@ pub async fn stream_from_config(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_stream<M>(
     model: M,
     system_prompt: &str,

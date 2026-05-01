@@ -33,7 +33,7 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
         ProviderEntry {
             id: "claude_code",
             display_name: "Claude Code",
-            auth_methods: vec![AuthMethod::OAuthCode(OAuthConfig {
+            auth_methods: vec![AuthMethod::OAuthCode(Box::new(OAuthConfig {
                 auth_url: Url::parse("https://claude.ai/oauth/authorize")
                     .expect("hardcoded URL must parse"),
                 token_url: Url::parse("https://console.anthropic.com/v1/oauth/token")
@@ -55,12 +55,12 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
                     m.insert("code".to_string(), "true".to_string());
                     m
                 }),
-            })],
+            }))],
         },
         ProviderEntry {
             id: "codex",
             display_name: "Codex",
-            auth_methods: vec![AuthMethod::OAuthCode(OAuthConfig {
+            auth_methods: vec![AuthMethod::OAuthCode(Box::new(OAuthConfig {
                 auth_url: Url::parse("https://auth.openai.com/oauth/authorize")
                     .expect("hardcoded URL must parse"),
                 token_url: Url::parse("https://auth.openai.com/oauth/token")
@@ -88,7 +88,7 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
                     m.insert("originator".to_string(), "codex_cli_rs".to_string());
                     m
                 }),
-            })],
+            }))],
         },
     ]
 }

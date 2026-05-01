@@ -147,7 +147,7 @@ pub struct OAuthTokenResponse {
 pub enum AuthMethod {
     ApiKey,
     #[serde(rename = "oauth_code")]
-    OAuthCode(OAuthConfig),
+    OAuthCode(Box<OAuthConfig>),
 }
 
 impl AuthMethod {
@@ -227,7 +227,7 @@ mod tests {
             token_refresh_url: None,
             extra_auth_params: None,
         };
-        let method = AuthMethod::OAuthCode(config);
+        let method = AuthMethod::OAuthCode(Box::new(config));
         assert!(method.oauth_config().is_some());
     }
 

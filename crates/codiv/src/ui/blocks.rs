@@ -178,16 +178,16 @@ impl BlockRegistry {
     /// the time the client processes the ToolCall message.
     pub fn record_tool_call(&mut self, name: &str, arguments: &str, pre_edit_content: Option<&str>) {
         // Stash old file content for Edit tools to compute file-level diff later.
-        if canonical_tool_name(name) == "Edit" {
-            if !self.replay_mode {
-                if let Ok(args) = serde_json::from_str::<Value>(arguments) {
-                    if let Some(path) = json_str(&args, "file_path") {
-                        let content = match pre_edit_content {
-                            Some(c) => c.to_string(),
-                            None => std::fs::read_to_string(&path).unwrap_or_default(),
-                        };
-                        self.pending_edit_old_contents.insert(path, content);
-                    }
+        if canonical_tool_name(name) == "Edit"
+            && !self.replay_mode
+        {
+            if let Ok(args) = serde_json::from_str::<Value>(arguments) {
+                if let Some(path) = json_str(&args, "file_path") {
+                    let content = match pre_edit_content {
+                        Some(c) => c.to_string(),
+                        None => std::fs::read_to_string(&path).unwrap_or_default(),
+                    };
+                    self.pending_edit_old_contents.insert(path, content);
                 }
             }
         }
@@ -509,6 +509,7 @@ impl BlockRegistry {
     }
 
     /// Push a standard (non-merge) tool block and return a `Summary` action.
+    #[allow(clippy::too_many_arguments)]
     fn push_tool_block(
         &mut self,
         tool_name: &str,

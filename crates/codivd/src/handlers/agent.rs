@@ -96,7 +96,7 @@ pub(crate) async fn handle_agent_request(
     agent.add_user_message(&prompt, &request_id);
 
     // Create or reuse permission context for this session
-    let permission_ctx = if let Some(ref s) = daemon.sessions.get(&client_id) {
+    let permission_ctx = if let Some(s) = daemon.sessions.get(&client_id) {
         s.permissions.permission_ctx.clone()
     } else {
         None

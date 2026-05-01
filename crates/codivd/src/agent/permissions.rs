@@ -11,6 +11,12 @@ use super::config::{AppConfig, ModelCatalog};
 use super::permission_evaluator::evaluate_permission;
 use super::risk_classifier::classify_risk;
 
+type BoxedAsyncToolFn = Box<
+    dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Shared permission state for a session.
 pub struct PermissionContext {
     /// Current permission mode (can be changed at runtime via Ctrl+P).
@@ -277,7 +283,7 @@ pub fn wrap_with_permissions_async<F, Fut>(
     tool_name: String,
     original: F,
     ctx: Arc<PermissionContext>,
-) -> Box<dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send + Sync>
+) -> BoxedAsyncToolFn
 where
     F: Fn(Value) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
