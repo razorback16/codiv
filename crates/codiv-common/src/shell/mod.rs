@@ -82,6 +82,49 @@ pub fn find_expanded_sentinel(text: &str, sentinel: &str) -> Option<usize> {
     }
 }
 
+/// Shared `read_until_sentinel` loop used by both `PipeIO` and `PtyIO`.
+///
+/// Reads chunks from `rx` until the sentinel is found or `timeout` elapses.
+/// When `strip_cr` is true, `\r` characters are removed from each chunk
+/// (needed for PTY backends where line endings are `\r\n`).
+pub fn read_until_sentinel_shared(
+    rx: &crossbeam_channel::Receiver<Vec<u8>>,
+    sentinel: &str,
+    timeout: Duration,
+    strip_cr: bool,
+) -> String {
+    let mut accumulated = String::new();
+    let deadline = std::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        let wait = remaining.min(Duration::from_millis(1000));
+        match rx.recv_timeout(wait) {
+            Ok(data) => {
+                let chunk = String::from_utf8_lossy(&data);
+                if strip_cr {
+                    accumulated.push_str(&chunk.replace('\r', ""));
+                } else {
+                    accumulated.push_str(&chunk);
+                }
+                if find_expanded_sentinel(&accumulated, sentinel).is_some() {
+                    break;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                // Loop back for deadline check
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    accumulated
+}
+
 /// Strip ANSI escape sequences, carriage returns, and BEL from text.
 pub fn strip_ansi(text: &str) -> String {
     let mut result = String::with_capacity(text.len());

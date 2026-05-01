@@ -372,7 +372,7 @@ fn handle_single_message(
             let args: serde_json::Value =
                 serde_json::from_str(&tool_args).unwrap_or(serde_json::Value::Null);
             let width = ds.tracker.width();
-            let header_lines = crate::ui::blocks::build_tool_header_lines(&tool_name, &args, 10, width);
+            let header_lines = crate::ui::tool_presenters::build_tool_header_lines(&tool_name, &args, 10, width);
 
             // Move cursor up to overwrite the placeholder header line
             if ds.tracker.pending_tool().is_some() {

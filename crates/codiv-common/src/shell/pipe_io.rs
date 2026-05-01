@@ -5,12 +5,12 @@
 //! both stdout and stderr so reads never block the calling thread past the
 //! configured timeout.
 
-use super::{find_expanded_sentinel, ShellIO};
+use super::{read_until_sentinel_shared, ShellIO};
 use crossbeam_channel::{self, Receiver, Sender};
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// `ShellIO` backend that communicates via stdin/stdout/stderr pipes.
 ///
@@ -98,32 +98,7 @@ impl ShellIO for PipeIO {
     }
 
     fn read_until_sentinel(&mut self, sentinel: &str, timeout: Duration) -> String {
-        let mut accumulated = String::new();
-        let deadline = Instant::now() + timeout;
-
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            let wait = remaining.min(Duration::from_millis(1000));
-            match self.stdout_rx.recv_timeout(wait) {
-                Ok(data) => {
-                    let chunk = String::from_utf8_lossy(&data);
-                    accumulated.push_str(&chunk);
-                    if find_expanded_sentinel(&accumulated, sentinel).is_some() {
-                        break;
-                    }
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Loop back for deadline check
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-
-        accumulated
+        read_until_sentinel_shared(&self.stdout_rx, sentinel, timeout, false)
     }
 
     fn drain_stderr(&mut self) -> String {
