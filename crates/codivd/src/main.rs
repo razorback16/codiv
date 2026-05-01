@@ -105,10 +105,13 @@ fn is_pid_alive(pid: i32) -> bool {
 }
 
 /// Launchd labels: install.sh uses ai.codiv.daemon, Homebrew uses homebrew.mxcl.codiv
+#[cfg(target_os = "macos")]
 const PLIST_LABELS: &[&str] = &["ai.codiv.daemon", "homebrew.mxcl.codiv"];
+#[cfg(target_os = "linux")]
 const SYSTEMD_UNIT: &str = "codivd.service";
 
 /// Find which launchd label is currently loaded, if any.
+#[cfg(target_os = "macos")]
 fn active_launchd_label() -> Option<&'static str> {
     let uid = unsafe { libc::getuid() };
     for label in PLIST_LABELS {
@@ -127,11 +130,13 @@ fn active_launchd_label() -> Option<&'static str> {
 }
 
 /// Check if a launchd service is loaded.
+#[cfg(target_os = "macos")]
 fn is_launchd_managed() -> bool {
     active_launchd_label().is_some()
 }
 
 /// Check if a systemd user service is active.
+#[cfg(target_os = "linux")]
 fn is_systemd_managed() -> bool {
     std::process::Command::new("systemctl")
         .args(["--user", "is-active", "--quiet", SYSTEMD_UNIT])
@@ -141,6 +146,7 @@ fn is_systemd_managed() -> bool {
 }
 
 /// Stop the launchd service (bootout unloads it so KeepAlive won't relaunch).
+#[cfg(target_os = "macos")]
 fn stop_launchd() {
     let label = match active_launchd_label() {
         Some(l) => l,
@@ -160,6 +166,7 @@ fn stop_launchd() {
 }
 
 /// Find the plist file on disk for bootstrapping.
+#[cfg(target_os = "macos")]
 fn find_launchd_plist() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     for label in PLIST_LABELS {
@@ -172,6 +179,7 @@ fn find_launchd_plist() -> Option<String> {
 }
 
 /// Start the launchd service (bootstrap loads it and KeepAlive starts it).
+#[cfg(target_os = "macos")]
 fn start_launchd() {
     let plist = match find_launchd_plist() {
         Some(p) => p,
@@ -191,6 +199,7 @@ fn start_launchd() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn stop_systemd() {
     let status = std::process::Command::new("systemctl")
         .args(["--user", "stop", SYSTEMD_UNIT])
@@ -201,6 +210,7 @@ fn stop_systemd() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn start_systemd() {
     let status = std::process::Command::new("systemctl")
         .args(["--user", "start", SYSTEMD_UNIT])
@@ -212,10 +222,16 @@ fn start_systemd() {
 }
 
 fn cmd_status() {
-    let managed = if is_launchd_managed() {
-        Some("launchd")
-    } else if is_systemd_managed() {
-        Some("systemd")
+    let managed = if cfg!(target_os = "macos") {
+        #[cfg(target_os = "macos")]
+        { if is_launchd_managed() { Some("launchd") } else { None } }
+        #[cfg(not(target_os = "macos"))]
+        { None }
+    } else if cfg!(target_os = "linux") {
+        #[cfg(target_os = "linux")]
+        { if is_systemd_managed() { Some("systemd") } else { None } }
+        #[cfg(not(target_os = "linux"))]
+        { None }
     } else {
         None
     };
@@ -243,10 +259,12 @@ fn cmd_status() {
 
 fn cmd_stop() {
     // If managed by a service manager, use that to stop (prevents relaunch)
+    #[cfg(target_os = "macos")]
     if is_launchd_managed() {
         stop_launchd();
         return;
     }
+    #[cfg(target_os = "linux")]
     if is_systemd_managed() {
         stop_systemd();
         return;
@@ -283,19 +301,23 @@ fn cmd_start() {
     }
 
     // If a service plist/unit exists, use the service manager
+    #[cfg(target_os = "macos")]
     if find_launchd_plist().is_some() {
         start_launchd();
         return;
     }
 
-    let unit = format!(
-        "{}/.config/systemd/user/{}",
-        std::env::var("HOME").unwrap_or_default(),
-        SYSTEMD_UNIT
-    );
-    if std::path::Path::new(&unit).exists() {
-        start_systemd();
-        return;
+    #[cfg(target_os = "linux")]
+    {
+        let unit = format!(
+            "{}/.config/systemd/user/{}",
+            std::env::var("HOME").unwrap_or_default(),
+            SYSTEMD_UNIT
+        );
+        if std::path::Path::new(&unit).exists() {
+            start_systemd();
+            return;
+        }
     }
 
     // Fallback: self-daemonize

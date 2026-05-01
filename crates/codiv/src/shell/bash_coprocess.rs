@@ -158,11 +158,11 @@ impl BashCoprocess {
     }
 
     /// Execute a command in the bash co-process and return its output and exit code.
-    pub fn execute(&mut self, command: &str, timeout_ms: i32) -> CommandResult {
+    pub fn execute(&mut self, command: &str, timeout_ms: u64) -> CommandResult {
         log::debug!("execute: cmd={:?} timeout={}ms", command, timeout_ms);
         let result = self
             .session
-            .execute(command, Duration::from_millis(timeout_ms as u64));
+            .execute(command, Duration::from_millis(timeout_ms));
         log::debug!(
             "execute: exit_code={} output_len={}",
             result.exit_code,
@@ -281,8 +281,8 @@ impl BashCoprocess {
 
     /// Drain residual PTY output for up to `ms` milliseconds.
     /// Used after SIGINT to clear bash's `^C` echo and prompt.
-    pub fn drain_for(&self, ms: i32) {
-        let deadline = Instant::now() + Duration::from_millis(ms as u64);
+    pub fn drain_for(&self, ms: u64) {
+        let deadline = Instant::now() + Duration::from_millis(ms);
         let rx = self.session.io.reader_rx();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
