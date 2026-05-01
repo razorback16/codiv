@@ -46,6 +46,8 @@ pub(crate) fn handle_input_keys(
                 bash.send_interrupt();
                 bash.drain_for(100);
                 state.cmd.pending_command = None;
+                state.cmd.cmd_output_capture.clear();
+                state.cmd.cmd_start_scrollback = None;
             } else {
                 bash.send_interrupt();
             }
@@ -74,7 +76,7 @@ pub(crate) fn handle_input_keys(
         (KeyCode::BackTab, _) => {
             state.permission_mode = state.permission_mode.next();
             state.hint_shown_at = Some(Instant::now());
-            state.hint_seed = std::time::Instant::now().elapsed().subsec_nanos();
+            state.hint_seed = state.hint_seed.wrapping_mul(1103515245).wrapping_add(12345);
             if let Some(ref mut c) = client {
                 if let Some(frame) = ipc_messages::build_set_permission_mode(state.permission_mode) {
                     c.send(&frame);

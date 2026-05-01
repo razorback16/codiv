@@ -152,17 +152,18 @@ pub(crate) fn handle_confirmation(
             true
         }
         KeyCode::Char('4') => {
-            // Only valid for non-critical (4 options)
+            // Only valid for prompts that have 4 options
             if let Some(ref conf) = state.modal.pending_confirmation {
-                if conf.risk != codiv_common::messages::RiskLevel::Critical {
+                if conf.option_count >= 4 {
                     if let Some(mut conf) = state.modal.pending_confirmation.take() {
                         conf.selected_index = 3;
                         clear_prompt(&conf, parser);
                         send_confirmation(&conf, client);
                     }
+                    return true;
                 }
             }
-            true
+            false
         }
         KeyCode::Esc => {
             // Reject on Escape

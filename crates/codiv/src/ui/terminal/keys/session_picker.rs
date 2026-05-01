@@ -11,7 +11,7 @@ fn redraw_picker(picker: &PendingSessionPicker, p: &mut vt100::Parser) {
     super::clear_modal_lines(p, picker.prompt_lines as usize);
     // Re-render only the visible window of sessions
     let visible_count = picker.sessions.len().min(VISIBLE_SESSIONS);
-    let end = picker.viewport_offset + visible_count;
+    let end = (picker.viewport_offset + visible_count).min(picker.sessions.len());
     for i in picker.viewport_offset..end {
         let s = &picker.sessions[i];
         let name = s.name.as_deref().unwrap_or("(unnamed)");
@@ -76,10 +76,12 @@ pub(crate) fn handle_session_picker(
         }
         KeyCode::Enter => {
             if let Some(picker) = state.modal.pending_session_picker.take() {
-                let sid = &picker.sessions[picker.selected_index].id;
-                if let Some(ref mut c) = client {
-                    if let Some(frame) = ipc_messages::build_load_session(sid) {
-                        c.send(&frame);
+                if let Some(session) = picker.sessions.get(picker.selected_index) {
+                    let sid = &session.id;
+                    if let Some(ref mut c) = client {
+                        if let Some(frame) = ipc_messages::build_load_session(sid) {
+                            c.send(&frame);
+                        }
                     }
                 }
                 // Clear the picker lines
