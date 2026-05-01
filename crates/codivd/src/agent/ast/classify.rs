@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::LazyLock;
 
@@ -8,6 +8,8 @@ use brush_parser::ast::{
 };
 use brush_parser::{Parser, ParserOptions, SourceInfo};
 use codiv_common::messages::RiskLevel;
+
+use super::risk_tables::*;
 
 // ---------------------------------------------------------------------------
 // Risk ordering helper
@@ -22,7 +24,7 @@ fn risk_ord(r: RiskLevel) -> u8 {
     }
 }
 
-fn max_risk(a: RiskLevel, b: RiskLevel) -> RiskLevel {
+pub(super) fn max_risk(a: RiskLevel, b: RiskLevel) -> RiskLevel {
     if risk_ord(a) >= risk_ord(b) {
         a
     } else {
@@ -31,231 +33,10 @@ fn max_risk(a: RiskLevel, b: RiskLevel) -> RiskLevel {
 }
 
 // ---------------------------------------------------------------------------
-// Lookup tables
-// ---------------------------------------------------------------------------
-
-static READONLY_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "less", "more",
-        "pwd", "echo", "printf", "find", "wc", "printenv", "which", "whereis", "whence",
-        "type", "tree", "file", "stat", "du", "df", "date", "uptime", "uname", "hostname",
-        "whoami", "id", "groups", "diff", "cmp", "sort", "uniq", "tr", "cut", "paste", "column",
-        "fmt", "fold", "nl", "od", "hexdump", "xxd", "md5sum", "sha256sum", "sha1sum",
-        "basename", "dirname", "realpath", "readlink", "test", "[", "true", "false",
-        "seq", "tput", "clear", "reset",
-        // Network read-only
-        "ping", "dig", "host", "nslookup", "traceroute", "tracepath",
-        "ss", "netstat", "ifconfig", "ip",
-        // Process read-only
-        "ps", "top", "htop", "free", "lsof", "pgrep", "pidof",
-    ]
-    .into_iter()
-    .collect()
-});
-
-static BUILD_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    ["make", "cmake", "ninja", "meson", "bazel", "buck", "gradle", "mvn", "ant"]
-        .into_iter()
-        .collect()
-});
-
-static SAFE_SUBCOMMANDS: LazyLock<HashMap<&'static str, HashSet<&'static str>>> =
-    LazyLock::new(|| {
-        let mut m = HashMap::new();
-        m.insert(
-            "git",
-            HashSet::from([
-                "status", "log", "diff", "show", "branch", "tag", "stash", "describe",
-                "shortlog", "blame", "reflog", "ls-files", "ls-tree", "rev-parse",
-                "cat-file", "remote",
-            ]),
-        );
-        m.insert(
-            "cargo",
-            HashSet::from([
-                "build", "test", "check", "clippy", "fmt", "bench", "doc", "run", "tree",
-                "metadata", "verify-project",
-            ]),
-        );
-        m.insert(
-            "npm",
-            HashSet::from(["test", "run", "start", "list", "ls", "outdated", "audit", "ci"]),
-        );
-        m.insert("yarn", HashSet::from(["test", "run", "start", "list", "info"]));
-        m.insert("pnpm", HashSet::from(["test", "run", "start", "list"]));
-        m.insert("pip", HashSet::from(["list", "show", "freeze", "check"]));
-        m.insert("brew", HashSet::from(["list", "info", "search", "doctor", "outdated"]));
-        m.insert("apt", HashSet::from(["list", "show", "search"]));
-        m.insert("rustup", HashSet::from(["show", "which", "check", "target", "toolchain", "component"]));
-        m.insert("docker", HashSet::from(["ps", "images", "inspect", "logs", "stats", "top", "port", "info", "version", "network", "volume"]));
-        m.insert("kubectl", HashSet::from(["get", "describe", "logs", "top", "explain", "api-resources", "api-versions", "config", "version"]));
-        m
-    });
-
-static HIGH_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "rm", "mv", "wget", "curl", "chmod", "chown", "ln", "kill", "killall", "pkill",
-        // Network / remote access
-        "nc", "netcat", "ncat", "socat", "telnet", "ssh", "scp", "sftp", "rsync", "ftp", "tftp",
-        // Reconnaissance
-        "nmap", "masscan", "zmap",
-        // Packet capture
-        "tcpdump", "tshark",
-        // Persistence / background execution
-        "nohup", "disown", "setsid", "screen", "tmux",
-        // Crypto / encoding (exfiltration enablers)
-        "openssl",
-        // Secure deletion
-        "shred", "wipe",
-        // Aliasing (command hijacking)
-        "alias", "unalias",
-    ]
-    .into_iter()
-    .collect()
-});
-
-static HIGH_SUBCOMMANDS: LazyLock<HashMap<&'static str, HashSet<&'static str>>> =
-    LazyLock::new(|| {
-        let mut m = HashMap::new();
-        m.insert(
-            "git",
-            HashSet::from([
-                "push", "pull", "merge", "rebase", "checkout", "switch", "reset", "clean",
-                "cherry-pick", "revert", "fetch", "clone", "init", "commit", "add", "rm",
-                "mv", "restore",
-            ]),
-        );
-        m.insert("npm", HashSet::from(["install", "uninstall", "update", "link", "publish"]));
-        m.insert("yarn", HashSet::from(["add", "remove", "upgrade", "install"]));
-        m.insert("pnpm", HashSet::from(["add", "remove", "update", "install"]));
-        m.insert("pip", HashSet::from(["install", "uninstall", "download"]));
-        m.insert("cargo", HashSet::from(["install", "uninstall", "publish", "add", "remove"]));
-        m.insert("brew", HashSet::from(["install", "uninstall", "upgrade", "remove", "link", "unlink"]));
-        m.insert("apt", HashSet::from(["install", "remove", "purge", "upgrade", "update"]));
-        m.insert("docker", HashSet::from(["run", "exec", "build", "pull", "push", "rm", "rmi", "stop", "kill", "restart"]));
-        m.insert("kubectl", HashSet::from(["apply", "delete", "create", "edit", "patch", "scale", "rollout"]));
-        m
-    });
-
-static CRITICAL_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "sudo", "su", "dd", "shutdown", "reboot", "poweroff", "halt", "init",
-        "systemctl", "service", "mount", "umount", "fdisk", "parted", "mkswap",
-        "swapon", "swapoff", "iptables", "nft", "ip6tables", "modprobe", "insmod",
-        "rmmod", "mknod", "losetup",
-        // Arbitrary code execution builtins
-        "eval", "exec",
-        // Persistence / scheduling
-        "crontab", "at", "batch",
-        // Privilege / capability escalation
-        "setfacl", "setcap", "chattr", "visudo",
-    ]
-    .into_iter()
-    .collect()
-});
-
-static SENSITIVE_PATHS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        // System directories
-        "/", "/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys",
-        "/var", "/lib", "/lib64", "/opt", "/root",
-        // Home directory references
-        "~/", "$HOME",
-        // Credential / secret directories
-        ".ssh", ".gnupg", ".aws", ".kube", ".config", ".docker",
-        // Credential / secret files
-        ".env", ".npmrc", ".pypirc", ".netrc", ".pgpass",
-        // Shell config (persistence vectors)
-        ".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile",
-        // History files (credential leakage)
-        ".bash_history", ".zsh_history", ".node_repl_history", ".python_history",
-        // Git config
-        ".gitconfig",
-        // Curl config (redirection attacks)
-        ".curlrc",
-    ]
-    .into_iter()
-    .collect()
-});
-
-/// Subcommands that are truly read-only (no side effects at all).
-/// This is a subset of SAFE_SUBCOMMANDS – excludes build/test/run type commands.
-static READONLY_SUBCOMMANDS: LazyLock<HashMap<&'static str, HashSet<&'static str>>> =
-    LazyLock::new(|| {
-        let mut m = HashMap::new();
-        m.insert(
-            "git",
-            HashSet::from([
-                "status", "log", "diff", "show", "branch", "tag", "describe",
-                "shortlog", "blame", "reflog", "ls-files", "ls-tree", "rev-parse",
-                "cat-file", "remote", "stash",
-            ]),
-        );
-        m.insert("cargo", HashSet::from(["metadata", "verify-project", "tree"]));
-        m.insert("npm", HashSet::from(["list", "ls", "outdated"]));
-        m.insert("pip", HashSet::from(["list", "show", "freeze", "check"]));
-        m.insert("brew", HashSet::from(["list", "info", "search", "outdated"]));
-        m.insert("rustup", HashSet::from(["show", "which", "check"]));
-        m.insert("docker", HashSet::from(["ps", "images", "inspect", "logs", "stats", "top", "port", "info", "version"]));
-        m.insert("kubectl", HashSet::from(["get", "describe", "logs", "top", "explain", "api-resources", "api-versions", "version"]));
-        m
-    });
-
-static MEDIUM_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "touch", "mkdir", "cp", "tee", "sed", "awk", "patch", "install",
-        // Script interpreters (arbitrary code execution)
-        "python", "python3", "ruby", "perl", "node", "php", "lua", "tclsh", "wish",
-        // Shell builtins with side effects
-        "source", ".", "trap", "export", "unset",
-        // Can auto-confirm destructive prompts
-        "yes",
-        // Can execute arbitrary commands via args
-        "xargs",
-        // Interactive editors
-        "nano", "vim", "vi", "emacs",
-        // Compression (benign alone, used in exfiltration chains)
-        "tar", "gzip", "gunzip", "zip", "unzip", "bzip2", "xz",
-    ]
-    .into_iter()
-    .collect()
-});
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Classify a bash command string by risk level using AST-based analysis.
-pub fn classify_command(command: &str) -> RiskLevel {
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return RiskLevel::Low;
-    }
-
-    match parse_command(trimmed) {
-        Some(program) => classify_program(&program),
-        None => RiskLevel::Medium, // parse failure
-    }
-}
-
-/// Check whether a bash command string consists entirely of read-only operations.
-pub fn is_readonly(command: &str) -> bool {
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-
-    match parse_command(trimmed) {
-        Some(program) => program_is_readonly(&program),
-        None => false,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
-fn parse_command(command: &str) -> Option<Program> {
+pub(super) fn parse_command(command: &str) -> Option<Program> {
     let cursor = Cursor::new(command.to_string());
     let reader = std::io::BufReader::new(cursor);
     let options = ParserOptions::default();
@@ -267,7 +48,24 @@ fn parse_command(command: &str) -> Option<Program> {
 }
 
 // ---------------------------------------------------------------------------
-// AST walking – risk classification
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Classify a bash command string by risk level using AST-based analysis.
+pub(crate) fn classify_command(command: &str) -> RiskLevel {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return RiskLevel::Low;
+    }
+
+    match parse_command(trimmed) {
+        Some(program) => classify_program(&program),
+        None => RiskLevel::Medium, // parse failure
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AST walking -- risk classification
 // ---------------------------------------------------------------------------
 
 fn classify_program(program: &Program) -> RiskLevel {
@@ -297,7 +95,7 @@ fn classify_pipeline(pipeline: &Pipeline) -> RiskLevel {
         risk = max_risk(risk, classify_ast_command(cmd));
     }
 
-    // Detect pipe-to-shell patterns: curl/wget | sh/bash/python/etc → Critical
+    // Detect pipe-to-shell patterns: curl/wget | sh/bash/python/etc -> Critical
     if pipeline.seq.len() >= 2 {
         risk = max_risk(risk, check_pipe_to_shell_pattern(&pipeline.seq));
     }
@@ -400,7 +198,7 @@ fn classify_compound_command(compound: &CompoundCommand) -> RiskLevel {
     }
 }
 
-fn classify_compound_list(list: &brush_parser::ast::CompoundList) -> RiskLevel {
+pub(super) fn classify_compound_list(list: &brush_parser::ast::CompoundList) -> RiskLevel {
     let mut risk = RiskLevel::Low;
     for item in &list.0 {
         risk = max_risk(risk, classify_and_or_list(&item.0));
@@ -460,7 +258,7 @@ fn collect_suffix_info(simple: &SimpleCommand) -> (Vec<String>, Vec<IoRedirect>,
                 }
                 CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
                 CommandPrefixOrSuffixItem::ProcessSubstitution(_, sub) => {
-                    // Process substitutions run commands in subshells — propagate their risk
+                    // Process substitutions run commands in subshells -- propagate their risk
                     proc_sub_risk = max_risk(proc_sub_risk, classify_compound_list(&sub.list));
                 }
             }
@@ -490,7 +288,7 @@ fn compute_command_risk(cmd_name: &str, args: &[String]) -> RiskLevel {
         cmd_name.rsplit('/').next().unwrap_or(cmd_name)
     };
 
-    // `env` passthrough: `env cmd args...` → classify the inner command
+    // `env` passthrough: `env cmd args...` -> classify the inner command
     // `env` with no args or only VAR=val assignments is read-only
     if base_cmd == "env" {
         return classify_env_passthrough(args);
@@ -545,7 +343,7 @@ fn compute_command_risk(cmd_name: &str, args: &[String]) -> RiskLevel {
         if args_contain_sensitive_path(args) {
             return RiskLevel::Critical;
         }
-        // Check for high→critical escalation patterns
+        // Check for high->critical escalation patterns
         if let Some(escalated) = check_high_command_escalation(base_cmd, args) {
             return escalated;
         }
@@ -572,11 +370,11 @@ fn classify_env_passthrough(args: &[String]) -> RiskLevel {
         if arg.contains('=') {
             continue; // VAR=val assignment
         }
-        // Found the inner command name — classify it with remaining args
+        // Found the inner command name -- classify it with remaining args
         let inner_args: Vec<String> = args[i + 1..].to_vec();
         return compute_command_risk(arg, &inner_args);
     }
-    // No inner command found → bare `env` or `env VAR=val` → read-only
+    // No inner command found -> bare `env` or `env VAR=val` -> read-only
     RiskLevel::Low
 }
 
@@ -584,14 +382,14 @@ fn classify_env_passthrough(args: &[String]) -> RiskLevel {
 fn check_high_command_escalation(cmd: &str, args: &[String]) -> Option<RiskLevel> {
     match cmd {
         "curl" => {
-            // curl with data upload flags → Critical (exfiltration)
+            // curl with data upload flags -> Critical (exfiltration)
             for arg in args {
                 if arg == "--upload-file" || arg == "-T"
                     || arg == "--data-binary" || arg == "--data-raw"
                 {
                     return Some(RiskLevel::Critical);
                 }
-                // -d @/path/to/file → data exfiltration
+                // -d @/path/to/file -> data exfiltration
                 if arg == "-d" || arg == "--data" {
                     // Check if next arg starts with @ (file upload)
                     if let Some(next) = args.iter().skip_while(|a| *a != arg).nth(1) {
@@ -604,18 +402,18 @@ fn check_high_command_escalation(cmd: &str, args: &[String]) -> Option<RiskLevel
             None
         }
         "nc" | "netcat" | "ncat" => {
-            // nc -e or nc -c → reverse shell, Critical
+            // nc -e or nc -c -> reverse shell, Critical
             if args.iter().any(|a| a == "-e" || a == "-c" || a == "--exec" || a == "--sh-exec") {
                 return Some(RiskLevel::Critical);
             }
-            // nc with -l (listen mode) → Critical
+            // nc with -l (listen mode) -> Critical
             if args.iter().any(|a| a == "-l" || a == "-lp" || a.starts_with("-l")) {
                 return Some(RiskLevel::Critical);
             }
             None
         }
         "ssh" => {
-            // ssh with command execution or tunneling → Critical
+            // ssh with command execution or tunneling -> Critical
             // -R (remote forward), -L (local forward), -D (dynamic/SOCKS)
             if args.iter().any(|a| a == "-R" || a == "-L" || a == "-D") {
                 return Some(RiskLevel::Critical);
@@ -629,7 +427,7 @@ fn check_high_command_escalation(cmd: &str, args: &[String]) -> Option<RiskLevel
 fn check_critical_patterns(cmd: &str, args: &[String]) -> Option<RiskLevel> {
     match cmd {
         "rm" => {
-            // rm -rf or rm -fr → Critical
+            // rm -rf or rm -fr -> Critical
             for arg in args {
                 if arg.starts_with('-') && !arg.starts_with("--") {
                     let flags: String = arg.chars().filter(|c| *c != '-').collect();
@@ -645,7 +443,7 @@ fn check_critical_patterns(cmd: &str, args: &[String]) -> Option<RiskLevel> {
             None
         }
         "chmod" => {
-            // chmod -R 777 → Critical
+            // chmod -R 777 -> Critical
             let has_recursive = args.iter().any(|a| a == "-R" || a == "--recursive");
             let has_777 = args.iter().any(|a| a == "777");
             if has_recursive && has_777 {
@@ -654,7 +452,7 @@ fn check_critical_patterns(cmd: &str, args: &[String]) -> Option<RiskLevel> {
             None
         }
         "chown" => {
-            // chown -R → Critical
+            // chown -R -> Critical
             let has_recursive = args.iter().any(|a| a == "-R" || a == "--recursive");
             if has_recursive {
                 return Some(RiskLevel::Critical);
@@ -672,14 +470,14 @@ fn check_subcommand_escalation(
 ) -> Option<RiskLevel> {
     match (cmd, sub) {
         ("git", "push") => {
-            // git push --force / -f → Critical
+            // git push --force / -f -> Critical
             if args.iter().any(|a| a == "--force" || a == "-f" || a == "--force-with-lease") {
                 return Some(RiskLevel::Critical);
             }
             None
         }
         ("git", "reset") => {
-            // git reset --hard → Critical
+            // git reset --hard -> Critical
             if args.iter().any(|a| a == "--hard") {
                 return Some(RiskLevel::Critical);
             }
@@ -745,7 +543,7 @@ fn classify_io_redirect(io: &IoRedirect) -> RiskLevel {
                 IoFileRedirectKind::Write
                 | IoFileRedirectKind::Append
                 | IoFileRedirectKind::Clobber => {
-                    // Writing to a sensitive path → Critical
+                    // Writing to a sensitive path -> Critical
                     if let Some(path) = redirect_target_path(target) {
                         if is_sensitive_redirect_path(&path) {
                             return RiskLevel::Critical;
@@ -810,121 +608,6 @@ fn path_contains_exact_component(path: &str, component: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// AST walking – readonly detection
-// ---------------------------------------------------------------------------
-
-fn program_is_readonly(program: &Program) -> bool {
-    for cc in &program.complete_commands {
-        for item in &cc.0 {
-            if !and_or_list_is_readonly(&item.0) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn and_or_list_is_readonly(and_or_list: &brush_parser::ast::AndOrList) -> bool {
-    if !pipeline_is_readonly(&and_or_list.first) {
-        return false;
-    }
-    for additional in &and_or_list.additional {
-        let pipeline = match additional {
-            AndOr::And(p) | AndOr::Or(p) => p,
-        };
-        if !pipeline_is_readonly(pipeline) {
-            return false;
-        }
-    }
-    true
-}
-
-fn pipeline_is_readonly(pipeline: &Pipeline) -> bool {
-    pipeline.seq.iter().all(ast_command_is_readonly)
-}
-
-fn ast_command_is_readonly(cmd: &Command) -> bool {
-    match cmd {
-        Command::Simple(simple) => simple_command_is_readonly(simple),
-        Command::Compound(compound, _) => compound_command_is_readonly(compound),
-        Command::Function(_) => false,
-        Command::ExtendedTest(_) => true,
-    }
-}
-
-fn compound_command_is_readonly(compound: &CompoundCommand) -> bool {
-    match compound {
-        CompoundCommand::Subshell(sub) => compound_list_is_readonly(&sub.list),
-        CompoundCommand::BraceGroup(bg) => compound_list_is_readonly(&bg.list),
-        _ => false,
-    }
-}
-
-fn compound_list_is_readonly(list: &brush_parser::ast::CompoundList) -> bool {
-    list.0.iter().all(|item| and_or_list_is_readonly(&item.0))
-}
-
-fn simple_command_is_readonly(simple: &SimpleCommand) -> bool {
-    let cmd_name = match &simple.word_or_name {
-        Some(w) => w.value.as_str(),
-        None => return true, // pure assignment
-    };
-
-    let base_cmd = cmd_name.rsplit('/').next().unwrap_or(cmd_name);
-
-    if READONLY_COMMANDS.contains(base_cmd) {
-        return true;
-    }
-
-    // `env` with no inner command (bare env or env VAR=val) is readonly;
-    // `env inner_cmd` is readonly only if inner_cmd is readonly.
-    if base_cmd == "env" {
-        let args: Vec<String> = simple
-            .suffix
-            .as_ref()
-            .map(|s| {
-                s.0.iter()
-                    .filter_map(|item| {
-                        if let CommandPrefixOrSuffixItem::Word(w) = item {
-                            Some(w.value.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Skip flags and VAR=val to find inner command
-        for arg in &args {
-            if arg.starts_with('-') || arg.contains('=') {
-                continue;
-            }
-            // Found inner command — check if it's readonly
-            let inner_base = arg.rsplit('/').next().unwrap_or(arg);
-            return READONLY_COMMANDS.contains(inner_base);
-        }
-        return true; // bare env or env VAR=val
-    }
-
-    // Check readonly subcommands (subset of safe subcommands that have no side effects)
-    if let Some(suffix) = &simple.suffix {
-        for item in &suffix.0 {
-            if let CommandPrefixOrSuffixItem::Word(w) = item {
-                if let Some(ro_set) = READONLY_SUBCOMMANDS.get(base_cmd) {
-                    if ro_set.contains(w.value.as_str()) {
-                        return true;
-                    }
-                }
-                break; // only check first word arg
-            }
-        }
-    }
-
-    false
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -967,17 +650,17 @@ mod tests {
 
     #[test]
     fn env_passthrough_classification() {
-        // Bare env → read-only
+        // Bare env -> read-only
         assert_eq!(classify_command("env"), RiskLevel::Low);
-        // env with VAR=val only → read-only
+        // env with VAR=val only -> read-only
         assert_eq!(classify_command("env FOO=bar"), RiskLevel::Low);
-        // env with read-only command → Low
+        // env with read-only command -> Low
         assert_eq!(classify_command("env FOO=bar ls -la"), RiskLevel::Low);
-        // env running a medium command → Medium
+        // env running a medium command -> Medium
         assert_eq!(classify_command("env python script.py"), RiskLevel::Medium);
-        // env running a high command → High
+        // env running a high command -> High
         assert_eq!(classify_command("env rm file.txt"), RiskLevel::High);
-        // env running a critical command → Critical
+        // env running a critical command -> Critical
         assert_eq!(classify_command("env sudo whoami"), RiskLevel::Critical);
     }
 
@@ -1270,38 +953,5 @@ mod tests {
     fn unparseable_defaults_to_medium() {
         assert_eq!(classify_command(";;;"), RiskLevel::Medium);
         assert_eq!(classify_command(""), RiskLevel::Low);
-    }
-
-    // -----------------------------------------------------------------------
-    // Readonly detection
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn readonly_detection() {
-        assert!(is_readonly("ls -la"));
-        assert!(is_readonly("cat file.txt"));
-        assert!(is_readonly("git status"));
-        assert!(is_readonly("git log --oneline"));
-        assert!(is_readonly("git diff HEAD"));
-        assert!(is_readonly("pwd"));
-        assert!(is_readonly("echo hello"));
-        assert!(is_readonly("find . -name '*.rs'"));
-        assert!(is_readonly("head -5 file"));
-        assert!(is_readonly("tail -f log"));
-        assert!(is_readonly("which rustc"));
-        assert!(is_readonly("ps aux"));
-        assert!(is_readonly("ping -c 1 host"));
-        assert!(is_readonly("docker ps"));
-        assert!(is_readonly("kubectl get pods"));
-
-        assert!(!is_readonly("rm file.txt"));
-        assert!(!is_readonly("cargo build"));
-        assert!(!is_readonly("npm install"));
-        assert!(!is_readonly("git push origin main"));
-        assert!(!is_readonly("python script.py"));
-        assert!(!is_readonly("env rm file.txt"));
-        assert!(!is_readonly("eval echo hi"));
-        assert!(!is_readonly("xargs echo"));
-        assert!(!is_readonly("yes"));
     }
 }

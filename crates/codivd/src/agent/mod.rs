@@ -1,6 +1,6 @@
 #[allow(clippy::module_inception)]
 pub mod agent;
-pub mod ast_classifier;
+pub mod ast;
 pub mod config;
 pub mod error;
 pub mod llm_evaluator;

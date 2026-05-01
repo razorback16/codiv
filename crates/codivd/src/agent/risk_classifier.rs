@@ -14,14 +14,14 @@ pub fn classify_risk(tool_name: &str, args: &serde_json::Value) -> RiskLevel {
 
 /// Check if a bash command is read-only (used for Manual mode allowlisting).
 pub fn is_readonly_bash(command: &str) -> bool {
-    super::ast_classifier::is_readonly(command)
+    super::ast::is_readonly(command)
 }
 
 fn classify_bash_risk(args: &serde_json::Value) -> RiskLevel {
     let command = args.get("command")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    super::ast_classifier::classify_command(command)
+    super::ast::classify_command(command)
 }
 
 #[cfg(test)]
