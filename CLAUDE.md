@@ -204,25 +204,8 @@ OAuth tokens are stored in `[auth.tokens.{provider_id}]` in config.toml. The acc
 
 ---
 
-**Version:** 0.1.7 | **License:** GPL-3.0 | **Updated:** 2026-04-04
+**Version:** 0.1.7 | **License:** GPL-3.0 | **Updated:** 2026-05-02
 
-<!-- GSD:project-start source:PROJECT.md -->
-## Project
-
-**Codiv Auth — AI Provider Login System**
-
-A unified authentication system for Codiv that adds a `codiv login` CLI command with an interactive wizard for configuring AI provider credentials. Ported and adapted from the forgecode project's auth infrastructure, it supports API key entry and OAuth code flows for Anthropic (Claude Code), OpenAI (Codex), and other providers. Credentials are stored in `~/.codiv/config.toml` alongside existing configuration.
-
-**Core Value:** Users can authenticate with any supported AI provider through a single `codiv login` command — no manual config file editing, no hunting for environment variable names, no expired tokens breaking sessions.
-
-### Constraints
-
-- **Config format**: TOML (not JSON like forgecode) — must merge auth into existing config.toml
-- **Architecture**: Token refresh must be in codivd daemon, not client
-- **UX**: CLI subcommand (`codiv login`), not TUI inline
-- **Dependencies**: Minimize new dependencies — prefer reusing what's already in the workspace
-- **Security**: API keys and tokens must not be logged or exposed in debug output
-<!-- GSD:project-end -->
 
 <!-- GSD:stack-start source:codebase/STACK.md -->
 ## Technology Stack
@@ -283,10 +266,9 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - `ignore` 0.4 — `.gitignore`-aware directory traversal (`crates/codiv-tools/`)
 - `dialoguer` 0.12 — Interactive CLI prompts with Select/Password widgets (`crates/codiv/`)
 - `oauth2` 5.0 — PKCE code challenge/verifier generation (`crates/codiv-common/`)
-- `open` 5.3 — Open URLs in default browser for OAuth flows (`crates/codiv/`, `crates/codiv-common/`)
+- `open` 5.3 — Open URLs in default browser for OAuth flows (`crates/codiv/`)
 - `chrono` 0.4 — DateTime for OAuth token expiry tracking (`crates/codiv-common/`)
 - `anyhow` 1 — Error handling in auth flows and CLI commands (`crates/codiv/`, `crates/codiv-common/`)
-- `serde_urlencoded` 0.7 — URL form encoding for OAuth token exchange (`crates/codiv-common/`)
 ## Configuration
 - Config file: `~/.codiv/config.toml` (auto-created from embedded default on first run)
 - Environment variable overrides: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`
@@ -327,7 +309,7 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - Builder-style helpers: `fn spawn(...)` for processes, `fn build_tools(...)` for factory functions
 - `SCREAMING_SNAKE_CASE`: `MAX_TOOL_OUTPUT_BYTES`, `MAX_HISTORY_EVENTS`, `PASTE_COLLAPSE_THRESHOLD`, `INITIAL_BACKOFF_MS`
 - Module-level constants declared immediately before the code that uses them
-- Sparse use: only `type DynError = Box<dyn std::error::Error + Send + Sync>` found in `crates/codivd/src/agent/config.rs`
+- Sparse use: only `type DynError = Box<dyn std::error::Error + Send + Sync>` found in `crates/codivd/src/agent/models.rs`
 ## Code Style
 - Standard `rustfmt` (no custom config detected)
 - Edition 2021 across all crates
@@ -340,7 +322,7 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 ## Error Handling
 - `Result<T, String>` — used in tool execute functions (`read::execute`, `bash::execute`) where the error is a human-readable message
 - `Result<T, rusqlite::Error>` — typed errors for database operations in `store.rs`
-- `Result<T, DynError>` (where `DynError = Box<dyn Error + Send + Sync>`) — async agent/IPC pipeline in `config.rs`
+- `Result<T, DynError>` (where `DynError = Box<dyn Error + Send + Sync>`) — async agent/IPC pipeline in `streaming.rs`
 - `std::io::Result<T>` — process/socket/PTY operations
 - `?` operator throughout async code
 - `map_err(|e| format!("context: {e}"))` for converting typed errors to `String` errors at tool boundaries
@@ -383,12 +365,12 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 ## Layers
 - Purpose: User-facing terminal interface, shell management, IPC relay
 - Location: `crates/codiv/src/`
-- Contains: `app.rs` (startup orchestrator), `ui/` (ratatui rendering), `shell/` (PTY/bash coprocess), `ipc/` (IPC client), `cli/` (direct tool dispatch subcommands)
+- Contains: `app.rs` (startup orchestrator), `ui/` (ratatui rendering, `terminal/daemon/` submodule with streaming.rs, session.rs, lease.rs, helpers.rs), `shell/` (PTY/bash coprocess), `ipc/` (IPC client), `cli/` (direct tool dispatch subcommands)
 - Depends on: `codiv-common` (shared types and IPC framing), `codiv-tools` (for direct CLI invocation)
 - Used by: end users directly
 - Purpose: AI agent loop, session persistence, permission gating
 - Location: `crates/codivd/src/`
-- Contains: `daemon.rs` (event loop), `agent/` (LLM agent, tools, permissions, relay_manager), `handlers/` (agent, compaction, permission, session, shell), `ipc/` (Unix socket server), `session.rs` (per-client state), `store.rs` (SQLite persistence)
+- Contains: `daemon.rs` (event loop), `agent/` (agent.rs, models.rs, providers.rs, streaming.rs, config.rs, permissions.rs, risk_classifier.rs, ast/, relay_manager.rs, tools.rs, error.rs, llm_evaluator.rs, permission_evaluator.rs), `handlers/` (agent, compaction, permission, session, shell), `ipc/` (Unix socket server), `session.rs` (per-client state), `store.rs` (SQLite persistence)
 - Depends on: `codiv-common`, `codiv-tools`, `aisdk` (LLM abstraction)
 - Used by: `codiv` TUI via IPC
 - Purpose: Shared types, IPC message definitions, config paths
@@ -418,7 +400,7 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - Pattern: Struct with `history: Vec<ConversationEvent>`, `model_config`, `provider_config`, `shell_backend`
 - Purpose: Per-session permission gating for tool calls
 - Location: `crates/codivd/src/agent/permissions.rs`
-- Pattern: Shared `Arc<PermissionContext>` with `RwLock<PermissionMode>` (Auto/Manual/Bypass) and risk classification pipeline (`risk_classifier.rs` → `permission_evaluator.rs` → optional `llm_evaluator.rs`)
+- Pattern: Shared `Arc<PermissionContext>` with `RwLock<PermissionMode>` (Auto/Manual/Bypass) and risk classification pipeline (`risk_classifier.rs` → `ast/classify.rs` → `permission_evaluator.rs` → optional `llm_evaluator.rs`)
 - Purpose: TUI rendering abstraction for conversation turns (tool calls, prompts, responses)
 - Location: `crates/codiv/src/ui/blocks.rs` (registry/lifecycle) + `crates/codiv/src/ui/tool_presenters.rs` (visual presentation)
 - Pattern: BlockRegistry manages lifecycle; tool_presenters contains extracted per-tool rendering functions (`present_edit()`, `present_read()`, `present_bash()`, etc.)
@@ -461,23 +443,3 @@ A unified authentication system for Codiv that adds a `codiv login` CLI command 
 - `AppConfig` uses a file watcher that sends on `config_change_tx`; daemon reloads on next event loop iteration without restart
 - When `input_tokens` exceeds threshold, `needs_compaction` is set on `ClientSession`; next idle cycle triggers `CompactRequest` which runs a summarization LLM call and replaces old history with a `ConversationEvent::Summary`
 <!-- GSD:architecture-end -->
-
-<!-- GSD:workflow-start source:GSD defaults -->
-## GSD Workflow Enforcement
-
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd:debug` for investigation and bug fixing
-- `/gsd:execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-<!-- GSD:workflow-end -->
-
-<!-- GSD:profile-start -->
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-<!-- GSD:profile-end -->
