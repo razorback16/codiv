@@ -48,7 +48,6 @@ dependencies = [
 [[package]]
 name = "aisdk"
 version = "0.5.2"
-source = "git+https://github.com/razorback16/aisdk.git?branch=main#0326213241c73684a216e6d92e29f3a13ce2f5b6"
 dependencies = [
  "aisdk-macros",
  "async-stream",
@@ -70,7 +69,6 @@ dependencies = [
 [[package]]
 name = "aisdk-macros"
 version = "0.3.0"
-source = "git+https://github.com/razorback16/aisdk.git?branch=main#0326213241c73684a216e6d92e29f3a13ce2f5b6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -622,6 +620,7 @@ name = "codiv-common"
 version = "0.1.7"
 dependencies = [
  "anyhow",
+ "base64",
  "bincode",
  "chrono",
  "crossbeam-channel",
@@ -633,6 +632,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "toml",

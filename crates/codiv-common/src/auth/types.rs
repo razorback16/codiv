@@ -84,6 +84,8 @@ pub struct OAuthTokens {
     pub access_token: AccessToken,
     pub refresh_token: Option<RefreshToken>,
     pub expires_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<String>,
 }
 
 impl OAuthTokens {
@@ -96,6 +98,7 @@ impl OAuthTokens {
             access_token: access_token.into(),
             refresh_token: refresh_token.map(|r| r.into()),
             expires_at,
+            id_token: None,
         }
     }
 
@@ -133,6 +136,7 @@ pub struct OAuthConfig {
 pub struct OAuthTokenResponse {
     pub access_token: String,
     pub refresh_token: Option<String>,
+    pub id_token: Option<String>,
     /// Seconds until expiry (from token endpoint, may be absent).
     pub expires_in: Option<u64>,
     /// Absolute expiry (computed or from endpoint).

@@ -71,6 +71,8 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
                     "profile".to_string(),
                     "email".to_string(),
                     "offline_access".to_string(),
+                    "api.connectors.read".to_string(),
+                    "api.connectors.invoke".to_string(),
                 ],
                 redirect_uri: Some("http://localhost:1455/auth/callback".to_string()),
                 use_pkce: true,
@@ -85,7 +87,6 @@ pub fn provider_registry() -> Vec<ProviderEntry> {
                         "codex_cli_simplified_flow".to_string(),
                         "true".to_string(),
                     );
-                    m.insert("originator".to_string(), "codex_cli_rs".to_string());
                     m
                 }),
             }))],

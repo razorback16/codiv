@@ -85,6 +85,9 @@ pub fn write_oauth_tokens_to_config(provider_id: &str, tokens: &OAuthTokens) -> 
         if let Some(rt) = &tokens.refresh_token {
             entry["refresh_token"] = value(rt.as_str());
         }
+        if let Some(ref id_token) = tokens.id_token {
+            entry["id_token"] = value(id_token.as_str());
+        }
         entry["expires_at"] = value(tokens.expires_at.to_rfc3339());
     }
 
@@ -171,6 +174,11 @@ pub fn read_oauth_tokens_from_config(provider_id: &str) -> Result<Option<OAuthTo
         .and_then(|v| v.as_str())
         .map(RefreshToken::new);
 
+    let id_token = entry
+        .get("id_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let expires_at_str = entry
         .get("expires_at")
         .and_then(|v| v.as_str())
@@ -180,11 +188,12 @@ pub fn read_oauth_tokens_from_config(provider_id: &str) -> Result<Option<OAuthTo
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| anyhow::anyhow!("invalid expires_at: {e}"))?;
 
-    Ok(Some(OAuthTokens::new(
-        AccessToken::new(access_token),
+    Ok(Some(OAuthTokens {
+        access_token: AccessToken::new(access_token),
         refresh_token,
         expires_at,
-    )))
+        id_token,
+    }))
 }
 
 #[cfg(test)]

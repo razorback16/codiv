@@ -11,7 +11,9 @@
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use oauth2::PkceCodeChallenge;
+use rand::RngCore;
 use serde::Serialize;
+use sha2::Digest;
 
 use super::types::{AccessToken, OAuthConfig, OAuthTokenResponse, OAuthTokens, RefreshToken};
 
@@ -65,43 +67,80 @@ pub fn build_anthropic_auth_url(config: &OAuthConfig) -> Result<AuthParams> {
 
 /// Build a standard OAuth authorization URL with PKCE (Codex).
 ///
-/// Unlike Anthropic, state is a random CSRF token (standard behavior).
-/// PKCE verifier is generated and returned for the token exchange step.
+/// Ported directly from codex-rs/login/src/server.rs `build_authorize_url` and
+/// codex-rs/login/src/pkce.rs `generate_pkce`.
+/// Uses the exact same PKCE generation, state format, URL encoding, and parameter
+/// ordering as the official Codex CLI.
 pub fn build_standard_auth_url(config: &OAuthConfig) -> Result<AuthParams> {
-    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-    let verifier_secret = verifier.secret().to_string();
+    use base64::Engine;
 
-    let state = {
-        use rand::Rng;
-        let bytes: [u8; 16] = rand::thread_rng().gen();
-        hex::encode(bytes)
+    // PKCE generation — exact port from codex-rs/login/src/pkce.rs
+    let code_verifier = {
+        let mut bytes = [0u8; 64];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    };
+    let code_challenge = {
+        let digest = sha2::Sha256::digest(code_verifier.as_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
     };
 
-    let mut url = config.auth_url.clone();
-    {
-        let mut pairs = url.query_pairs_mut();
-        pairs
-            .append_pair("response_type", "code")
-            .append_pair("client_id", &config.client_id)
-            .append_pair("scope", &config.scopes.join(" "))
-            .append_pair("code_challenge", challenge.as_str())
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &state);
+    // State generation — exact port from codex-rs/login/src/server.rs `generate_state`
+    let state = {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    };
 
-        if let Some(redirect_uri) = &config.redirect_uri {
-            pairs.append_pair("redirect_uri", redirect_uri);
-        }
-        if let Some(extra) = &config.extra_auth_params {
-            for (k, v) in extra {
-                pairs.append_pair(k, v);
-            }
+    // URL construction — exact port from codex-rs/login/src/server.rs `build_authorize_url`
+    let mut query: Vec<(String, String)> = vec![
+        ("response_type".to_string(), "code".to_string()),
+        ("client_id".to_string(), config.client_id.clone()),
+        ("redirect_uri".to_string(), config.redirect_uri.clone().unwrap_or_default()),
+        ("scope".to_string(), config.scopes.join(" ")),
+        ("code_challenge".to_string(), code_challenge),
+        ("code_challenge_method".to_string(), "S256".to_string()),
+    ];
+
+    // Extra auth params inserted in the same position as Codex CLI
+    if let Some(extra) = &config.extra_auth_params {
+        for (k, v) in extra {
+            query.push((k.clone(), v.clone()));
         }
     }
 
+    query.push(("state".to_string(), state.clone()));
+    query.push(("originator".to_string(), "codex-tui".to_string()));
+
+    // URL-encode using the same approach as Codex: urlencoding::encode on values
+    fn url_encode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() * 2);
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                _ => {
+                    out.push_str(&format!("%{:02X}", b));
+                }
+            }
+        }
+        out
+    }
+
+    let qs = query
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, url_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let issuer = config.auth_url.as_str().trim_end_matches("/oauth/authorize");
+    let auth_url = format!("{}/oauth/authorize?{}", issuer.trim_end_matches('/'), qs);
+
     Ok(AuthParams {
-        auth_url: url.to_string(),
+        auth_url,
         state,
-        code_verifier: Some(verifier_secret),
+        code_verifier: Some(code_verifier),
     })
 }
 
@@ -226,18 +265,19 @@ pub fn token_response_to_oauth_tokens(
         .or(old_refresh_token)
         .map(RefreshToken::new);
 
-    OAuthTokens::new(
+    let mut tokens = OAuthTokens::new(
         AccessToken::new(resp.access_token),
         refresh_token,
         expires_at,
-    )
+    );
+    tokens.id_token = resp.id_token;
+    tokens
 }
 
 /// Refresh an OAuth token using the refresh_token grant.
 ///
 /// Tries token_refresh_url first; falls back to token_url (same endpoint for Anthropic and Codex).
-/// Uses form-encoded body (standard) — Anthropic's refresh endpoint accepts form-encoded unlike
-/// the authorization code exchange endpoint which requires JSON.
+/// Anthropic uses form-encoded body; Codex (OpenAI) uses JSON body.
 ///
 /// Returns Ok(new_tokens) on success, Err on network or parse failure.
 /// The caller is responsible for writing the new tokens to storage.
@@ -251,17 +291,37 @@ pub async fn refresh_oauth_token(
         .unwrap_or(&config.token_url);
 
     let client = reqwest::Client::new();
-    let form = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.to_string()),
-        ("client_id", config.client_id.clone()),
-    ];
 
-    let resp = client
-        .post(endpoint.as_str())
-        .form(&form)
-        .send()
-        .await?;
+    let is_openai_style = config
+        .token_url
+        .host_str()
+        .map(|h| h.contains("openai.com"))
+        .unwrap_or(false);
+
+    let resp = if is_openai_style {
+        let body = serde_json::json!({
+            "client_id": config.client_id,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        });
+        client
+            .post(endpoint.as_str())
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?
+    } else {
+        let form = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", refresh_token.to_string()),
+            ("client_id", config.client_id.clone()),
+        ];
+        client
+            .post(endpoint.as_str())
+            .form(&form)
+            .send()
+            .await?
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -270,8 +330,44 @@ pub async fn refresh_oauth_token(
     }
 
     let token_resp = resp.json::<OAuthTokenResponse>().await?;
-    // Carry forward the old refresh token if the server omits one in the response
     Ok(token_response_to_oauth_tokens(token_resp, Some(refresh_token.to_string())))
+}
+
+/// Exchange an ID token for an OpenAI API key via RFC 8693 token exchange.
+///
+/// Codex OAuth returns an id_token that must be exchanged for an actual API key
+/// (typically prefixed `sk-`) before it can be used for OpenAI API calls.
+/// Includes `originator` header required by the OpenAI token exchange endpoint.
+pub async fn exchange_codex_api_key(config: &OAuthConfig, id_token: &str) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct ExchangeResp {
+        access_token: String,
+    }
+
+    let client = reqwest::Client::new();
+    let form = vec![
+        ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        ("client_id", config.client_id.as_str()),
+        ("requested_token", "openai-api-key"),
+        ("subject_token", id_token),
+        ("subject_token_type", "urn:ietf:params:oauth:token-type:id_token"),
+    ];
+
+    let resp = client
+        .post(config.token_url.as_str())
+        .header("originator", "codex-tui")
+        .form(&form)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Codex API key exchange failed {status}: {text}");
+    }
+
+    let body: ExchangeResp = resp.json().await?;
+    Ok(body.access_token)
 }
 
 /// Check stored OAuth tokens for `provider_id`. If they will expire within 5 minutes,
@@ -300,6 +396,24 @@ pub async fn maybe_refresh_stored_token(provider_id: &str, config: &OAuthConfig)
             if let Err(e) = super::storage::write_oauth_tokens_to_config(provider_id, &new_tokens) {
                 tracing::warn!("failed to write refreshed tokens for {provider_id}: {e}");
             }
+
+            // For Codex, exchange the new id_token for an API key
+            if provider_id == "codex" {
+                if let Some(ref id_token) = new_tokens.id_token {
+                    match exchange_codex_api_key(config, id_token).await {
+                        Ok(api_key) => {
+                            if let Err(e) = super::storage::write_api_key_to_config(provider_id, &api_key) {
+                                tracing::warn!("failed to write refreshed API key for codex: {e}");
+                            }
+                            return Some(api_key);
+                        }
+                        Err(e) => {
+                            tracing::warn!("codex API key exchange failed after refresh: {e}");
+                        }
+                    }
+                }
+            }
+
             Some(new_access)
         }
         Err(e) => {
@@ -458,6 +572,7 @@ mod tests {
         let resp = OAuthTokenResponse {
             access_token: "tok".to_string(),
             refresh_token: None,
+            id_token: None,
             expires_in: None,
             expires_at: None,
             token_type: "Bearer".to_string(),
@@ -479,6 +594,7 @@ mod tests {
         let resp = OAuthTokenResponse {
             access_token: "tok".to_string(),
             refresh_token: None,
+            id_token: None,
             expires_in: Some(3600),
             expires_at: None,
             token_type: "Bearer".to_string(),

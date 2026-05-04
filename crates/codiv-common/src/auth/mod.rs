@@ -18,6 +18,7 @@ pub use flows::{
     AuthParams,
     build_anthropic_auth_url, build_standard_auth_url,
     exchange_anthropic_code, exchange_standard_code,
+    exchange_codex_api_key,
     token_response_to_oauth_tokens,
     refresh_oauth_token,
     maybe_refresh_stored_token,

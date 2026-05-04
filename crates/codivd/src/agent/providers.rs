@@ -162,6 +162,34 @@ pub(super) fn build_openai_model(
     }
 }
 
+/// Build an OpenAI model for the Codex OAuth provider.
+///
+/// Uses `https://chatgpt.com/backend-api/codex` as base URL with path `/responses`.
+/// The aisdk detects this as a "chatgpt codex" request and automatically bridges
+/// the request format (moves system messages to `instructions`, sets `store: false`).
+pub(super) fn build_codex_model(
+    model_name: &str,
+    provider_config: &ProviderConfig,
+) -> Result<aisdk::providers::OpenAI<aisdk::core::DynamicModel>, DynError> {
+    let api_key = provider_config
+        .api_key
+        .clone()
+        .ok_or("codex provider requires an api_key (OAuth access token) in config")?;
+
+    let headers = std::collections::HashMap::from([
+        ("originator".to_string(), "codex-tui".to_string()),
+    ]);
+
+    let model = OpenAI::builder()
+        .model_name(model_name)
+        .api_key(api_key)
+        .base_url("https://chatgpt.com/backend-api/codex")
+        .path("/responses")
+        .headers(headers)
+        .build()?;
+    Ok(model)
+}
+
 pub(super) fn build_google_model(
     model_name: &str,
     provider_config: &ProviderConfig,

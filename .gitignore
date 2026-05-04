@@ -10,3 +10,4 @@ references/
 !.claude/skills/*/references/**
 .planning/
 crates/codiv/tests/screenshots/
+third_party/

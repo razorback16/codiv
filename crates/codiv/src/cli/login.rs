@@ -123,7 +123,8 @@ fn run_oauth_flow(
 ) -> Result<()> {
     use codiv_common::auth::{
         build_anthropic_auth_url, build_standard_auth_url, exchange_anthropic_code,
-        exchange_standard_code, token_response_to_oauth_tokens, write_oauth_tokens_to_config,
+        exchange_codex_api_key, exchange_standard_code, token_response_to_oauth_tokens,
+        write_api_key_to_config, write_oauth_tokens_to_config,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -143,10 +144,8 @@ fn run_oauth_flow(
 
     // Step 2: Get the authorization code
     let auth_code = if localhost_callback {
-        // Localhost callback flow (Codex): start server, open browser, wait for redirect
         run_localhost_callback_flow(&params.auth_url, &params.state, display_name)?
     } else {
-        // Manual paste flow (Anthropic): open browser, user pastes code
         run_manual_paste_flow(&params.auth_url, display_name)?
     };
 
@@ -166,7 +165,21 @@ fn run_oauth_flow(
     write_oauth_tokens_to_config(provider_id, &tokens)
         .with_context(|| format!("Failed to save tokens for {}", display_name))?;
 
-    // Step 5: Fetch and store account UUID (needed for API rate limit attribution)
+    // Step 5: For Codex, try to exchange id_token for an API key via RFC 8693.
+    // This is optional — the Codex CLI treats it as non-fatal (.ok()).
+    // If it fails, the access_token (already stored in step 4) is used directly.
+    if provider_id == "codex" {
+        if let Some(ref id_token) = tokens.id_token {
+            match rt.block_on(exchange_codex_api_key(&config, id_token)) {
+                Ok(api_key) => {
+                    let _ = write_api_key_to_config(provider_id, &api_key);
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    // Step 6: Fetch and store account UUID (needed for API rate limit attribution)
     if anthropic_style {
         if let Some(uuid) = rt.block_on(codiv_common::auth::fetch_oauth_profile_uuid(
             tokens.access_token.as_str(),

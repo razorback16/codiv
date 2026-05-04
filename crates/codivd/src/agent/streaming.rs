@@ -30,6 +30,11 @@ macro_rules! with_provider_model {
                 let $is_openai_compat = true;
                 $body
             }
+            "codex" => {
+                let $model = build_codex_model(&$assignment.model, $provider_config)?;
+                let $is_openai_compat = true;
+                $body
+            }
             "google" => {
                 let $model = build_google_model(&$assignment.model, $provider_config)?;
                 let $is_openai_compat = false;
